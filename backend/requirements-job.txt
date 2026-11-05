@@ -1,0 +1,5 @@
+# Dependencias mínimas del JOB programado (GitHub Actions). No necesita FastAPI ni
+# SQLAlchemy: el job solo usa el núcleo cuantitativo + httpx para red.
+pandas>=2.1
+numpy>=1.26
+httpx>=0.27

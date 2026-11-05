@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: giic
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?define POSTGRES_PASSWORD en .env}
+      POSTGRES_DB: giic
+    # Sin puerto publicado: Postgres solo es accesible dentro de la red de compose.
+    expose:
+      - "5432"
+    volumes:
+      - giic_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U giic"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      ENVIRONMENT: production
+      DATABASE_URL: postgresql+psycopg://giic:${POSTGRES_PASSWORD}@db:5432/giic
+      SECRET_KEY: ${SECRET_KEY:?define SECRET_KEY fuerte en .env}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?define ADMIN_PASSWORD en .env}
+      DATA_PROVIDER: ${DATA_PROVIDER:-sample}
+      EODHD_API_KEY: ${EODHD_API_KEY:-}
+      FMP_API_KEY: ${FMP_API_KEY:-}
+      PROVIDER_RATE_PER_MIN: ${PROVIDER_RATE_PER_MIN:-60}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    # Escucha solo en loopback del host: no se expone públicamente.
+    ports:
+      - "127.0.0.1:8000:8000"
+
+# NOTA: en la arquitectura $0 (v0.3) el frontend se publica en Cloudflare Pages y los
+# datos viven en Supabase; este compose es OPCIONAL, solo para correr la API FastAPI
+# localmente sobre el mismo núcleo. No es necesario para el despliegue gratuito.
+
+volumes:
+  giic_pg:

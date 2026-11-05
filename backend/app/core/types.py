@@ -1,0 +1,102 @@
+"""Tipos de dominio (dataclasses puras, sin ORM ni pydantic).
+
+Son las estructuras con las que trabaja el núcleo. La capa web las traduce
+a/desde esquemas pydantic y la capa de datos a/desde modelos ORM.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date
+from enum import Enum
+from typing import Optional
+
+
+class AssetClass(str, Enum):
+    EQUITY = "equity"
+    ETF = "etf"
+    CASH = "cash"
+
+
+@dataclass(frozen=True)
+class Instrument:
+    """Un instrumento negociable identificado de forma única por ticker+exchange."""
+    ticker: str
+    name: str
+    asset_class: AssetClass
+    exchange: str          # MIC o código del proveedor, p.ej. "US", "XTAI", "BMV"
+    country: str           # ISO-2, p.ej. "US", "TW", "MX"
+    sector: Optional[str] = None
+    currency: str = "USD"
+
+
+@dataclass
+class Position:
+    """Una posición abierta en la cartera."""
+    instrument: Instrument
+    quantity: float
+    avg_cost: float        # precio promedio de compra, en la moneda del instrumento
+    opened_at: Optional[date] = None
+
+    def cost_basis(self) -> float:
+        return self.quantity * self.avg_cost
+
+
+@dataclass
+class Quote:
+    """Cotización de un instrumento en una fecha. `is_sample` marca datos de ejemplo."""
+    ticker: str
+    price: float
+    as_of: date
+    currency: str = "USD"
+    is_sample: bool = False
+
+
+@dataclass
+class Fundamentals:
+    """Fundamentales de una empresa. Campos opcionales: un proveedor puede no darlos."""
+    ticker: str
+    pe_ttm: Optional[float] = None
+    pe_forward: Optional[float] = None
+    ev_ebitda: Optional[float] = None
+    fcf_yield: Optional[float] = None     # free cash flow / market cap
+    roic: Optional[float] = None
+    roe: Optional[float] = None
+    rev_growth_yoy: Optional[float] = None
+    eps_growth_yoy: Optional[float] = None
+    net_margin: Optional[float] = None
+    debt_to_equity: Optional[float] = None
+    market_cap: Optional[float] = None
+    is_sample: bool = False
+
+
+@dataclass
+class ETFHolding:
+    """Un componente dentro de un ETF, con su peso (0-1)."""
+    ticker: str
+    weight: float
+    name: Optional[str] = None
+    sector: Optional[str] = None
+
+
+@dataclass
+class RiskLimits:
+    """Restricciones del inversor. El motor de decisiones debe respetarlas."""
+    max_weight_per_asset: float = 0.25     # 25% máx por activo individual
+    max_weight_per_sector: float = 0.40    # 40% máx por sector
+    min_cash: float = 0.0                  # liquidez mínima a conservar (fracción)
+    risk_tolerance: str = "moderate"       # conservative | moderate | aggressive
+    horizon_years: float = 15.0
+
+
+@dataclass
+class FactorScore:
+    """Puntajes factoriales de un instrumento (0-100 cada uno). Marcados si es sample."""
+    ticker: str
+    value: float = 0.0
+    quality: float = 0.0
+    growth: float = 0.0
+    momentum: float = 0.0
+    low_risk: float = 0.0
+    composite: float = 0.0
+    is_sample: bool = False
+    detail: dict = field(default_factory=dict)

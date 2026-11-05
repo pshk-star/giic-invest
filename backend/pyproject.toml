@@ -1,0 +1,9 @@
+[project]
+name = "giic-backend"
+version = "0.1.0"
+description = "GIIC — Global Investment Intelligence Console (backend)"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
