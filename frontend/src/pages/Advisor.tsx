@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Panel, Stat } from "../components/Panel";
+import { Panel } from "../components/Panel";
 import {
   getInstruments, getLatestRun, getLatestScan, getPrices, getSettings, getTransactions,
   saveSettings, type ScanRow,

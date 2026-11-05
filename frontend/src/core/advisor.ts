@@ -65,8 +65,7 @@ export interface AdvisorReport {
   constraints: Constraints;
 }
 
-const DECENT = 55;   // composite mínimo para considerar "atractivo relativo"
-const STRONG = 65;
+const STRONG = 65;   // composite mínimo para considerar una candidata "atractiva"
 
 function pctStr(x: number): string {
   return `${(x * 100).toFixed(1)}%`;
