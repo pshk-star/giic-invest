@@ -85,6 +85,16 @@ class SupabaseWriter:
                               headers={"Prefer": "return=minimal"})
         r.raise_for_status()
 
+    def get_transaction_tickers(self) -> List[str]:
+        """Tickers distintos presentes en transactions (service_role omite RLS).
+        Solo se leen tickers (no montos ni usuarios): sirve para precios/identificación."""
+        try:
+            r = self._client.get(f"{self.base}/transactions", params={"select": "ticker"})
+            r.raise_for_status()
+            return sorted({row["ticker"].upper() for row in r.json() if row.get("ticker")})
+        except Exception:
+            return []
+
     def update_run_status(self, run_id: str, status: str, error: Optional[str] = None) -> None:
         """Marca una corrida como 'completed' o 'failed' (publicación atómica)."""
         payload = {"status": status}

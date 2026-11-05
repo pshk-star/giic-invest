@@ -47,6 +47,25 @@ def parse_yahoo_chart(payload: dict, ticker: str) -> pd.Series:
         return pd.Series(dtype=float)
 
 
+def parse_yahoo_meta(payload: dict) -> dict:
+    """Extrae metadatos de identificación del instrumento desde chart.meta."""
+    try:
+        res = (payload or {}).get("chart", {}).get("result")
+        if not res:
+            return {}
+        m = res[0].get("meta", {}) or {}
+        it = (m.get("instrumentType") or "").upper()
+        asset_class = "equity" if it == "EQUITY" else "etf" if it == "ETF" else "unknown"
+        return {
+            "name": m.get("longName") or m.get("shortName"),
+            "asset_class": asset_class,
+            "exchange": m.get("fullExchangeName") or m.get("exchangeName"),
+            "currency": m.get("currency") or "USD",
+        }
+    except (KeyError, IndexError, TypeError):
+        return {}
+
+
 class YahooProvider(MarketDataProvider):
     name = "yahoo"
     is_sample = False
@@ -89,6 +108,13 @@ class YahooProvider(MarketDataProvider):
             out[t] = Quote(ticker=t, price=float(s.iloc[-1]), as_of=as_of,
                            currency="USD", is_sample=False)
         return out
+
+    def get_instrument_meta(self, ticker: str) -> dict:
+        """Identifica el instrumento: nombre, tipo, bolsa, moneda. {} si no se puede."""
+        try:
+            return parse_yahoo_meta(self._chart(ticker, rng="5d"))
+        except Exception:
+            return {}
 
     def get_fundamentals(self, tickers): return {}
     def get_etf_holdings(self, etf_ticker): return []

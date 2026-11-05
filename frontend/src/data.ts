@@ -2,6 +2,56 @@
 // mercado y scanner son de solo lectura para autenticados.
 import { supabase } from "./lib/supabase";
 import type { ETFHolding, Position, PriceInfo } from "./core/analytics";
+import type { InstrumentMeta, Txn } from "./core/portfolio-tx";
+
+export interface InstrumentRow {
+  ticker: string;
+  name: string | null;
+  asset_class: string | null;
+  exchange: string | null;
+  currency: string | null;
+  status: string | null;
+}
+
+export async function getTransactions(): Promise<Txn[]> {
+  const { data, error } = await supabase
+    .from("transactions").select("*").order("executed_at", { ascending: true });
+  if (error) throw error;
+  return (data ?? []) as Txn[];
+}
+
+export async function addTransaction(t: Partial<Txn>): Promise<void> {
+  const { error } = await supabase.from("transactions").insert(t);
+  if (error) throw error;
+}
+
+export async function deleteTransaction(id: string): Promise<void> {
+  const { error } = await supabase.from("transactions").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function searchInstruments(query: string): Promise<InstrumentRow[]> {
+  const q = query.trim();
+  if (!q) return [];
+  const { data, error } = await supabase
+    .from("instruments")
+    .select("ticker,name,asset_class,exchange,currency,status")
+    .or(`ticker.ilike.${q}%,name.ilike.%${q}%`)
+    .limit(10);
+  if (error) throw error;
+  return (data ?? []) as InstrumentRow[];
+}
+
+export async function getInstruments(tickers: string[]): Promise<Record<string, InstrumentMeta>> {
+  if (tickers.length === 0) return {};
+  const { data, error } = await supabase
+    .from("instruments").select("ticker,name,asset_class,status,currency").in("ticker", tickers);
+  if (error) throw error;
+  const out: Record<string, InstrumentMeta> = {};
+  for (const r of data ?? [])
+    out[r.ticker] = { name: r.name, asset_class: r.asset_class, status: r.status, currency: r.currency };
+  return out;
+}
 
 export interface ScanRow {
   run_id: string;

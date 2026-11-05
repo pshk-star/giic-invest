@@ -18,8 +18,10 @@ import sys
 import uuid
 from datetime import date, datetime
 
+from ..core.types import AssetClass, Instrument
 from ..providers import get_provider
 from ..services.scan_engine import run_scan as run_scan_engine
+from .instruments import build_universe_instrument_rows, resolve_extra_tickers
 from .supabase_writer import SupabaseWriter, build_run_row, build_snapshot_rows
 from .universe import UNIVERSE_VERSION, get_universe
 from .validation import validate_scan_result
@@ -66,7 +68,25 @@ def execute(provider_name: str = "free", top: int = 50, dry_run: bool = False,
         kwargs["user_agent"] = ua
     provider = get_provider(provider_name, **kwargs)
 
+    # Writer temprano (si corresponde) para leer tickers de la cartera y extender el
+    # universo: así los instrumentos que el usuario tiene reciben precio e identificación.
+    # Solo si hay credenciales (si no, la validación sigue su curso y puede rechazar).
+    if writer is None and not dry_run and os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_SERVICE_ROLE_KEY"):
+        writer = SupabaseWriter(os.getenv("SUPABASE_URL", ""),
+                                os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""))
     universe = get_universe()
+    universe_tickers = {i.ticker for i in universe}
+    extra_tickers: list[str] = []
+    if writer is not None:
+        try:
+            extra_tickers = [t for t in writer.get_transaction_tickers()
+                             if t not in universe_tickers]
+        except Exception:
+            extra_tickers = []
+        for t in extra_tickers:
+            universe.append(Instrument(ticker=t, name=t, asset_class=AssetClass.EQUITY,
+                                       exchange="US", country="US", sector=None, currency="USD"))
+
     result = run_scan_engine(
         provider, universe, cache=None,
         today=today, top=top, batch_size=25,
@@ -103,6 +123,7 @@ def execute(provider_name: str = "free", top: int = 50, dry_run: bool = False,
                                 os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""))
 
     # Datos de mercado con la FECHA REAL del dato por ticker (no la fecha de corrida).
+    # (price_rows/fund_rows/fx_rows se construyen abajo y se publican con publish_run)
     price_rows = [{"ticker": t, "close": m["close"], "as_of": m["as_of"], "currency": "USD"}
                   for t, m in result.get("market_prices", {}).items() if m.get("close") is not None]
     fund_rows = [{"ticker": t, "payload": p}
@@ -113,6 +134,17 @@ def execute(provider_name: str = "free", top: int = 50, dry_run: bool = False,
                for c, r in rates.items()]
 
     publish_run(writer, run_id, run_row, snapshot_rows, price_rows, fund_rows, fx_rows)
+
+    # Identificación de instrumentos (Fase A): universo curado + tickers extra de la
+    # cartera. Best-effort: no debe tumbar la corrida ya publicada.
+    try:
+        inst_rows = build_universe_instrument_rows()
+        if extra_tickers:
+            inst_rows += resolve_extra_tickers(extra_tickers, get_provider("yahoo"), {})
+        writer.upsert("instruments", inst_rows, on_conflict="ticker")
+        summary["instruments_written"] = len(inst_rows)
+    except Exception as e:
+        summary["instruments_error"] = f"{type(e).__name__}: {str(e)[:120]}"
 
     summary["written"] = True
     summary["status"] = "completed"
