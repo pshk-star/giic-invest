@@ -105,6 +105,33 @@ def execute(provider_name: str = "free", top: int = 50, dry_run: bool = False,
         "top3": [(r["ticker"], r["composite"]) for r in result.get("ranking", [])[:3]],
     }
 
+    # Identificación + precio de la CARTERA, DESACOPLADO de la validación del scan:
+    # aunque el scan se rechace (datos obsoletos, cobertura baja), los tickers del
+    # usuario quedan identificados y con precio. No debe tumbar la corrida.
+    if writer is not None and not dry_run:
+        try:
+            inst_rows = build_universe_instrument_rows()
+            if extra_tickers:
+                inst_rows += resolve_extra_tickers(extra_tickers, get_provider("yahoo"), {})
+            writer.upsert("instruments", inst_rows, on_conflict="ticker")
+            summary["instruments_written"] = len(inst_rows)
+        except Exception as e:
+            summary["instruments_error"] = f"{type(e).__name__}: {str(e)[:120]}"
+        try:
+            if extra_tickers:
+                q = get_provider("yahoo").get_quotes(extra_tickers)
+                extra_price_rows = [
+                    {"ticker": t.upper(), "close": float(x.price),
+                     "as_of": x.as_of.isoformat() if hasattr(x.as_of, "isoformat") else str(x.as_of),
+                     "currency": "USD"}
+                    for t, x in q.items()
+                ]
+                if extra_price_rows:
+                    writer.upsert("prices", extra_price_rows, on_conflict="ticker")
+                    summary["extra_prices_written"] = len(extra_price_rows)
+        except Exception as e:
+            summary["extra_prices_error"] = f"{type(e).__name__}: {str(e)[:120]}"
+
     # Validación de calidad: bloquea publicar sample, vacío, incompleto u obsoleto.
     ok, reasons = validate_scan_result(result, today, allow_sample=allow_sample_write)
     summary["valid"] = ok
@@ -134,17 +161,7 @@ def execute(provider_name: str = "free", top: int = 50, dry_run: bool = False,
                for c, r in rates.items()]
 
     publish_run(writer, run_id, run_row, snapshot_rows, price_rows, fund_rows, fx_rows)
-
-    # Identificación de instrumentos (Fase A): universo curado + tickers extra de la
-    # cartera. Best-effort: no debe tumbar la corrida ya publicada.
-    try:
-        inst_rows = build_universe_instrument_rows()
-        if extra_tickers:
-            inst_rows += resolve_extra_tickers(extra_tickers, get_provider("yahoo"), {})
-        writer.upsert("instruments", inst_rows, on_conflict="ticker")
-        summary["instruments_written"] = len(inst_rows)
-    except Exception as e:
-        summary["instruments_error"] = f"{type(e).__name__}: {str(e)[:120]}"
+    # (La identificación de instrumentos ya se hizo arriba, desacoplada de la validación.)
 
     summary["written"] = True
     summary["status"] = "completed"

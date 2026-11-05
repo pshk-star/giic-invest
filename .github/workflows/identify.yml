@@ -1,0 +1,46 @@
+name: GIIC identify + catalog
+
+# Identifica y pone precio a los instrumentos de la cartera SIN depender del scan.
+# - workflow_dispatch: disparo manual (tras registrar posiciones nuevas).
+# - cron semanal (lunes ~22:10 UTC): refresca el catálogo US completo de Nasdaq Trader.
+on:
+  workflow_dispatch:
+    inputs:
+      with_catalog:
+        description: "Recargar el catálogo US completo (Nasdaq Trader)"
+        type: boolean
+        default: true
+  schedule:
+    - cron: "10 22 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: giic-identify
+  cancel-in-progress: false
+
+jobs:
+  identify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Instalar dependencias del job
+        run: pip install -r requirements-job.txt
+      - name: Identificar cartera y (opcional) recargar catálogo
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        # En el cron (sin inputs) siempre recarga catálogo; en manual respeta el input.
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.with_catalog }}" != "true" ]; then
+            python -m app.jobs.identify
+          else
+            python -m app.jobs.identify --with-catalog
+          fi

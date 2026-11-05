@@ -31,13 +31,18 @@ export async function deleteTransaction(id: string): Promise<void> {
 }
 
 export async function searchInstruments(query: string): Promise<InstrumentRow[]> {
-  const q = query.trim();
+  // Sanea la entrada: PostgREST interpreta , ( ) * en el filtro `.or()`. Dejamos solo
+  // caracteres válidos de ticker/nombre para evitar romper la consulta.
+  const q = query.trim().replace(/[(),*%]/g, "").slice(0, 40);
   if (!q) return [];
+  const qu = q.toUpperCase();
+  // Prioriza coincidencia por prefijo de ticker (lo más común) y por nombre.
   const { data, error } = await supabase
     .from("instruments")
     .select("ticker,name,asset_class,exchange,currency,status")
-    .or(`ticker.ilike.${q}%,name.ilike.%${q}%`)
-    .limit(10);
+    .or(`ticker.ilike.${qu}%,name.ilike.%${q}%`)
+    .order("ticker")
+    .limit(20);
   if (error) throw error;
   return (data ?? []) as InstrumentRow[];
 }
