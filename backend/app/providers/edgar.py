@@ -138,17 +138,28 @@ class EDGARProvider(MarketDataProvider):
     name = "edgar"
     is_sample = False
 
-    def __init__(self, user_agent: str, timeout: float = 20.0):
+    def __init__(self, user_agent: str, timeout: float = 30.0, retries: int = 2):
         if not user_agent or "@" not in user_agent:
             raise ValueError("EDGAR exige User-Agent con email de contacto (política SEC).")
         import httpx
+        self.retries = retries
         self._client = httpx.Client(timeout=timeout, headers={"User-Agent": user_agent})
         self._cik: Dict[str, int] = {}
+
+    def _fetch(self, url: str):
+        """GET con un reintento ante timeout/red transitoria."""
+        last = None
+        for _ in range(max(1, self.retries)):
+            try:
+                return self._client.get(url)
+            except Exception as e:
+                last = e
+        raise last
 
     def _load_ciks(self):
         if self._cik:
             return
-        r = self._client.get(TICKERS_URL)
+        r = self._fetch(TICKERS_URL)
         r.raise_for_status()
         for row in r.json().values():
             self._cik[row["ticker"].upper()] = int(row["cik_str"])
@@ -158,7 +169,7 @@ class EDGARProvider(MarketDataProvider):
         cik = self._cik.get(ticker.upper())
         if cik is None:
             return None
-        r = self._client.get(FACTS_URL.format(cik=cik))
+        r = self._fetch(FACTS_URL.format(cik=cik))
         if r.status_code != 200:
             return None
         return r.json()

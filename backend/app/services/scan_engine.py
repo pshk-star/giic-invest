@@ -14,8 +14,13 @@ Devuelve ranking + informe de calidad de datos.
 from __future__ import annotations
 
 from dataclasses import asdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import List, Mapping, Optional
+
+# Ventana de histórico a solicitar cuando no hay caché. Suficiente para momentum
+# 12m y volatilidad 1y con margen; limita el tamaño de descarga (p.ej. CSV de Stooq)
+# para reducir timeouts de las fuentes gratuitas.
+HISTORY_LOOKBACK_DAYS = 550
 
 from ..core import indicators as ind
 from ..core import quality as q
@@ -58,21 +63,31 @@ def run_scan(
     technical = {}
     quality_issues = {}
     price_meta = {}   # ticker -> {"close": float, "as_of": "YYYY-MM-DD"} con la fecha REAL del dato
+    fetch_errors = {} # ticker/batch -> motivo; un fallo de fuente NO aborta la corrida
+    hist_start = today - timedelta(days=HISTORY_LOOKBACK_DAYS)
 
     for batch in batched(tickers, batch_size):
-        # fundamentales del lote (incremental si hay caché)
+        # fundamentales del lote (incremental si hay caché). Un error de fuente no aborta.
         if bucket:
             throttle(bucket, len(batch))
-        if cache is not None:
-            funds = cache.refresh_fundamentals(provider, batch, now)
-        else:
-            funds = provider.get_fundamentals(batch)
-        # precios + técnico por instrumento
+        try:
+            if cache is not None:
+                funds = cache.refresh_fundamentals(provider, batch, now)
+            else:
+                funds = provider.get_fundamentals(batch)
+        except Exception as e:
+            funds = {}
+            fetch_errors["fundamentals_batch"] = f"{type(e).__name__}: {str(e)[:120]}"
+        # precios + técnico por instrumento (tolerante a timeouts individuales)
         for t in batch:
             if bucket:
                 throttle(bucket, 1)
-            hist = (cache.refresh_history(provider, t, today) if cache is not None
-                    else provider.get_price_history(t))
+            try:
+                hist = (cache.refresh_history(provider, t, today) if cache is not None
+                        else provider.get_price_history(t, start=hist_start))
+            except Exception as e:
+                hist = None
+                fetch_errors[t] = f"{type(e).__name__}: {str(e)[:120]}"
             if hist is not None and len(hist):
                 technical[t] = ind.snapshot(hist)
                 last_idx = hist.index[-1]
@@ -144,6 +159,7 @@ def run_scan(
         "usable_factors": usable,
         "sector_relative": sector_relative,
         "quality_issues": quality_issues,
+        "fetch_errors": fetch_errors,
         "weights": dict(weights) if weights else sc.DEFAULT_WEIGHTS,
         "market_prices": market_prices,
         "fundamentals_payload": fundamentals_payload,

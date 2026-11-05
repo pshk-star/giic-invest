@@ -39,38 +39,61 @@ def run_checks(provider_name: str = "free") -> dict:
     def add(name, ok, detail):
         checks.append({"check": name, "ok": bool(ok), "detail": detail})
 
+    def safe(name, fn):
+        """Ejecuta una verificación; un error (p.ej. timeout) la marca fallida sin
+        abortar las demás."""
+        try:
+            fn()
+        except Exception as e:
+            add(name, False, {"error": type(e).__name__, "message": str(e)[:150]})
+
     # 1) Precios reales con fecha
-    quotes = provider.get_quotes(CHECK_TICKERS)
-    add("precios", len(quotes) >= 2 and all(q.price > 0 for q in quotes.values()),
-        {t: {"price": q.price, "as_of": q.as_of.isoformat(), "is_sample": q.is_sample}
-         for t, q in quotes.items()})
+    def _precios():
+        quotes = provider.get_quotes(CHECK_TICKERS)
+        add("precios", len(quotes) >= 2 and all(q.price > 0 for q in quotes.values()),
+            {t: {"price": q.price, "as_of": q.as_of.isoformat(), "is_sample": q.is_sample}
+             for t, q in quotes.items()})
+    safe("precios", _precios)
 
     # 2) Histórico
-    hist = provider.get_price_history("MSFT")
-    add("historico", hist is not None and len(hist) > 20, {"puntos": int(len(hist) if hist is not None else 0)})
+    def _hist():
+        from datetime import timedelta
+        h = provider.get_price_history("MSFT", start=today - timedelta(days=550))
+        add("historico", h is not None and len(h) > 20, {"puntos": int(len(h) if h is not None else 0)})
+    safe("historico", _hist)
 
     # 3) Fundamentales
-    funds = provider.get_fundamentals(["MSFT"])
-    f = funds.get("MSFT")
-    add("fundamentales", f is not None and (f.net_margin is not None or f.rev_growth_yoy is not None),
-        {"net_margin": getattr(f, "net_margin", None), "rev_growth_yoy": getattr(f, "rev_growth_yoy", None)} if f else None)
+    def _fund():
+        funds = provider.get_fundamentals(["MSFT"])
+        f = funds.get("MSFT")
+        add("fundamentales", f is not None and (f.net_margin is not None or f.rev_growth_yoy is not None),
+            {"net_margin": getattr(f, "net_margin", None), "rev_growth_yoy": getattr(f, "rev_growth_yoy", None)} if f else None)
+    safe("fundamentales", _fund)
 
     # 4) FX
-    rates = provider.get_fx_rates("USD", ["MXN", "EUR"])
-    add("fx", "MXN" in rates and rates.get("MXN", 0) > 0, {k: rates[k] for k in rates if k in ("MXN", "EUR")})
+    def _fx():
+        rates = provider.get_fx_rates("USD", ["MXN", "EUR"])
+        add("fx", "MXN" in rates and rates.get("MXN", 0) > 0, {k: rates[k] for k in rates if k in ("MXN", "EUR")})
+    safe("fx", _fx)
 
     # 5) Scanner + validación sobre un universo reducido.
     # Con datos reales exigimos cobertura fundamental alta (0.4); el harness offline
     # (sample) usa un umbral menor porque sus fundamentales son intencionalmente ralos.
-    universe = get_universe(include_etfs=True)[:20]
-    min_cov = 0.2 if provider.is_sample else 0.4
-    result = run_scan_engine(provider, universe, cache=None, today=today, top=10,
-                             min_coverage=min_cov, sector_relative=True)
-    allow_sample = provider.is_sample
-    ok_valid, reasons = validate_scan_result(result, today, min_evaluated=5, allow_sample=allow_sample)
-    add("scanner_validez", ok_valid and len(result.get("ranking", [])) > 0,
-        {"evaluated": result.get("evaluated"), "usable_factors": result.get("usable_factors"),
-         "reasons": reasons, "top3": [(r["ticker"], r["composite"]) for r in result.get("ranking", [])[:3]]})
+    result = {}
+
+    def _scan():
+        nonlocal result
+        universe = get_universe(include_etfs=True)[:20]
+        min_cov = 0.2 if provider.is_sample else 0.4
+        result = run_scan_engine(provider, universe, cache=None, today=today, top=10,
+                                 min_coverage=min_cov, sector_relative=True)
+        ok_valid, reasons = validate_scan_result(result, today, min_evaluated=5,
+                                                 allow_sample=provider.is_sample)
+        add("scanner_validez", ok_valid and len(result.get("ranking", [])) > 0,
+            {"evaluated": result.get("evaluated"), "usable_factors": result.get("usable_factors"),
+             "reasons": reasons, "fetch_errors": result.get("fetch_errors"),
+             "top3": [(r["ticker"], r["composite"]) for r in result.get("ranking", [])[:3]]})
+    safe("scanner_validez", _scan)
 
     all_ok = all(c["ok"] for c in checks)
     return {"provider": provider_name, "using_sample_data": result.get("using_sample_data"),

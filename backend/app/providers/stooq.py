@@ -57,8 +57,10 @@ class StooqProvider(MarketDataProvider):
     name = "stooq"
     is_sample = False
 
-    def __init__(self, timeout: float = 20.0):
+    def __init__(self, timeout: float = 30.0, retries: int = 2):
         import httpx
+        self._httpx = httpx
+        self.retries = retries
         self._client = httpx.Client(timeout=timeout,
                                     headers={"User-Agent": "GIIC/0.3 (personal research)"})
 
@@ -68,9 +70,15 @@ class StooqProvider(MarketDataProvider):
             params["d1"] = start.strftime("%Y%m%d")
         if end:
             params["d2"] = end.strftime("%Y%m%d")
-        r = self._client.get(BASE, params=params)
-        r.raise_for_status()
-        return r.text
+        last = None
+        for _ in range(max(1, self.retries)):
+            try:
+                r = self._client.get(BASE, params=params)
+                r.raise_for_status()
+                return r.text
+            except Exception as e:  # timeout/red transitoria: reintenta una vez
+                last = e
+        raise last
 
     def get_price_history(self, ticker, start: Optional[date] = None, end: Optional[date] = None) -> pd.Series:
         return parse_stooq_csv(self._download(to_stooq_symbol(ticker), start, end), ticker)
