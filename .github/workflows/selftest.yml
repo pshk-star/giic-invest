@@ -1,0 +1,28 @@
+name: GIIC selftest (datos reales)
+
+# Comprueba con DATOS REALES que las fuentes gratuitas responden y que el scanner
+# produce un ranking válido, SIN escribir en Supabase y SIN tu cartera. Córrelo una
+# vez (manual) antes de introducir tus posiciones. GitHub enmascara los secretos en
+# los registros; este job solo imprime un reporte de checks, nunca el entorno.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-job.txt
+      - name: E2E con datos reales (sin escribir)
+        env:
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
+        run: python -m app.jobs.selftest --provider free

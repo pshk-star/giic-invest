@@ -1,0 +1,44 @@
+name: CI
+
+# Pruebas automáticas en cada push/PR: backend (pytest) y frontend (vitest + build).
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Pruebas unitarias (núcleo, seguridad, calidad, scanner, jobs, proveedores)
+        run: pytest -q --ignore=tests/integration
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Pruebas de paridad de la analítica (vitest)
+        run: npm test
+      - name: Build de producción
+        env:
+          VITE_SUPABASE_URL: https://example.supabase.co
+          VITE_SUPABASE_ANON_KEY: ci-placeholder
+        run: npm run build

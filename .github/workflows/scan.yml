@@ -1,0 +1,40 @@
+name: GIIC scan
+
+# Actualiza GIIC sin tu computadora: corre el scanner y escribe en Supabase.
+# - cron: días hábiles ~22:40 UTC (después del cierre de EE. UU.).
+# - workflow_dispatch: ejecución manual desde la pestaña Actions.
+# El cron también mantiene activo el proyecto Supabase (evita la pausa por inactividad).
+on:
+  schedule:
+    - cron: "40 22 * * 1-5"
+  workflow_dispatch: {}
+# Producción SIEMPRE usa datos reales ('free'). No se expone opción 'sample': el job
+# además rechaza por diseño publicar datos de ejemplo en Supabase.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: giic-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Instalar dependencias del job
+        run: pip install -r requirements-job.txt
+      - name: Ejecutar scanner y publicar en Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
+          BASE_CURRENCY: ${{ vars.BASE_CURRENCY || 'USD' }}
+        run: python -m app.jobs.run_scan --provider free --top 50
