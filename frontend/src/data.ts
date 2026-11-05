@@ -3,6 +3,7 @@
 import { supabase } from "./lib/supabase";
 import type { ETFHolding, Position, PriceInfo } from "./core/analytics";
 import type { InstrumentMeta, Txn } from "./core/portfolio-tx";
+import type { FundamentalsPayload } from "./core/valuation";
 
 export interface InstrumentRow {
   ticker: string;
@@ -50,12 +51,12 @@ export async function searchInstruments(query: string): Promise<InstrumentRow[]>
 export async function getInstruments(tickers: string[]): Promise<Record<string, InstrumentMeta>> {
   if (tickers.length === 0) return {};
   const { data, error } = await supabase
-    .from("instruments").select("ticker,name,asset_class,status,currency,sector").in("ticker", tickers);
+    .from("instruments").select("ticker,name,asset_class,status,currency,sector,exchange").in("ticker", tickers);
   if (error) throw error;
   const out: Record<string, InstrumentMeta> = {};
   for (const r of data ?? [])
     out[r.ticker] = { name: r.name, asset_class: r.asset_class, status: r.status,
-                      currency: r.currency, sector: r.sector };
+                      currency: r.currency, sector: r.sector, exchange: r.exchange };
   return out;
 }
 
@@ -80,6 +81,15 @@ export async function saveSettings(s: Partial<Settings>): Promise<void> {
   // upsert de la fila única del usuario (user_id lo pone el default auth.uid()).
   const { error } = await supabase.from("settings").upsert(s, { onConflict: "user_id" });
   if (error) throw error;
+}
+
+export async function getFundamentals(tickers: string[]): Promise<Record<string, FundamentalsPayload>> {
+  if (tickers.length === 0) return {};
+  const { data, error } = await supabase.from("fundamentals").select("ticker,payload").in("ticker", tickers);
+  if (error) throw error;
+  const out: Record<string, FundamentalsPayload> = {};
+  for (const r of data ?? []) out[r.ticker] = (r.payload ?? {}) as FundamentalsPayload;
+  return out;
 }
 
 export interface ScanRow {

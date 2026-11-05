@@ -7,11 +7,14 @@ import { CommandCenter } from "./pages/CommandCenter";
 import { Portfolio } from "./pages/Portfolio";
 import { Advisor } from "./pages/Advisor";
 import { Opportunities } from "./pages/Opportunities";
+import { Research } from "./pages/Research";
+import { CompanyFicha } from "./pages/Ficha";
 
 const tabs = [
   { to: "/command", label: "Dashboard" },
   { to: "/portfolio", label: "Mi Cartera" },
   { to: "/advisor", label: "Investment Advisor" },
+  { to: "/research", label: "Research" },
   { to: "/opportunities", label: "Oportunidades" },
 ];
 
@@ -72,6 +75,8 @@ export default function App() {
           <Route path="/command" element={<CommandCenter />} />
           <Route path="/portfolio" element={<Portfolio />} />
           <Route path="/advisor" element={<Advisor />} />
+          <Route path="/research" element={<Research />} />
+          <Route path="/research/:ticker" element={<CompanyFicha />} />
           <Route path="/opportunities" element={<Opportunities />} />
         </Routes>
       </main>

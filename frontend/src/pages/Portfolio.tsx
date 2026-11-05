@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { Panel, Stat } from "../components/Panel";
 import {
   addTransaction, deleteTransaction, getInstruments, getPrices, getTransactions,
@@ -212,7 +213,7 @@ export function Portfolio() {
               <tbody>
                 {positions.filter((p) => p.qty > 1e-9).map((p) => (
                   <tr key={p.ticker} className="border-b border-term-border last:border-0">
-                    <td className="py-2 font-mono font-semibold">{p.ticker}</td>
+                    <td className="py-2"><Link to={`/research/${p.ticker}`} className="font-mono font-semibold text-term-accent hover:underline">{p.ticker}</Link></td>
                     <td className="max-w-[180px] truncate text-term-muted">{p.name ?? "—"}</td>
                     <td className="text-right tabnum">{num(p.qty, 4)}</td>
                     <td className="text-right tabnum">{money(p.avgCost)}</td>

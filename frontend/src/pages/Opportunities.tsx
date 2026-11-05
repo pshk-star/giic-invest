@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { Panel } from "../components/Panel";
 import { getLatestRun, getLatestScan, type ScanRow } from "../data";
 import { num } from "../format";
@@ -68,7 +69,7 @@ export function Opportunities() {
                 {scan.map((r) => (
                   <tr key={r.ticker} className="border-b border-term-border last:border-0">
                     <td className="py-2 tabnum text-term-muted">{r.rank}</td>
-                    <td className="font-mono font-semibold">{r.ticker}</td>
+                    <td><Link to={`/research/${r.ticker}`} className="font-mono font-semibold text-term-accent hover:underline">{r.ticker}</Link></td>
                     <td className="text-term-muted">{r.sector ?? "—"}</td>
                     <td>
                       <div className="flex items-center gap-2">
