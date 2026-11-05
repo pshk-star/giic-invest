@@ -138,7 +138,7 @@ class EDGARProvider(MarketDataProvider):
     name = "edgar"
     is_sample = False
 
-    def __init__(self, user_agent: str, timeout: float = 30.0, retries: int = 2):
+    def __init__(self, user_agent: str, timeout: float = 15.0, retries: int = 2):
         if not user_agent or "@" not in user_agent:
             raise ValueError("EDGAR exige User-Agent con email de contacto (política SEC).")
         import httpx

@@ -57,7 +57,7 @@ class StooqProvider(MarketDataProvider):
     name = "stooq"
     is_sample = False
 
-    def __init__(self, timeout: float = 30.0, retries: int = 2):
+    def __init__(self, timeout: float = 15.0, retries: int = 2):
         import httpx
         self._httpx = httpx
         self.retries = retries

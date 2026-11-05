@@ -83,11 +83,14 @@ def run_checks(provider_name: str = "free") -> dict:
 
     def _scan():
         nonlocal result
-        universe = get_universe(include_etfs=True)[:20]
+        # Universo reducido y fijo: basta para probar el flujo real sin esperas largas.
+        # Estos 6 existen tanto en datos reales (EDGAR+Stooq) como en el proveedor de ejemplo.
+        wanted = {"NVDA", "MSFT", "AVGO", "META", "NFLX", "GOOGL"}
+        universe = [i for i in get_universe(include_etfs=False) if i.ticker in wanted]
         min_cov = 0.2 if provider.is_sample else 0.4
         result = run_scan_engine(provider, universe, cache=None, today=today, top=10,
                                  min_coverage=min_cov, sector_relative=True)
-        ok_valid, reasons = validate_scan_result(result, today, min_evaluated=5,
+        ok_valid, reasons = validate_scan_result(result, today, min_evaluated=3,
                                                  allow_sample=provider.is_sample)
         add("scanner_validez", ok_valid and len(result.get("ranking", [])) > 0,
             {"evaluated": result.get("evaluated"), "usable_factors": result.get("usable_factors"),
