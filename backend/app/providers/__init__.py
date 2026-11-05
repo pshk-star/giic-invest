@@ -28,13 +28,20 @@ def get_provider(name: str, **kwargs) -> "MarketDataProvider":
     if name == "frankfurter":
         from .frankfurter import FrankfurterProvider
         return FrankfurterProvider(**kwargs)
+    if name == "yahoo":
+        from .yahoo import YahooProvider
+        return YahooProvider(**kwargs)
     if name == "free":
-        # Arquitectura $0: Stooq (precios) + EDGAR (fundamentales) + Frankfurter (FX).
-        from .composite import CompositeProvider
+        # Arquitectura $0: precios Yahoo (respaldo Stooq) + EDGAR (fundamentales)
+        # + Frankfurter (FX). Yahoo es primario porque Stooq suele bloquear IPs de
+        # datacenter (GitHub Actions).
+        from .composite import CompositeProvider, FallbackPrices
+        from .yahoo import YahooProvider
         from .stooq import StooqProvider
         from .edgar import EDGARProvider
         from .frankfurter import FrankfurterProvider
         ua = kwargs.get("edgar_user_agent") or kwargs.get("user_agent")
-        return CompositeProvider(StooqProvider(), EDGARProvider(user_agent=ua), FrankfurterProvider())
+        prices = FallbackPrices([YahooProvider(), StooqProvider()])
+        return CompositeProvider(prices, EDGARProvider(user_agent=ua), FrankfurterProvider())
     raise ValueError(f"Proveedor desconocido: {name!r}. "
                      "Usa 'sample', 'eodhd', 'fmp', 'stooq', 'edgar', 'frankfurter' o 'free'.")

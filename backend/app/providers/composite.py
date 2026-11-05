@@ -16,6 +16,49 @@ from ..core.types import ETFHolding, Fundamentals, Instrument, Quote
 from .base import MarketDataProvider
 
 
+class FallbackPrices(MarketDataProvider):
+    """Fuente de precios con respaldo: prueba varias en orden y usa la primera que
+    devuelva datos. Permite que, si una (p.ej. Stooq) es bloqueada desde una IP de
+    datacenter, otra (p.ej. Yahoo) cubra sin tumbar el job."""
+    name = "fallback-prices"
+    is_sample = False
+
+    def __init__(self, providers: List[MarketDataProvider]):
+        self.providers = providers
+
+    def get_price_history(self, ticker, start=None, end=None) -> pd.Series:
+        for p in self.providers:
+            try:
+                s = p.get_price_history(ticker, start, end)
+            except Exception:
+                s = None
+            if s is not None and len(s):
+                return s
+        return pd.Series(dtype=float)
+
+    def get_quotes(self, tickers: List[str]) -> Dict[str, Quote]:
+        out: Dict[str, Quote] = {}
+        remaining = list(tickers)
+        for p in self.providers:
+            if not remaining:
+                break
+            try:
+                got = p.get_quotes(remaining)
+            except Exception:
+                got = {}
+            out.update(got)
+            remaining = [t for t in remaining if t not in out]
+        return out
+
+    def get_fundamentals(self, tickers): return {}
+    def get_etf_holdings(self, etf_ticker): return []
+    def list_universe(self, exchanges=None, limit=None): return []
+
+    def health(self) -> dict:
+        return {"provider": self.name, "is_sample": False, "ok": True,
+                "sources": [p.name for p in self.providers]}
+
+
 class CompositeProvider(MarketDataProvider):
     name = "composite(free)"
     is_sample = False

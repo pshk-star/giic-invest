@@ -9,6 +9,7 @@ import pandas as pd
 from app.providers.stooq import parse_stooq_csv, parse_stooq_volume, to_stooq_symbol
 from app.providers.frankfurter import parse_frankfurter
 from app.providers.edgar import parse_companyfacts
+from app.providers.yahoo import parse_yahoo_chart
 
 
 # ---------------- Stooq ----------------
@@ -51,6 +52,32 @@ def test_parse_frankfurter_inverts_to_base_per_cur():
 
 def test_parse_frankfurter_empty():
     assert parse_frankfurter({}, "USD") == {"USD": 1.0}
+
+
+# ---------------- Yahoo Finance chart ----------------
+def test_parse_yahoo_chart_prefers_adjclose():
+    payload = {"chart": {"result": [{
+        "timestamp": [1762300800, 1762387200],  # dos días
+        "indicators": {
+            "quote": [{"close": [180.0, 182.0]}],
+            "adjclose": [{"adjclose": [179.0, 181.0]}],
+        },
+    }], "error": None}}
+    s = parse_yahoo_chart(payload, "NVDA")
+    assert len(s) == 2
+    assert s.iloc[0] == 179.0 and s.iloc[-1] == 181.0  # usa adjclose, no close
+    assert list(s.index) == sorted(s.index)
+
+
+def test_parse_yahoo_chart_skips_null_and_empty():
+    payload = {"chart": {"result": [{
+        "timestamp": [1762300800, 1762387200],
+        "indicators": {"quote": [{"close": [None, 182.0]}], "adjclose": [{}]},
+    }], "error": None}}
+    s = parse_yahoo_chart(payload, "X")
+    assert len(s) == 1 and s.iloc[0] == 182.0
+    assert len(parse_yahoo_chart({}, "X")) == 0
+    assert len(parse_yahoo_chart({"chart": {"result": None}}, "X")) == 0
 
 
 # ---------------- EDGAR company facts ----------------
