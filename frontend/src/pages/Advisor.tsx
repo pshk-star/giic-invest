@@ -35,8 +35,10 @@ export function Advisor() {
         .map((p) => ({
           ticker: p.ticker, name: p.name,
           sector: instruments[p.ticker]?.sector ?? null,
+          assetClass: instruments[p.ticker]?.asset_class ?? p.asset_class ?? null,
           marketValue: p.marketValue,
           weight: totals.weights[p.ticker] ?? 0,
+          priceAsOf: p.priceAsOf,
         }));
       setHoldings(hs);
       setScan(rows.map(scanRowToInfo));
@@ -115,7 +117,9 @@ export function Advisor() {
         <>
           {/* Asignación de capital */}
           <Panel title={`¿Dónde evaluar ${money(cash)}?`}>
-            <p className="mb-3 text-sm text-term-muted">{report.allocation.note}</p>
+            <p className="mb-2 text-sm text-term-muted">{report.allocation.note}</p>
+            <p className="mb-1 text-xs text-term-faint">{report.allocation.basisNote}</p>
+            <p className="mb-3 text-xs text-term-faint">{report.allocation.method}</p>
             {report.allocation.items.length > 0 && (
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[620px] text-sm">
@@ -149,6 +153,31 @@ export function Advisor() {
             </div>
           </Panel>
 
+          {/* Cumplimiento residual */}
+          <Panel title="¿Esta sugerencia deja tu cartera dentro de tus límites?">
+            {report.compliance.ok ? (
+              <p className="text-sm text-term-good">
+                Sí: tras la sugerencia ningún activo ni sector superaría tus límites.
+              </p>
+            ) : (
+              <div className="grid gap-1">
+                <p className="text-sm text-term-warn">
+                  No del todo — estos incumplimientos <b>persisten</b> y aportar capital nuevo no los resuelve:
+                </p>
+                <ul className="flex flex-col gap-0.5 text-xs text-term-muted">
+                  {report.compliance.remaining.map((r, i) => <li key={i}>• {r}</li>)}
+                </ul>
+              </div>
+            )}
+          </Panel>
+
+          {/* Alternativas */}
+          <Panel title="Alternativas a considerar">
+            <ul className="flex flex-col gap-2 text-sm text-term-muted">
+              {report.alternatives.map((a, i) => <li key={i}>• {a}</li>)}
+            </ul>
+          </Panel>
+
           {/* Timing */}
           <Panel title="¿Comprar, esperar o por tramos?">
             <ul className="flex flex-col gap-2 text-sm text-term-muted">
@@ -165,8 +194,12 @@ export function Advisor() {
             )}
           </Panel>
 
-          {/* Ideas nuevas */}
-          <Panel title="Nuevas ideas a investigar (fuera de tu cartera)">
+          {/* Ranking de oportunidades (separado de la asignación) */}
+          <Panel title="Ranking de oportunidades (fuera de tu cartera)">
+            <p className="mb-2 text-xs text-term-faint">
+              Orden por atractivo relativo del scanner. Es un <b>ranking</b>, no una instrucción de
+              compra ni un reparto de capital — eso se decide arriba, por diversificación.
+            </p>
             {report.ideas.length === 0 ? (
               <p className="text-sm text-term-muted">Ninguna no-tenencia supera tu umbral de score hoy.</p>
             ) : (
@@ -174,7 +207,15 @@ export function Advisor() {
             )}
           </Panel>
 
-          <Panel title="Datos utilizados">
+          {report.dataGaps.length > 0 && (
+            <Panel title="Datos faltantes">
+              <ul className="flex flex-col gap-1 text-xs text-term-warn">
+                {report.dataGaps.map((d, i) => <li key={i}>• {d}</li>)}
+              </ul>
+            </Panel>
+          )}
+
+          <Panel title="Datos utilizados (fecha y procedencia)">
             <ul className="flex flex-col gap-1 text-xs text-term-muted">
               {report.dataUsed.map((d, i) => <li key={i}>• {d}</li>)}
             </ul>
