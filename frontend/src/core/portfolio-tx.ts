@@ -34,6 +34,7 @@ export interface InstrumentMeta {
   asset_class: string | null;
   status: string | null;
   currency?: string | null;
+  sector?: string | null;
 }
 
 export interface DerivedPosition {

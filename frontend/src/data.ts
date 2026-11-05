@@ -45,12 +45,36 @@ export async function searchInstruments(query: string): Promise<InstrumentRow[]>
 export async function getInstruments(tickers: string[]): Promise<Record<string, InstrumentMeta>> {
   if (tickers.length === 0) return {};
   const { data, error } = await supabase
-    .from("instruments").select("ticker,name,asset_class,status,currency").in("ticker", tickers);
+    .from("instruments").select("ticker,name,asset_class,status,currency,sector").in("ticker", tickers);
   if (error) throw error;
   const out: Record<string, InstrumentMeta> = {};
   for (const r of data ?? [])
-    out[r.ticker] = { name: r.name, asset_class: r.asset_class, status: r.status, currency: r.currency };
+    out[r.ticker] = { name: r.name, asset_class: r.asset_class, status: r.status,
+                      currency: r.currency, sector: r.sector };
   return out;
+}
+
+export interface Settings {
+  base_currency: string;
+  capital_available: number;
+  monthly_contribution: number;
+  risk_tolerance: string;
+  horizon_years: number;
+  max_weight_per_asset: number;
+  max_weight_per_sector: number;
+  min_cash: number;
+}
+
+export async function getSettings(): Promise<Settings | null> {
+  const { data, error } = await supabase.from("settings").select("*").limit(1);
+  if (error) throw error;
+  return (data?.[0] as Settings) ?? null;
+}
+
+export async function saveSettings(s: Partial<Settings>): Promise<void> {
+  // upsert de la fila única del usuario (user_id lo pone el default auth.uid()).
+  const { error } = await supabase.from("settings").upsert(s, { onConflict: "user_id" });
+  if (error) throw error;
 }
 
 export interface ScanRow {
