@@ -1,6 +1,8 @@
-"""Calendario bursátil app-side: evaluate_on se calcula avanzando sobre SESIONES reales
-(las fechas efectivamente presentes en price_history), que ya excluyen fines de semana y
-feriados. La BD solo garantiza evaluate_on > as_of; la correspondencia exacta vive aquí.
+"""Calendario bursátil app-side: evaluate_on se calcula avanzando sobre SESIONES oficiales
+NYSE/Nasdaq (us_market_calendar.sessions(): feriados por regla + observancia + cierres
+ad-hoc), NO sobre las fechas de price_history. La BD solo garantiza evaluate_on > as_of;
+la correspondencia exacta vive aquí. price_history se usa solo para detectar huecos de
+precio en sesiones válidas (missing_price_sessions), no para definir el calendario.
 """
 from __future__ import annotations
 

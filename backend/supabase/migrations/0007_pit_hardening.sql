@@ -10,9 +10,10 @@
 --      UNIQUE (model_name, model_version, ticker, as_of, horizon_days) — no cualquiera que
 --      contenga horizon_days.
 --  (3) Integridad: CHECK (evaluate_on > as_of). La correspondencia exacta de evaluate_on con
---      el calendario bursátil se garantiza en la APLICACIÓN (se calcula avanzando sobre las
---      SESIONES reales de price_history, que ya excluyen fines de semana y feriados); la BD
---      garantiza la monotonicidad. Prueba automática app-side (test_calendar.py).
+--      el calendario bursátil se garantiza en la APLICACIÓN con un calendario OFICIAL
+--      NYSE/Nasdaq (app/research/us_market_calendar.py: feriados por regla + observancia +
+--      cierres ad-hoc), NO con las fechas de price_history; la BD garantiza la monotonicidad.
+--      Pruebas app-side: test_us_market_calendar.py (feriados reales 2026) y test_calendar.py.
 --  (4) Experimentos: se añade run_id; el UNIQUE incluye origin+run_id, de modo que distintas
 --      corridas legítimas de backtest coexisten sin sobrescribir, y re-ejecutar la MISMA
 --      corrida es idempotente (ON CONFLICT DO NOTHING). Producción se identifica con
