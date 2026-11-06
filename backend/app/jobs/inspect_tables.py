@@ -131,6 +131,15 @@ def run() -> dict:
         except Exception as e:
             hist_validation[t] = {"error": f"{type(e).__name__}: {str(e)[:80]}"}
 
+    # Identidad PERSISTIDA en instruments (verificación de columnas pobladas).
+    instr_identity = []
+    try:
+        instr_identity = cli.get(f"{base}/instruments", params={
+            "select": "ticker,country_issuer,country_listing,quote_currency,report_currency,instrument_type,adr_ratio,cik,figi,isin,lei,identity_as_of",
+            "ticker": "in.(NVDA,TSM,ASML,VOO,MELI)"}).json()
+    except Exception as e:
+        instr_identity = [{"error": f"{type(e).__name__}"}]
+
     # Conteo de predicciones A/B/C (deben permanecer en 309, intactas).
     pred_count = None
     try:
@@ -146,6 +155,7 @@ def run() -> dict:
         "tables": out, "fx_rates_rows": fx,
         "predictions_count": pred_count,
         "instruments_columns": instr_cols,
+        "instruments_identity_persisted": instr_identity,
         "fundamentals_target": fundamentals,
         "prices_target": prices_now,
         "asml_price_history_latest": asml_hist,
