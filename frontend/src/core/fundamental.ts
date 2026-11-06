@@ -272,7 +272,8 @@ export function valuateCompany(input: FundamentalInput): CompanyValuation {
     // Consistencia EPS/precio/moneda/ADR (del backend si está disponible).
     const consistencyNotes: string[] = [];
     if (f.eps_consistent === false) consistencyNotes.push(`EPS×acciones no cuadra con la utilidad neta (ratio ${f.eps_check_ratio ?? "n/d"}): posible desajuste de acciones/ADR/periodo — tratar el rendimiento con cautela.`);
-    if (f.ni_reconstructed) consistencyNotes.push(`Utilidad neta reconstruida como EPS×acciones diluidas (la etiqueta directa no existía en el período de referencia ${f.as_of ?? ""}); márgenes/ROE derivados de ese valor.`);
+    if (f.ni_reconstructed) consistencyNotes.push(`Utilidad neta reconstruida como EPS×acciones diluidas (la etiqueta directa no existía en el período de referencia ${f.as_of ?? ""}); consistencia NO verificada de forma independiente.`);
+    if (f.eps_source && f.eps_source !== "edgar") consistencyNotes.push(`EPS de fuente complementaria (${f.eps_source}, base ${f.eps_basis ?? "n/d"}), no EDGAR oficial; verificar antes de usar para decisiones.`);
     if (f.shares_source && f.shares_source.includes("obsoleta")) consistencyNotes.push(`Acciones vigentes de origen "${f.shares_source}": la portada EDGAR estaba obsoleta; market cap aproximado.`);
     if (f.currency && f.currency !== "USD") consistencyNotes.push(`Fundamentales en ${f.currency} convertidos a USD (EPS por ADR); verificar FX/relación ADR antes de comparar con el precio.`);
     limitations.push(

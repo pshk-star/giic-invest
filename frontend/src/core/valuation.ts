@@ -10,6 +10,11 @@ export interface FundamentalsPayload {
   eps_consistent?: boolean | null; // identidad EPS×acciones≈utilidad neta
   eps_check_ratio?: number | null; // EPS×acciones / utilidad neta (≈1 si coherente)
   ni_reconstructed?: boolean;     // utilidad neta reconstruida de EPS×acciones (etiqueta directa ausente)
+  ni_source_concept?: string | null;  // concepto EDGAR de la utilidad neta (o "reconstruido: ...")
+  ni_period?: string | null;      // período fiscal de la utilidad neta
+  consistency_independent?: boolean;  // true sólo si la consistencia usó NI reportado (no reconstruido)
+  eps_source?: string | null;     // edgar | yahoo:quote | ...
+  fallback_sources?: string | null;  // campos tomados de fallback y su origen/fecha
   shares_source?: string | null;  // procedencia de las acciones vigentes
 
   pe_forward: number | null;      // no disponible gratis (EDGAR) -> null

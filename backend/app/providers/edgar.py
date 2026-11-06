@@ -68,6 +68,63 @@ def _at(points: List[Tuple[date, float]], ref: Optional[date], tol_days: int = 2
         if gap <= tol_days and (best is None or gap < best[0]):
             best = (gap, v)
     return best[1] if best else None
+
+
+def _concept_at(facts, taxonomy, names, unit, ref) -> Tuple[Optional[float], Optional[str]]:
+    """Primer concepto de la lista con valor ANUAL en el período de referencia → (valor, concepto).
+    Permite registrar la PROCEDENCIA exacta de la utilidad neta reportada (no reconstruida)."""
+    for n in names:
+        v = _at(_annual_points(_concept(facts, taxonomy, n, unit)), ref)
+        if v is not None:
+            return v, n
+    return None, None
+
+
+# --- EPS TTM a prueba de splits (Control 2) ---------------------------------------
+# El EPS por acción NO es sumable entre trimestres con bases de acciones distintas (p. ej.
+# antes/después de un split 10:1). La forma correcta y split-INVARIANTE es sumar la UTILIDAD
+# NETA trimestral (montos absolutos, invariantes al split) de 4 trimestres de 3 MESES (no YTD)
+# y dividir por las acciones diluidas VIGENTES. Así el split no contamina el resultado.
+def quarterly_3m_points(unit_rows: list) -> List[Tuple[date, date, float, date]]:
+    """Puntos TRIMESTRALES de 3 meses (start,end,val,filed); filed más reciente gana por período."""
+    out = {}
+    for r in unit_rows or []:
+        s, e, v = _parse_date(r.get("start")), _parse_date(r.get("end")), r.get("val")
+        if v is None or not s or not e:
+            continue
+        if 80 <= (e - s).days <= 100:
+            filed = _parse_date(r.get("filed")) or date.min
+            if e not in out or filed >= out[e][3]:
+                out[e] = (s, e, float(v), filed)
+    return [out[k][:3] + (out[k][3],) for k in sorted(out)]
+
+
+def eps_ttm_from_quarterly_ni(ni_3m_points: List[Tuple[date, date, float, date]],
+                              diluted_shares: Optional[float], n: int = 4) -> Optional[dict]:
+    """EPS TTM split-invariante = Σ(utilidad neta de los últimos 4 trimestres de 3m) / acciones
+    diluidas vigentes. Exige 4 trimestres CONSECUTIVOS y sin solapamiento (no YTD). None si faltan."""
+    if not ni_3m_points or not diluted_shares or diluted_shares <= 0 or len(ni_3m_points) < n:
+        return None
+    last = ni_3m_points[-n:]
+    # sin solapamiento: cada inicio ~ fin del anterior (trimestres contiguos)
+    for i in range(1, len(last)):
+        gap = (last[i][0] - last[i - 1][1]).days
+        if gap > 10:            # hueco entre trimestres -> serie incompleta
+            return None
+    ni_ttm = sum(p[2] for p in last)
+    return {"eps_ttm": ni_ttm / diluted_shares, "ni_ttm": ni_ttm,
+            "start": last[0][0].isoformat(), "end": last[-1][1].isoformat(), "n_quarters": n}
+
+
+def detect_eps_split_mixing(eps_quarterly_points: List[Tuple[date, float]],
+                            split_dates: List[date]) -> bool:
+    """True si una serie de EPS POR ACCIÓN trimestral cruza una fecha de split (bases no homogéneas).
+    Señala que NO se deben sumar esos EPS por acción directamente."""
+    if not eps_quarterly_points or not split_dates:
+        return False
+    ends = [d for d, _ in eps_quarterly_points]
+    lo, hi = min(ends), max(ends)
+    return any(lo < sd <= hi for sd in split_dates)
 # ADR: 1 ADR = N acciones ordinarias (hechos verificables, no estimaciones).
 ADR_RATIO = {"TSM": 5.0, "ASML": 1.0}
 
@@ -166,7 +223,8 @@ def parse_companyfacts(facts: dict, ticker: str,
                        price: Optional[float] = None,
                        shares: Optional[float] = None,
                        fx_map: Optional[Dict[str, float]] = None,
-                       adr_ratio: Optional[float] = None) -> Fundamentals:
+                       adr_ratio: Optional[float] = None,
+                       fallback: Optional[dict] = None) -> Fundamentals:
     """Construye Fundamentals desde company facts de EDGAR. Campos ausentes => None.
 
     Cubre us-gaap (USD) e ifrs-full (emisores 20-F; divisa detectada, p. ej. EUR/TWD).
@@ -230,25 +288,31 @@ def parse_companyfacts(facts: dict, ticker: str,
     capex_l = _at(capex, ref)
     wdil_l = _at(wdil, ref)
 
-    # Utilidad neta EN EL PERÍODO de referencia. Si la etiqueta directa no existe en ese
-    # período (p. ej. MA dejó de etiquetar NetIncomeLoss), se RECONSTRUYE como EPS×acciones
-    # diluidas (definición de EPS), nunca mezclando un período antiguo.
-    ni_direct = _at(ni, ref)
+    # Utilidad neta REPORTADA en el período de referencia, con su CONCEPTO fuente (independiente
+    # del EPS). Se busca el concepto correcto (no sólo NetIncomeLoss). Si NINGÚN concepto directo
+    # existe en ese período (p. ej. MA dejó de etiquetarlo), se RECONSTRUYE = EPS×acciones diluidas
+    # — pero ESO NO es una validación independiente y se marca como tal.
+    ni_direct, ni_source_concept = _concept_at(facts, tax, M["ni"], ccy, ref)
     ni_reconstructed = False
     ni_l = ni_direct
+    ni_period = ref.isoformat() if (ni_direct is not None and ref) else None
     if ni_l is None and eps_l is not None and wdil_l:
         ni_l = eps_l * wdil_l
         ni_reconstructed = True
+        ni_source_concept = "reconstruido: EPS_diluido × acciones_ponderadas_diluidas"
+        ni_period = ref.isoformat() if ref else None
     as_of = ref.isoformat() if ref else None
 
-    # Consistencia: identidad EPS × acciones diluidas ≈ utilidad neta (misma divisa, mismo período).
+    # Consistencia INDEPENDIENTE: SÓLO cuando la utilidad neta es REPORTADA (no reconstruida) y hay
+    # acciones ponderadas diluidas → se comparan DOS hechos EDGAR independientes (NI reportado vs
+    # EPS×acciones). Si el NI es reconstruido, NO se declara consistencia (sería circular).
     eps_consistent = None
     eps_check_ratio = None
-    if ni_reconstructed:
-        eps_consistent, eps_check_ratio = True, 1.0      # por construcción
-    elif eps_l is not None and wdil_l and ni_direct not in (None, 0):
+    consistency_independent = False
+    if (not ni_reconstructed) and eps_l is not None and wdil_l and ni_direct not in (None, 0):
         eps_check_ratio = (eps_l * wdil_l) / ni_direct
         eps_consistent = abs(eps_check_ratio - 1.0) <= 0.15
+        consistency_independent = True
 
     # Adimensionales (válidos en cualquier divisa) SOLO si numerador/denominador son del mismo período.
     net_margin = (ni_l / rev_l) if (ni_l is not None and rev_l) else None
@@ -280,6 +344,27 @@ def parse_companyfacts(facts: dict, ticker: str,
     else:
         eps_for_pe, eps_conv = eps_l, fx
     eps_usd = (eps_for_pe * adr * eps_conv) if (eps_for_pe is not None and eps_conv) else None
+    eps_source = "edgar" if eps_usd is not None else None
+    eps_basis = "reported_annual" if eps_usd is not None else None
+
+    # --- FALLBACK MULTIFUENTE CONTROLADO (p. ej. Yahoo) ---
+    # SÓLO cuando EDGAR no da el dato; NUNCA sobrescribe un dato oficial; exige coherencia de
+    # moneda (USD, el ADR/acción cotiza en USD) y precio; registra fuente/fecha/base; no inventa
+    # si el fallback tampoco tiene cobertura. El EPS de Yahoo (trailingEps) es TTM por ADR/acción.
+    def _fin(x):
+        return isinstance(x, (int, float)) and x == x and x not in (float("inf"), float("-inf"))
+    fb = fallback or {}
+    fallback_sources: List[str] = []
+    if eps_usd is None and price:
+        fe, fc = fb.get("eps_ttm"), (fb.get("currency") or "").upper()
+        if _fin(fe) and fe > 0 and fc in ("", "USD"):
+            eps_usd, eps_source, eps_basis = float(fe), (fb.get("source") or "fallback"), "ttm"
+            fallback_sources.append(f"eps_ttm<-{eps_source}@{fb.get('as_of')}")
+    if (shares is None or (shares_source and "obsoleta" in shares_source)) and _fin(fb.get("shares")) and fb["shares"] > 0:
+        shares = float(fb["shares"])
+        shares_source = (fb.get("source") or "fallback") + ":shares"
+        fallback_sources.append(f"shares<-{fb.get('source')}@{fb.get('as_of')}")
+
     adr_count = (shares / adr) if shares else None
     market_cap = (price * adr_count) if (price and adr_count) else None
     fcf = (ocf_l - capex_l) if (ocf_l is not None and capex_l is not None) else None
@@ -290,11 +375,16 @@ def parse_companyfacts(facts: dict, ticker: str,
     return Fundamentals(
         ticker=ticker,
         pe_ttm=pe_ttm,
-        eps=eps_usd,                # EPS reportado (USD por ADR) en el período de referencia
-        eps_basis="reported_annual",  # anual; TTM/normalizado/forward pendientes de proveedor
+        eps=eps_usd,                # EPS (USD por ADR): EDGAR anual o fallback TTM (ver eps_source)
+        eps_basis=eps_basis,        # reported_annual (EDGAR) | ttm (fallback) | None
+        eps_source=eps_source,      # edgar | yahoo:quote | ... (procedencia del EPS)
+        fallback_sources=(", ".join(fallback_sources) or None),
         eps_consistent=eps_consistent,
         eps_check_ratio=(round(eps_check_ratio, 4) if eps_check_ratio is not None else None),
+        consistency_independent=consistency_independent,
         ni_reconstructed=ni_reconstructed,
+        ni_source_concept=ni_source_concept,
+        ni_period=ni_period,
         shares_source=shares_source,
         pe_forward=None,            # no disponible gratis en EDGAR
         ev_ebitda=None,             # requiere deuda/caja + EBITDA fiables
@@ -354,16 +444,19 @@ class EDGARProvider(MarketDataProvider):
         return r.json()
 
     def get_fundamentals(self, tickers: List[str], prices: Optional[Dict[str, float]] = None,
-                         fx_map: Optional[Dict[str, float]] = None) -> Dict[str, Fundamentals]:
+                         fx_map: Optional[Dict[str, float]] = None,
+                         fallback_stats: Optional[Dict[str, dict]] = None) -> Dict[str, Fundamentals]:
         prices = prices or {}
         fx_map = fx_map or {}
+        fallback_stats = fallback_stats or {}
         out = {}
         for t in tickers:
             facts = self._facts(t)
             if facts is None:
                 continue
             out[t] = parse_companyfacts(facts, t, price=prices.get(t), fx_map=fx_map,
-                                        adr_ratio=ADR_RATIO.get(t.upper(), 1.0))
+                                        adr_ratio=ADR_RATIO.get(t.upper(), 1.0),
+                                        fallback=fallback_stats.get(t.upper()) or fallback_stats.get(t))
         return out
 
     # EDGAR no da precios/FX/holdings

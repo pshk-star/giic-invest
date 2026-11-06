@@ -250,6 +250,34 @@ def run() -> dict:
             "decision": opp_decision(opp_funds.get(t) if has_fund else None, px, asof),
         }
 
+    # MATRIZ DE CALIDAD por ticker (Fase 3A.E): fuente, fecha, período, moneda, calidad y campos
+    # faltantes — desde los fundamentales PERSISTIDOS (reflejan el pipeline real incl. fallback).
+    matrix_tickers = ["NVDA", "TSM", "ASML", "META", "NFLX", "QQQ", "VOO", "SCHD", "GLD", "SLV",
+                      "V", "MA", "MU", "LLY", "PG"]
+    quality_matrix = {}
+    try:
+        inlist = ",".join(matrix_tickers)
+        rows = cli.get(f"{base}/fundamentals", params={"select": "ticker,payload", "ticker": f"in.({inlist})"}).json()
+        by_t = {r["ticker"].upper(): (r.get("payload") or {}) for r in rows if isinstance(r, dict) and r.get("ticker")}
+        for t in matrix_tickers:
+            p = by_t.get(t)
+            if not p:
+                quality_matrix[t] = {"fundamentals": "ausente (ETF/commodity o sin cobertura EDGAR)"}
+                continue
+            missing = [k for k in ("eps", "pe_ttm", "roe", "net_margin", "fcf_yield") if p.get(k) in (None, "")]
+            quality_matrix[t] = {
+                "eps": p.get("eps"), "eps_source": p.get("eps_source"), "eps_basis": p.get("eps_basis"),
+                "period_as_of": p.get("as_of"), "currency": p.get("currency"), "taxonomy": p.get("taxonomy"),
+                "ni_source_concept": p.get("ni_source_concept"), "ni_reconstructed": p.get("ni_reconstructed"),
+                "consistency_independent": p.get("consistency_independent"),
+                "eps_consistent": p.get("eps_consistent"), "eps_check_ratio": p.get("eps_check_ratio"),
+                "shares_source": p.get("shares_source"), "fallback_sources": p.get("fallback_sources"),
+                "pe_ttm": p.get("pe_ttm"), "roe": p.get("roe"), "net_margin": p.get("net_margin"),
+                "missing_fields": missing,
+            }
+    except Exception as e:
+        quality_matrix = {"_error": f"{type(e).__name__}: {str(e)[:80]}"}
+
     # Identidad PERSISTIDA en instruments (verificación de columnas pobladas).
     instr_identity = []
     try:
@@ -275,6 +303,7 @@ def run() -> dict:
         "predictions_count": pred_count,
         "instruments_columns": instr_cols,
         "instruments_identity_persisted": instr_identity,
+        "fundamentals_quality_matrix": quality_matrix,
         "advisor_opportunity_validation": advisor_validation,
         "fundamentals_target": fundamentals,
         "prices_target": prices_now,

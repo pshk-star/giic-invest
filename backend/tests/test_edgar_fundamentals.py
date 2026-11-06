@@ -114,7 +114,10 @@ def test_period_alignment_reconstructs_ni_when_direct_tag_is_stale():
     assert f.ni_reconstructed is True              # NI directo (2013) NO usado
     assert abs(f.net_margin - (17.0 * 100 / 3400)) < 1e-9   # 1700/3400 = 0.5, NO el NI de 2013
     assert abs(f.pe_ttm - 10.0) < 1e-9             # 170/17
-    assert f.eps_consistent is True                # consistente por construcción
+    # NI reconstruido ⇒ la consistencia NO es independiente (sería circular): no se declara.
+    assert f.consistency_independent is False
+    assert f.eps_consistent is None
+    assert f.ni_source_concept.startswith("reconstruido")
 
 
 def test_split_restatement_prefers_latest_filed_value():
@@ -146,8 +149,74 @@ def test_consistency_guard_flags_eps_shares_ni_mismatch():
     }, "dei": {"EntityCommonStockSharesOutstanding": {"units": {"shares": [{"end": "2025-12-31", "val": 500, "form": "10-K", "filed": "2026-02-15"}]}}}}}
     f = parse_companyfacts(facts, "BAD", price=100.0)
     assert f.ni_reconstructed is False             # NI directo presente en el período
+    assert f.consistency_independent is True       # compara NI REPORTADO vs EPS×acciones (independiente)
     assert f.eps_consistent is False               # 10×500/2000 = 2.5 ≠ 1
     assert abs(f.eps_check_ratio - 2.5) < 1e-9
+    assert f.ni_source_concept == "NetIncomeLoss"  # procedencia reportada
+
+
+def test_eps_ttm_is_split_invariant_via_quarterly_net_income():
+    from datetime import date
+    from app.providers.edgar import eps_ttm_from_quarterly_ni
+    # 4 trimestres de utilidad neta (montos absolutos, invariantes al split): 250+260+270+280=1060
+    q = [(date(2025, 1, 1), date(2025, 3, 31), 250.0, date(2025, 4, 20)),
+         (date(2025, 4, 1), date(2025, 6, 30), 260.0, date(2025, 7, 20)),
+         (date(2025, 7, 1), date(2025, 9, 30), 270.0, date(2025, 10, 20)),
+         (date(2025, 10, 1), date(2025, 12, 31), 280.0, date(2026, 1, 20))]
+    pre = eps_ttm_from_quarterly_ni(q, diluted_shares=100.0)    # antes del split 10:1
+    post = eps_ttm_from_quarterly_ni(q, diluted_shares=1000.0)  # acciones vigentes post-split
+    assert abs(pre["eps_ttm"] - 10.6) < 1e-9       # 1060/100
+    assert abs(post["eps_ttm"] - 1.06) < 1e-9      # 1060/1000 (NI dólar invariante / acciones vigentes)
+    assert pre["ni_ttm"] == 1060.0 and post["ni_ttm"] == 1060.0
+
+
+def test_eps_ttm_rejects_incomplete_or_overlapping_quarters():
+    from datetime import date
+    from app.providers.edgar import eps_ttm_from_quarterly_ni
+    assert eps_ttm_from_quarterly_ni([], 100.0) is None
+    q3 = [(date(2025, 1, 1), date(2025, 3, 31), 250.0, date(2025, 4, 20)),
+          (date(2025, 4, 1), date(2025, 6, 30), 260.0, date(2025, 7, 20)),
+          (date(2025, 7, 1), date(2025, 9, 30), 270.0, date(2025, 10, 20))]
+    assert eps_ttm_from_quarterly_ni(q3, 100.0) is None            # sólo 3 trimestres
+    gap = q3 + [(date(2026, 4, 1), date(2026, 6, 30), 280.0, date(2026, 7, 20))]  # hueco (falta Q4 2025)
+    assert eps_ttm_from_quarterly_ni(gap, 100.0) is None
+
+
+def test_yahoo_fallback_used_only_when_edgar_lacks_eps():
+    # Caso Visa: EDGAR sin EPS → se usa el EPS TTM de Yahoo (USD), etiquetado por fuente/base.
+    no_eps = {"facts": {"us-gaap": {
+        "Revenues": {"units": {"USD": [_row(2025, 45000)]}},
+        "NetIncomeLoss": {"units": {"USD": [_row(2025, 23000)]}},
+        # sin EarningsPerShareDiluted/Basic ni acciones ponderadas (como Visa)
+    }, "dei": {"EntityCommonStockSharesOutstanding": {"units": {"shares": [{"end": "2010-01-27", "val": 469, "form": "10-K", "filed": "2010-02-03"}]}}}}}
+    fb = {"eps_ttm": 10.5, "shares": 1900, "currency": "USD", "as_of": "2026-11-06", "source": "yahoo:quote"}
+    f = parse_companyfacts(no_eps, "V", price=420.0, fallback=fb)
+    assert f.eps is not None and abs(f.eps - 10.5) < 1e-9     # EPS de Yahoo (EDGAR no tenía)
+    assert f.eps_source == "yahoo:quote" and f.eps_basis == "ttm"
+    assert abs(f.pe_ttm - (420.0 / 10.5)) < 1e-9
+    assert f.shares_source == "yahoo:quote:shares"           # portada 2010 obsoleta → Yahoo
+    assert "eps_ttm<-yahoo:quote" in (f.fallback_sources or "")
+
+
+def test_fallback_never_overwrites_edgar_and_respects_currency():
+    # Con EPS de EDGAR presente, el fallback NO se usa (no sobrescribe lo oficial).
+    f = parse_companyfacts(US_FACTS, "AAA", price=36.0,
+                           fallback={"eps_ttm": 99.0, "shares": 999, "currency": "USD", "source": "yahoo:quote"})
+    assert f.eps_source == "edgar" and abs(f.pe_ttm - 20.0) < 1e-9   # 36/1.8, no 36/99
+    # Moneda incoherente (no USD) → no se usa aunque falte EPS.
+    no_eps = {"facts": {"us-gaap": {"Revenues": {"units": {"USD": [_row(2025, 100)]}}}}}
+    g = parse_companyfacts(no_eps, "X", price=50.0,
+                           fallback={"eps_ttm": 5.0, "currency": "EUR", "source": "yahoo:quote"})
+    assert g.eps is None and g.pe_ttm is None                # EUR ≠ USD → no se fabrica
+
+
+def test_detect_eps_split_mixing_flags_crossing_a_split():
+    from datetime import date
+    from app.providers.edgar import detect_eps_split_mixing
+    pts = [(date(2024, 12, 31), 19.83), (date(2025, 12, 31), 2.53)]
+    assert detect_eps_split_mixing(pts, [date(2025, 11, 17)]) is True   # el split cae dentro del rango
+    assert detect_eps_split_mixing(pts, [date(2020, 1, 1)]) is False    # split anterior a la serie
+    assert detect_eps_split_mixing(pts, []) is False
 
 
 def test_tsm_prefers_official_usd_eps_no_twd_fx():

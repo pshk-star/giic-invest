@@ -301,6 +301,33 @@ class YahooProvider(MarketDataProvider):
         except Exception:
             return {}
 
+    def get_stats(self, tickers: List[str]) -> Dict[str, dict]:
+        """Estadísticas complementarias (FALLBACK) desde el endpoint v7/quote de Yahoo:
+        EPS TTM (trailing), acciones en circulación y moneda, con fecha de consulta. Best-effort;
+        NO oficial — se usa sólo cuando EDGAR no cubre, con su procedencia. {} si falla."""
+        import datetime as _dt
+        out: Dict[str, dict] = {}
+        try:
+            url = "https://query1.finance.yahoo.com/v7/finance/quote"
+            r = self._client.get(url, params={"symbols": ",".join(tickers)})
+            if r.status_code != 200:
+                return {}
+            today = _dt.date.today().isoformat()
+            for q in (((r.json() or {}).get("quoteResponse", {}) or {}).get("result", []) or []):
+                sym = (q.get("symbol") or "").upper()
+                if not sym:
+                    continue
+                out[sym] = {
+                    "eps_ttm": q.get("epsTrailingTwelveMonths"),
+                    "shares": q.get("sharesOutstanding"),
+                    "currency": q.get("currency"),
+                    "as_of": today,
+                    "source": "yahoo:quote",
+                }
+        except Exception:
+            return {}
+        return out
+
     def get_fundamentals(self, tickers): return {}
     def get_etf_holdings(self, etf_ticker): return []
     def list_universe(self, exchanges=None, limit=None): return []

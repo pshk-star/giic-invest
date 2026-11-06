@@ -89,13 +89,26 @@ class CompositeProvider(MarketDataProvider):
                 ])
             except Exception:
                 fx_map = {}
+        # Fallback multifuente: estadísticas complementarias (p. ej. Yahoo EPS TTM / acciones)
+        # usadas SÓLO cuando EDGAR no cubre. Best-effort; no aborta si no está disponible.
+        fallback_stats: Dict[str, dict] = {}
+        getter = getattr(self.prices, "get_stats", None)
+        if callable(getter):
+            try:
+                fallback_stats = getter(tickers) or {}
+            except Exception:
+                fallback_stats = {}
         try:
-            return self.fundamentals.get_fundamentals(tickers, prices=prices, fx_map=fx_map)
+            return self.fundamentals.get_fundamentals(tickers, prices=prices, fx_map=fx_map,
+                                                      fallback_stats=fallback_stats)
         except TypeError:
             try:
-                return self.fundamentals.get_fundamentals(tickers, prices=prices)
+                return self.fundamentals.get_fundamentals(tickers, prices=prices, fx_map=fx_map)
             except TypeError:
-                return self.fundamentals.get_fundamentals(tickers)
+                try:
+                    return self.fundamentals.get_fundamentals(tickers, prices=prices)
+                except TypeError:
+                    return self.fundamentals.get_fundamentals(tickers)
 
     def get_etf_holdings(self, etf_ticker: str) -> List[ETFHolding]:
         return self.fundamentals.get_etf_holdings(etf_ticker)

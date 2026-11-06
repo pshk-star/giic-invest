@@ -58,9 +58,14 @@ class Fundamentals:
     pe_ttm: Optional[float] = None
     eps: Optional[float] = None           # EPS reportado (último ejercicio anual, USD por ADR)
     eps_basis: Optional[str] = None       # base del EPS: reported_annual | ttm | normalized | forward
-    eps_consistent: Optional[bool] = None  # identidad EPS×acciones≈utilidad neta (coherencia moneda/ADR)
+    eps_source: Optional[str] = None      # procedencia del EPS: edgar | yahoo:quote | ...
+    fallback_sources: Optional[str] = None  # qué campos vinieron de fallback y de dónde/cuándo
+    eps_consistent: Optional[bool] = None  # identidad EPS×acciones≈utilidad neta (SÓLO si NI reportado)
     eps_check_ratio: Optional[float] = None  # EPS×acciones / utilidad neta (≈1 si coherente)
+    consistency_independent: bool = False  # True sólo si la consistencia compara NI REPORTADO (no reconstruido)
     ni_reconstructed: bool = False        # utilidad neta reconstruida de EPS×acciones (etiqueta directa ausente)
+    ni_source_concept: Optional[str] = None  # concepto EDGAR de la utilidad neta (o "reconstruido: ...")
+    ni_period: Optional[str] = None       # período fiscal de la utilidad neta usada
     shares_source: Optional[str] = None   # procedencia de las acciones vigentes usadas en market cap
     pe_forward: Optional[float] = None
     ev_ebitda: Optional[float] = None
