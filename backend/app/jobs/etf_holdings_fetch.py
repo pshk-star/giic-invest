@@ -54,8 +54,18 @@ def detect_etfs(writer, diag: Optional[dict] = None) -> List[str]:
                 diag["instruments_query_error"] = f"{type(e).__name__}: {str(e)[:80]}"
         if diag is not None:
             diag["instrument_classes"] = classes
-        # ETF por clasificación en instruments O por lista conocida (robusto si falta asset_class)
-        etfs = [t for t in tickers if classes.get(t) in ("etf", "fund") or t in KNOWN_ETFS]
+        # ETF si: clasificado en instruments, o en lista conocida, o aparece en el catálogo de
+        # fondos/ETFs de la SEC (genérico: cualquier ETF nuevo se detecta sin tocar código).
+        etfs = []
+        for t in tickers:
+            is_etf = classes.get(t) in ("etf", "fund") or t in KNOWN_ETFS
+            if not is_etf:
+                try:
+                    is_etf = _mf_lookup(t) is not None
+                except Exception:
+                    pass
+            if is_etf:
+                etfs.append(t)
         return sorted(set(etfs))
     except Exception as e:
         if diag is not None:
