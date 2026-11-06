@@ -17,7 +17,16 @@ import {
   buildAdvice, type AdvisorReport, type Decision, type Holding, type Recommendation,
   type RiskModel, type ScanInfo,
 } from "../core/advisor";
-import { money, num, pct } from "../format";
+import {
+  buildOpportunities, type OpportunityDecision, type OpportunityReport,
+} from "../core/opportunities";
+import { money, pct } from "../format";
+
+const OPP_STYLE: Record<OpportunityDecision["action"], { tone: string; bg: string }> = {
+  COMPRAR: { tone: "text-term-good", bg: "bg-term-good/10" },
+  ESPERAR: { tone: "text-term-warn", bg: "bg-term-warn/10" },
+  INVESTIGAR: { tone: "text-term-muted", bg: "bg-term-panel2" },
+};
 
 const ACTION_STYLE: Record<Decision["action"], { label: string; tone: string }> = {
   COMPRAR: { label: "COMPRAR", tone: "text-term-good" },
@@ -60,6 +69,10 @@ export function Advisor() {
   const [fundamentals, setFundamentals] = useState<Record<string, FundamentalsPayload>>({});
   const [posRaw, setPosRaw] = useState<RawPos[]>([]);
   const [totalValue, setTotalValue] = useState(0);
+  // Para el motor de OPORTUNIDADES (candidatas fuera de cartera): precio + exposición efectiva.
+  const [priceByTicker, setPriceByTicker] = useState<Record<string, { close: number | null; asOf: string | null }>>({});
+  const [effWeightByTicker, setEffWeightByTicker] = useState<Record<string, number>>({});
+  const [heldTickers, setHeldTickers] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     (async () => {
@@ -72,6 +85,8 @@ export function Advisor() {
       const pos = derivePositions(txns, prices, instruments, ca);
       const totals = portfolioTotals(pos);
       const held = pos.filter((p) => p.qty > 1e-9);
+      const heldSet = new Set(held.map((p) => p.ticker.toUpperCase()));
+      setHeldTickers(heldSet);
       const hs: Holding[] = held.map((p) => ({
         ticker: p.ticker, name: p.name,
         sector: instruments[p.ticker]?.sector ?? null,
@@ -81,9 +96,31 @@ export function Advisor() {
         priceAsOf: p.priceAsOf,
       }));
       setHoldings(hs);
-      setScan(rows.map(scanRowToInfo));
+      const scanInfos = rows.map(scanRowToInfo);
+      setScan(scanInfos);
       setScanAsOf(run?.as_of);
-      setFundamentals(funds);
+
+      // Candidatas de OPORTUNIDAD: no-tenencias del scanner (top por score), para las que
+      // cargamos fundamentales + precio y así juzgar por VALORACIÓN, no por score.
+      const candidates = scanInfos
+        .filter((s) => !heldSet.has(s.ticker.toUpperCase()))
+        .sort((a, b) => (b.composite ?? 0) - (a.composite ?? 0))
+        .slice(0, 30)
+        .map((s) => s.ticker.toUpperCase());
+      const candPrices = candidates.filter((t) => !prices[t]);
+      let allFunds = funds;
+      const pxMap: Record<string, { close: number | null; asOf: string | null }> = {};
+      for (const t of Object.keys(prices)) pxMap[t.toUpperCase()] = { close: prices[t].close, asOf: prices[t].as_of };
+      try {
+        const [cf, cp] = await Promise.all([
+          candidates.length ? getFundamentals(candidates) : Promise.resolve({}),
+          candPrices.length ? getPrices(candPrices) : Promise.resolve({}),
+        ]);
+        allFunds = { ...funds, ...cf };
+        for (const t of Object.keys(cp)) pxMap[t.toUpperCase()] = { close: cp[t].close, asOf: cp[t].as_of };
+      } catch { /* sin datos de candidatas: quedarán como INVESTIGAR */ }
+      setFundamentals(allFunds);
+      setPriceByTicker(pxMap);
       if (settings) {
         setCash(settings.capital_available || 3000);
         setMaxAsset(settings.max_weight_per_asset || 0.25);
@@ -117,6 +154,11 @@ export function Advisor() {
           effBySector.set(sec, (effBySector.get(sec) ?? 0) + c.total);
         }
       } catch { /* sin X-Ray, exposición efectiva = directa */ }
+
+      // Exposición efectiva (fracción) por ticker — incluye no-tenencias vistas a través de ETFs.
+      const effW: Record<string, number> = {};
+      if (xrayTotal > 0) for (const [t, usd] of effByTicker) effW[t] = usd / xrayTotal;
+      setEffWeightByTicker(effW);
 
       setPosRaw(pricedAll.map((p) => {
         const kind = classifyKind(p.ticker, instruments[p.ticker]?.asset_class ?? p.asset_class ?? null);
@@ -173,6 +215,38 @@ export function Advisor() {
     }));
     return reviewPositions(inputs);
   }, [posRaw, fundamentals, totalValue, risk, maxAsset, maxSector]);
+
+  // OPORTUNIDADES (¿qué comprar hoy?) — candidatas FUERA de cartera, decididas por
+  // VALORACIÓN (no por score). Montos por convicción; mantener liquidez es válido.
+  const opportunities = useMemo<OpportunityReport>(() => {
+    const items = scan
+      .filter((s) => !heldTickers.has(s.ticker.toUpperCase()))
+      .sort((a, b) => (b.composite ?? 0) - (a.composite ?? 0))
+      .slice(0, 30)
+      .map((s) => {
+        const t = s.ticker.toUpperCase();
+        const f = fundamentals[t] ?? fundamentals[s.ticker];
+        const px = priceByTicker[t];
+        const price = px?.close ?? null;
+        const valuation = valuateCompany({
+          ticker: s.ticker, name: s.name ?? null, sector: s.sector, price, priceAsOf: px?.asOf ?? null, f,
+        });
+        return {
+          ticker: s.ticker, name: s.name ?? null, sector: s.sector, composite: s.composite,
+          price, priceAsOf: px?.asOf ?? null, valuation,
+          roe: f?.roe ?? null, netMargin: f?.net_margin ?? null,
+          heldWeight: 0, effectiveWeight: effWeightByTicker[t] ?? null,
+        };
+      });
+    return buildOpportunities(items, cash, totalValue, maxAsset);
+  }, [scan, heldTickers, fundamentals, priceByTicker, effWeightByTicker, cash, totalValue, maxAsset]);
+
+  // Las decisiones de compra del motor anterior (reparto igual por score, ids "buy-*")
+  // quedan FUERA: las compras nuevas salen del motor de oportunidades por valoración.
+  const hygieneDecisions = useMemo(
+    () => report.decisions.filter((d) => !d.id.startsWith("buy-")),
+    [report.decisions],
+  );
 
   const persist = async () => {
     try {
@@ -279,12 +353,13 @@ export function Advisor() {
             )}
           </Panel>
 
-          {/* 2) Decisiones priorizadas (cartera + oportunidades) — entregable central */}
+          {/* 2) Decisiones priorizadas sobre la cartera (higiene: reducir/vender/mantener) */}
           <Panel title="Tus decisiones de hoy (priorizadas)"
-            right={<span className="text-xs text-term-faint">{report.decisions.length} decisión(es)</span>}>
+            right={<span className="text-xs text-term-faint">{hygieneDecisions.length} decisión(es)</span>}>
             <p className="mb-3 text-sm text-term-muted">
-              Qué haría yo primero con tu cartera, en orden de importancia. Cada decisión es
-              explicable y sale de tus datos reales — no de un pronóstico.
+              Qué haría yo primero <b>con lo que ya tienes</b> (reducir, vender, mantener), en orden de
+              importancia. Las compras nuevas no salen de aquí: se deciden por valoración en
+              «¿Qué comprar hoy?» más abajo. Cada decisión es explicable y sale de tus datos reales.
             </p>
             {risk && (
               <div className="mb-3 flex flex-wrap gap-4 rounded-lg border border-term-border bg-term-panel2 px-3 py-2 text-xs text-term-muted">
@@ -295,46 +370,37 @@ export function Advisor() {
               </div>
             )}
             <div className="grid gap-2">
-              {report.decisions.map((d) => <DecisionCard key={d.id} d={d} />)}
+              {hygieneDecisions.map((d) => <DecisionCard key={d.id} d={d} />)}
             </div>
           </Panel>
 
-          {/* Asignación de capital */}
-          <Panel title={`¿Dónde evaluar ${money(cash)}?`}>
-            <p className="mb-2 text-sm text-term-muted">{report.allocation.note}</p>
-            <p className="mb-1 text-xs text-term-faint">{report.allocation.basisNote}</p>
-            <p className="mb-3 text-xs text-term-faint">{report.allocation.method}</p>
-            {report.allocation.items.length > 0 && (
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[620px] text-sm">
-                  <thead>
-                    <tr className="border-b border-term-border text-left text-xs uppercase text-term-muted">
-                      <th className="py-2">Ticker</th><th>Acción</th>
-                      <th className="text-right">Monto</th><th className="text-right">Peso resultante</th>
-                      <th className="text-right">Score</th><th>Por qué</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {report.allocation.items.map((it) => (
-                      <tr key={it.ticker} className="border-b border-term-border last:border-0 align-top">
-                        <td className="py-2 font-mono font-semibold">{it.ticker}</td>
-                        <td>{it.kind === "add_existing" ? "Aumentar" : "Nueva"}</td>
-                        <td className="text-right tabnum text-term-good">{money(it.amount)}</td>
-                        <td className="text-right tabnum">{pct(it.newWeight)}</td>
-                        <td className="text-right tabnum">{num(it.composite, 0)}</td>
-                        <td className="max-w-[260px] text-xs text-term-muted">{it.reason}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+          {/* ¿QUÉ COMPRAR HOY? — oportunidades por valoración, no por score */}
+          <Panel title={`¿Qué comprar hoy? — hasta ${money(cash)} a evaluar`}
+            right={<span className="text-xs text-term-faint">{opportunities.decisions.filter((d) => d.action === "COMPRAR").length} COMPRAR</span>}>
+            <p className="mb-2 text-sm text-term-muted">
+              Candidatas <b>fuera</b> de tu cartera, clasificadas por <b>valoración</b> (no por score):
+              <b className="text-term-good"> COMPRAR</b> exige descuento con calidad suficiente y espacio de concentración;
+              <b className="text-term-warn"> ESPERAR</b> = negocio interesante pero el precio de hoy no da margen;
+              <b className="text-term-muted"> INVESTIGAR</b> = faltan datos o están desactualizados. El score es solo contexto.
+            </p>
+            <div className="mb-3 flex flex-wrap gap-4 rounded-lg border border-term-border bg-term-panel2 px-3 py-2 text-xs text-term-muted">
+              <span>A desplegar hoy: <b className="text-term-good tabnum">{money(opportunities.deployed)}</b></span>
+              <span>Liquidez conservada: <b className="text-term-fg tabnum">{money(opportunities.cashKept)}</b></span>
+              <span className="text-term-faint">Montos por convicción (descuento central), no a partes iguales. No se fuerza el presupuesto.</span>
+            </div>
+            <p className="mb-3 text-xs text-term-faint">{opportunities.note}</p>
+            {opportunities.decisions.length === 0 ? (
+              <p className="text-sm text-term-muted">Sin candidatas del scanner fuera de tu cartera hoy.</p>
+            ) : (
+              <div className="grid gap-2">
+                {opportunities.decisions.map((d) => <OpportunityCard key={d.ticker} d={d} />)}
               </div>
             )}
-            <div className="mt-3 flex flex-wrap gap-4 text-xs text-term-muted">
-              <span>Invertir: <b className="text-term-fg tabnum">{money(report.allocation.invested)}</b></span>
-              <span>Liquidez restante: <b className="text-term-fg tabnum">{money(report.allocation.cashLeftover)}</b></span>
-              <span>Concentración (HHI): {num(report.allocation.before.hhi, 3)} → <b className="text-term-fg">{num(report.allocation.after.hhi, 3)}</b></span>
-              <span>Exposición máx.: {pct(report.allocation.before.topWeight)} → <b className="text-term-fg">{pct(report.allocation.after.topWeight)}</b></span>
-            </div>
+            <p className="mt-3 text-xs text-term-faint">
+              Limitación: valoración preliminar EPS×P/E (sin múltiplos históricos ni estimaciones forward).
+              No es un precio objetivo ni un margen de seguridad garantizado; distingue buena empresa de
+              oportunidad real al precio actual, pero no sustituye un análisis profundo.
+            </p>
           </Panel>
 
           {/* Cumplimiento residual */}
@@ -375,19 +441,6 @@ export function Advisor() {
               <p className="text-sm text-term-good">Sin alertas de concentración ni posiciones débiles según tus límites.</p>
             ) : (
               <div className="grid gap-2">{report.diagnostics.map((d, i) => <RecoCard key={i} r={d} />)}</div>
-            )}
-          </Panel>
-
-          {/* Ranking de oportunidades (separado de la asignación) */}
-          <Panel title="Ranking de oportunidades (fuera de tu cartera)">
-            <p className="mb-2 text-xs text-term-faint">
-              Orden por atractivo relativo del scanner. Es un <b>ranking</b>, no una instrucción de
-              compra ni un reparto de capital — eso se decide arriba, por diversificación.
-            </p>
-            {report.ideas.length === 0 ? (
-              <p className="text-sm text-term-muted">Ninguna no-tenencia supera tu umbral de score hoy.</p>
-            ) : (
-              <div className="grid gap-2">{report.ideas.map((d, i) => <RecoCard key={i} r={d} />)}</div>
             )}
           </Panel>
 
@@ -485,6 +538,45 @@ function DecisionCard({ d }: { d: Decision }) {
           <Block title="Qué cambiaría la decisión" items={d.whatWouldChange} tone="text-term-muted" />
           <Block title="Datos usados" items={d.dataSources} tone="text-term-muted" />
           <Block title="Limitaciones" items={d.limitations} tone="text-term-faint" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OpportunityCard({ d }: { d: OpportunityDecision }) {
+  const [open, setOpen] = useState(d.action === "COMPRAR");
+  const st = OPP_STYLE[d.action];
+  const upTone = d.centralUpside == null ? "text-term-faint" : d.centralUpside >= 0 ? "text-term-good" : "text-term-crit";
+  return (
+    <div className={`rounded-lg border border-term-border p-3 ${st.bg}`}>
+      <button onClick={() => setOpen(!open)} className="flex w-full items-start justify-between gap-2 text-left">
+        <span className="flex items-start gap-2">
+          <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded bg-term-panel2 text-[11px] font-semibold text-term-faint tabnum">{d.priority}</span>
+          <span className="text-sm">
+            <span className={`font-mono text-xs font-bold ${st.tone}`}>{d.action}</span>
+            <span className="ml-1 font-mono font-semibold text-term-fg">{d.ticker}</span>
+            {d.name && <span className="text-term-muted"> · {d.name}</span>}
+            <span className="ml-2 text-xs text-term-faint">{d.price != null ? money(d.price) : "precio n/d"}{d.priceAsOf ? ` · ${d.priceAsOf}` : ""}</span>
+          </span>
+        </span>
+        <span className="shrink-0 text-xs text-term-faint">{open ? "▲" : "▼"}</span>
+      </button>
+      <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 pl-7 text-xs text-term-muted">
+        <span>Calidad del negocio <b className="text-term-fg">{d.businessQuality}</b></span>
+        {d.centralUpside != null && <span>Descuento central <b className={upTone}>{d.centralUpside >= 0 ? "+" : ""}{pct(d.centralUpside)}</b></span>}
+        {d.action === "COMPRAR" && d.suggestedAmountUsd != null && (
+          <span>Monto sugerido <b className="text-term-good">{money(d.suggestedAmountUsd)}</b>{d.suggestedTargetWeight != null && <> → {pct(d.suggestedTargetWeight)}</>}</span>
+        )}
+        <span>Confianza <b className="text-term-fg">{d.confidence}</b></span>
+      </div>
+      <p className="mt-1 pl-7 text-xs text-term-fg">{d.valuationLine}</p>
+      <p className="pl-7 text-xs text-term-faint">{d.relative} · {d.concentration}</p>
+      {open && (
+        <div className="mt-2 grid gap-2 pl-7 text-xs">
+          <Block title="Qué justifica comprar AHORA" items={d.evidenceForBuyingNow} tone="text-term-fg" />
+          <Block title="Qué información falta" items={d.missing} tone="text-term-muted" />
+          <Block title="Qué cambiaría la decisión" items={d.whatWouldChange} tone="text-term-muted" />
         </div>
       )}
     </div>

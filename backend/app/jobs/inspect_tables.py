@@ -9,6 +9,7 @@ Uso: python -m app.jobs.inspect_tables
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 
@@ -16,6 +17,91 @@ TABLES = ["fx_rates", "etf_holdings", "settings", "user_funds", "fund_navs"]
 
 # Tickers a verificar en detalle (evidencia de datos reales llegando a la UI).
 FUND_TICKERS = ["ASML", "TSM", "NVDA", "META", "NFLX"]
+
+# Validación de la CORRECCIÓN del Advisor (motor de oportunidades por valoración).
+OPP_TICKERS = ["V", "MU", "LLY", "MA", "PG"]
+
+# --- Espejo EXACTO de valuateCompany (EPS×P/E preliminar) + buildOpportunities ---
+# Reproduce la lógica de frontend/src/core/fundamental.ts y opportunities.ts para
+# mostrar la DECISIÓN resultante con datos reales. La app desplegada usa el TS real;
+# este espejo es solo evidencia (mismos números y umbrales).
+_GROWTH_FLOOR, _GROWTH_CAP, _GROWTH_STEP = -0.15, 0.35, 0.05
+_PE_COMPRESS, _PE_EXPAND = 0.80, 1.15
+_STALE_SOFT, _STALE_HARD = 400, 550
+_BUY_UPSIDE = 0.15
+
+
+def _clamp(x, lo, hi):
+    return max(lo, min(hi, x))
+
+
+def _age_days(as_of, ref):
+    try:
+        from datetime import date
+        a = date.fromisoformat(str(as_of)[:10])
+        r = date.fromisoformat(str(ref)[:10]) if ref else date.today()
+        return (r - a).days
+    except Exception:
+        return None
+
+
+def _is_fin(x):
+    return isinstance(x, (int, float)) and math.isfinite(x)
+
+
+def opp_decision(payload, price, price_as_of):
+    """Devuelve la decisión COMPRAR/ESPERAR/INVESTIGAR y los números que la sostienen."""
+    f = payload or {}
+    if not _is_fin(price) or price <= 0:
+        return {"action": "INVESTIGAR", "available": False, "reason": "sin precio actual"}
+    egy, rgy = f.get("eps_growth_yoy"), f.get("rev_growth_yoy")
+    if _is_fin(egy):
+        g, gsrc = _clamp(egy, _GROWTH_FLOOR, _GROWTH_CAP), "eps_yoy"
+    elif _is_fin(rgy):
+        g, gsrc = _clamp(rgy, _GROWTH_FLOOR, _GROWTH_CAP), "rev_yoy(proxy)"
+    else:
+        g, gsrc = 0.0, "flat0"
+    pe = f.get("pe_ttm")
+    age = _age_days(f.get("as_of"), price_as_of)
+    if _is_fin(pe) and pe > 0:
+        method = "pe_eps"
+        g_cons = _clamp(g - _GROWTH_STEP, _GROWTH_FLOOR, _GROWTH_CAP)
+        g_fav = _clamp(g + _GROWTH_STEP, _GROWTH_FLOOR, _GROWTH_CAP)
+        central_up = (1 + g) - 1                      # múltiplo se mantiene ⇒ upside = g acotado
+        cons_up = (1 + g_cons) * _PE_COMPRESS - 1
+        fav_up = (1 + g_fav) * _PE_EXPAND - 1
+        quality = "alta" if (egy is not None and _is_fin(egy) and abs(egy) < 0.5) \
+            else "media" if (_is_fin(egy) or _is_fin(rgy)) else "baja"
+        if age is not None and age > _STALE_HARD:
+            quality = "baja"
+        elif age is not None and age > _STALE_SOFT and quality == "alta":
+            quality = "media"
+        available = True
+    elif _is_fin(f.get("fcf_yield")) and f["fcf_yield"] > 0:
+        method, available, quality = "fcf_fallback", True, "baja"
+        central_up, cons_up, fav_up = 0.0, _PE_COMPRESS - 1, None  # yield fallback, calidad baja
+    else:
+        return {"action": "INVESTIGAR", "available": False, "method": None,
+                "reason": "sin P/E TTM positivo ni FCF yield (pérdidas o sin cobertura)",
+                "growth_source": gsrc, "fund_as_of": f.get("as_of"), "fund_age_days": age}
+    if (not available) or quality == "baja" or central_up is None:
+        action = "INVESTIGAR"
+    else:
+        favorable = central_up >= _BUY_UPSIDE and cons_up > 0 and quality == "alta"
+        action = "COMPRAR" if favorable else "ESPERAR"   # room=True (no es tenencia)
+    return {
+        "action": action, "available": available, "method": method, "quality": quality,
+        "price": price, "price_as_of": price_as_of,
+        "pe_ttm": pe, "eps_growth_yoy_raw": egy, "rev_growth_yoy_raw": rgy,
+        "growth_used_clamped": round(g, 4), "growth_source": gsrc,
+        "central_upside": round(central_up, 4) if central_up is not None else None,
+        "conservador_upside": round(cons_up, 4) if cons_up is not None else None,
+        "favorable_upside": round(fav_up, 4) if fav_up is not None else None,
+        "roe": f.get("roe"), "net_margin": f.get("net_margin"),
+        "fund_as_of": f.get("as_of"), "fund_age_days": age,
+        "taxonomy": f.get("taxonomy"), "currency": f.get("currency"),
+        "concentration_held": "0% (no es tenencia; hay espacio hasta el límite por activo)",
+    }
 
 RLS_SQL = (
     "-- Columnas, tipos y RLS (correr en el editor SQL de Supabase):\n"
@@ -131,6 +217,30 @@ def run() -> dict:
         except Exception as e:
             hist_validation[t] = {"error": f"{type(e).__name__}: {str(e)[:80]}"}
 
+    # VALIDACIÓN DEL ADVISOR CORREGIDO: V/MU/LLY/MA/PG con datos reales → decisión.
+    opp_list = ",".join(OPP_TICKERS)
+    opp_funds, opp_prices = {}, {}
+    try:
+        for r in cli.get(f"{base}/fundamentals",
+                         params={"select": "ticker,payload", "ticker": f"in.({opp_list})"}).json():
+            opp_funds[r["ticker"].upper()] = r.get("payload")
+    except Exception as e:
+        opp_funds = {"_error": f"{type(e).__name__}"}
+    try:
+        for r in cli.get(f"{base}/prices",
+                         params={"select": "ticker,close,as_of", "ticker": f"in.({opp_list})"}).json():
+            opp_prices[r["ticker"].upper()] = (r.get("close"), r.get("as_of"))
+    except Exception as e:
+        opp_prices = {"_error": f"{type(e).__name__}"}
+    advisor_validation = {}
+    for t in OPP_TICKERS:
+        px, asof = opp_prices.get(t, (None, None)) if isinstance(opp_prices, dict) else (None, None)
+        has_fund = isinstance(opp_funds, dict) and t in opp_funds
+        advisor_validation[t] = {
+            "fundamentals_present": has_fund,
+            "decision": opp_decision(opp_funds.get(t) if has_fund else None, px, asof),
+        }
+
     # Identidad PERSISTIDA en instruments (verificación de columnas pobladas).
     instr_identity = []
     try:
@@ -156,6 +266,7 @@ def run() -> dict:
         "predictions_count": pred_count,
         "instruments_columns": instr_cols,
         "instruments_identity_persisted": instr_identity,
+        "advisor_opportunity_validation": advisor_validation,
         "fundamentals_target": fundamentals,
         "prices_target": prices_now,
         "asml_price_history_latest": asml_hist,
