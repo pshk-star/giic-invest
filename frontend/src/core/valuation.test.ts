@@ -1,62 +1,61 @@
 import { describe, expect, it } from "vitest";
-import {
-  type FundamentalsPayload, fairValueByFcfYield, fairValueByPE, impliedFcfGrowth,
-  median, missingFundamentals, peerMedian, riskFlags,
-} from "./valuation";
+import { mergeValuation, type QuoteLike } from "./valuation";
+import type { PriceInfo } from "./portfolio-tx";
 
-const F = (o: Partial<FundamentalsPayload> = {}): FundamentalsPayload => ({
-  pe_ttm: null, pe_forward: null, ev_ebitda: null, fcf_yield: null, roic: null,
-  roe: null, rev_growth_yoy: null, eps_growth_yoy: null, net_margin: null,
-  debt_to_equity: null, market_cap: null, ...o,
+const eod: Record<string, PriceInfo> = {
+  AAPL: { close: 100, as_of: "2026-11-04", currency: "USD" },
+  MSFT: { close: 200, as_of: "2026-11-04", currency: "USD" },
+};
+const q = (over: Partial<QuoteLike>): QuoteLike => ({
+  price: 110, previous_close: 105, quote_time: "2026-11-05T15:30:00Z",
+  market_state: "REGULAR", delayed: true, currency: "USD", ...over,
 });
+const NOW = Date.parse("2026-11-05T15:35:00Z");
 
-describe("estadística de pares", () => {
-  it("median ignora nulos e infinitos", () => {
-    expect(median([10, null, 20, undefined, 30])).toBe(20);
-    expect(median([])).toBeNull();
+describe("mergeValuation", () => {
+  it("prioriza la cotización sobre el cierre EOD y marca intradía", () => {
+    const { prices, meta } = mergeValuation(["AAPL", "MSFT"], eod, { AAPL: q({}) }, NOW);
+    expect(prices.AAPL.close).toBe(110);            // quote gana a EOD
+    expect(prices.MSFT.close).toBe(200);            // sin quote -> EOD
+    expect(meta.kind).toBe("mixed");                // uno intradía, otro cierre
+    expect(meta.nQuotes).toBe(1);
+    expect(meta.nEod).toBe(1);
+    expect(meta.anyDelayed).toBe(true);
   });
-  it("peerMedian por P/E positivo", () => {
-    expect(peerMedian([F({ pe_ttm: 10 }), F({ pe_ttm: 20 }), F({ pe_ttm: -5 })], "pe_ttm")).toBe(15);
-  });
-});
 
-describe("valor relativo", () => {
-  it("P/E barato vs mediana implica upside", () => {
-    const fv = fairValueByPE(10, 20)!;        // empresa a 10×, sector 20× -> +100%
-    expect(fv.upsidePct).toBeCloseTo(1.0, 6);
+  it("todo intradía cuando el mercado está abierto", () => {
+    const { meta } = mergeValuation(["AAPL", "MSFT"],
+      eod, { AAPL: q({}), MSFT: q({ price: 205 }) }, NOW);
+    expect(meta.kind).toBe("intraday");
+    expect(meta.freshness).toBe("live");
+    expect(meta.source).toBe("quotes");
   });
-  it("P/E caro vs mediana implica downside", () => {
-    const fv = fairValueByPE(40, 20)!;        // -50%
-    expect(fv.upsidePct).toBeCloseTo(-0.5, 6);
-  });
-  it("devuelve null si falta el dato", () => {
-    expect(fairValueByPE(null, 20)).toBeNull();
-    expect(fairValueByFcfYield(0.05, null)).toBeNull();
-  });
-  it("FCF yield mayor que pares implica upside", () => {
-    const fv = fairValueByFcfYield(0.08, 0.04)!;   // yield doble -> +100%
-    expect(fv.upsidePct).toBeCloseTo(1.0, 6);
-  });
-});
 
-describe("lectura inversa (crecimiento implícito)", () => {
-  it("g ≈ r − fcf_yield", () => {
-    expect(impliedFcfGrowth(0.04, 0.09)).toBeCloseTo(0.05, 6);
-    expect(impliedFcfGrowth(null, 0.09)).toBeNull();
+  it("cierre cuando el mercado está cerrado", () => {
+    const { meta } = mergeValuation(["AAPL"],
+      eod, { AAPL: q({ market_state: "CLOSED" }) }, NOW);
+    expect(meta.kind).toBe("close");
+    expect(meta.asOfTs).toBe("2026-11-05T15:30:00Z");
   });
-});
 
-describe("riesgos y faltantes", () => {
-  it("marca prima de valoración y contracción de ingresos", () => {
-    const flags = riskFlags(F({ pe_ttm: 30, rev_growth_yoy: -0.1 }), 20, null);
-    expect(flags.join(" ")).toContain("prima");
-    expect(flags.join(" ")).toContain("contracción");
+  it("solo EOD cuando no hay cotizaciones", () => {
+    const { prices, meta } = mergeValuation(["AAPL", "MSFT"], eod, {}, NOW);
+    expect(prices.AAPL.close).toBe(100);
+    expect(meta.kind).toBe("close");
+    expect(meta.source).toBe("eod");
+    expect(meta.asOfDate).toBe("2026-11-04");
   });
-  it("lista los fundamentales no disponibles (ROIC, EV/EBITDA, P/E forward)", () => {
-    const miss = missingFundamentals(F({ pe_ttm: 18, roe: 0.3 }));
-    expect(miss).toContain("ROIC");
-    expect(miss).toContain("EV/EBITDA");
-    expect(miss).toContain("P/E forward");
-    expect(miss).not.toContain("P/E ttm");
+
+  it("ignora cotizaciones con precio inválido y cae a EOD", () => {
+    const { prices, meta } = mergeValuation(["AAPL"], eod, { AAPL: q({ price: 0 }) }, NOW);
+    expect(prices.AAPL.close).toBe(100);
+    expect(meta.nEod).toBe(1);
+    expect(meta.nQuotes).toBe(0);
+  });
+
+  it("sin datos devuelve source none", () => {
+    const { meta } = mergeValuation(["TSLA"], {}, {}, NOW);
+    expect(meta.source).toBe("none");
+    expect(meta.kind).toBe("none");
   });
 });

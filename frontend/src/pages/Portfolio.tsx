@@ -10,6 +10,8 @@ import {
   derivePositions, portfolioTotals, type InstrumentMeta, type Side, type Split, type Txn,
 } from "../core/portfolio-tx";
 import { classifyQuote } from "../core/quotefmt";
+import { mergeValuation } from "../core/valuation";
+import { ValuationStamp } from "../components/ValuationStamp";
 import { money, num, pct } from "../format";
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -58,12 +60,12 @@ export function Portfolio() {
     return () => window.clearInterval(id);
   }, [txns]);
 
-  // Precio efectivo: prioriza la cotización reciente sobre el cierre EOD.
-  const mergedPrices = useMemo(() => {
-    const out: Record<string, PriceInfo> = { ...eod };
-    for (const [t, q] of Object.entries(quotes)) out[t] = { close: q.price, as_of: q.quote_time.slice(0, 10), currency: q.currency };
-    return out;
-  }, [eod, quotes]);
+  // Precio efectivo + metadatos: MISMA regla que el Dashboard (core/valuation).
+  const heldTickers = useMemo(
+    () => Array.from(new Set(txns.map((x) => x.ticker.toUpperCase()))), [txns]);
+  const valuation = useMemo(
+    () => mergeValuation(heldTickers, eod, quotes), [heldTickers, eod, quotes]);
+  const mergedPrices = valuation.prices;
 
   const positions = useMemo(() => derivePositions(txns, mergedPrices, instMap, splits), [txns, mergedPrices, instMap, splits]);
   const totals = useMemo(() => portfolioTotals(positions), [positions]);
@@ -157,7 +159,8 @@ export function Portfolio() {
               value={money(totals.realized + totals.dividends)}
               tone={totals.realized + totals.dividends >= 0 ? "text-term-good" : "text-term-crit"} />
           </div>
-          <p className="mt-2 text-xs text-term-muted">
+          <div className="mt-2"><ValuationStamp meta={valuation.meta} /></div>
+          <p className="mt-1 text-xs text-term-muted">
             Las cotizaciones se actualizan solas cada 60 s mientras usas GIIC (fuente gratuita
             <strong> retrasada</strong>, no tiempo real). P&L del día = Σ cantidad × (precio − cierre previo).
           </p>

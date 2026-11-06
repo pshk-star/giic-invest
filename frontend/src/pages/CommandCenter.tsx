@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 import { Panel, Stat } from "../components/Panel";
 import {
-  getCorporateActions, getInstruments, getLatestRun, getLatestScan, getPrices, getTransactions,
-  type ScanRow,
+  getCorporateActions, getInstruments, getLatestRun, getLatestScan, getPrices, getQuotes,
+  getTransactions, type ScanRow,
 } from "../data";
 import {
   derivePositions, portfolioTotals, type DerivedPosition, type PortfolioTotals,
 } from "../core/portfolio-tx";
+import { mergeValuation, type ValuationMeta } from "../core/valuation";
+import { ValuationStamp } from "../components/ValuationStamp";
 import { money, num, pct } from "../format";
 
 // Dashboard — entender mi situación en menos de un minuto: patrimonio, mejores/peores
@@ -16,6 +18,7 @@ export function CommandCenter() {
   const [totals, setTotals] = useState<PortfolioTotals | null>(null);
   const [scan, setScan] = useState<ScanRow[]>([]);
   const [run, setRun] = useState<any | null>(null);
+  const [valuation, setValuation] = useState<ValuationMeta | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -23,10 +26,13 @@ export function CommandCenter() {
       const txns = await getTransactions();
       if (txns.length) {
         const tickers = Array.from(new Set(txns.map((t) => t.ticker.toUpperCase())));
-        const [prices, instruments, ca] = await Promise.all([
-          getPrices(tickers), getInstruments(tickers), getCorporateActions(tickers),
+        const [prices, instruments, ca, quotes] = await Promise.all([
+          getPrices(tickers), getInstruments(tickers), getCorporateActions(tickers), getQuotes(tickers),
         ]);
-        const pos = derivePositions(txns, prices, instruments, ca);
+        // MISMA fuente de precios que «Mi Cartera» (core/valuation): quote reciente, si no cierre EOD.
+        const { prices: merged, meta } = mergeValuation(tickers, prices, quotes);
+        setValuation(meta);
+        const pos = derivePositions(txns, merged, instruments, ca);
         setPositions(pos);
         setTotals(portfolioTotals(pos));
       }
@@ -55,7 +61,11 @@ export function CommandCenter() {
             <Stat label="Realizado + div." value={money(totals.realized + totals.dividends)}
               tone={totals.realized + totals.dividends >= 0 ? "text-term-good" : "text-term-crit"} />
           </div>
-        ) : (
+        ) : null}
+        {totals && positions.length && valuation ? (
+          <div className="mt-2"><ValuationStamp meta={valuation} /></div>
+        ) : null}
+        {!(totals && positions.length) && (
           <p className="text-sm text-term-muted">Sin operaciones todavía. Regístralas en «Mi Cartera».</p>
         )}
       </Panel>
