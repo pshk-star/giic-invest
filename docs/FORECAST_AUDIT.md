@@ -117,7 +117,10 @@ P5 − currentValue` (pérdida en el peor 5%).
    dependencia en los límites de bloque.
 5. **Parte no cubierta congelada a 0%:** subestima riesgo y retorno de esa parte.
 6. **Sesgo de supervivencia:** usa solo el historial de las posiciones actuales.
-7. **Ventana (`windowDays`, tope 520):** cambia materialmente vol y deriva.
+7. **Ventana histórica:** por defecto se usa TODO el historial común disponible
+   (cap de 10 años solo por memoria; `getPriceHistory` pagina para no truncar en
+   1000 filas). `ForecastOpts.windowDays` permite acotar (p. ej. 1 año) para el
+   análisis de sensibilidad; una ventana más corta cambia materialmente vol y deriva.
 8. **Intersección de fechas:** una posición joven acorta el historial común de
    todos.
 9. **HHI/concentración efectiva** se calculan sobre la sub-cartera **cubierta**

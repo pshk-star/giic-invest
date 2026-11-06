@@ -158,7 +158,7 @@ export function forecast(assetsIn: AssetHistory[], opts?: ForecastOpts): Forecas
 // ----------------------------------------------------------------------------
 // Helpers de alineación de precios -> retornos diarios conjuntos (compartidos por
 // la página de Proyección y el Investment Advisor). Fechas comunes a todos los
-// activos, última ventana de 520 sesiones, misma longitud entre series.
+// activos, todo el historial común disponible (cap 10 años), misma longitud entre series.
 export type PriceBarLite = { as_of: string; close: number };
 
 export function alignReturns(hist: Record<string, PriceBarLite[]>, tickers: string[]): Record<string, number[]> {
@@ -168,7 +168,9 @@ export function alignReturns(hist: Record<string, PriceBarLite[]>, tickers: stri
     const dates = [...maps[i].keys()];
     common = common === null ? dates : common.filter((d) => maps[i].has(d));
   });
-  const dates = (common ?? []).sort().slice(-520);
+  // Usa TODO el historial común disponible (sin corte arbitrario de ventana). El cap
+  // de 10 años solo acota memoria; el modo de ventana corta vive en ForecastOpts.windowDays.
+  const dates = (common ?? []).sort().slice(-2600);
   const out: Record<string, number[]> = {};
   tickers.forEach((t, i) => {
     const r: number[] = [];

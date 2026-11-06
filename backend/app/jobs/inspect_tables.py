@@ -103,21 +103,30 @@ def run() -> dict:
         except Exception as e:
             hist_counts[t] = f"error: {type(e).__name__}"
 
-    # Validación del historial (sesiones válidas + ajuste por splits/distribuciones).
+    # Validación del historial: rango REAL (min/max con consultas de 1 fila), campos de
+    # ajuste/proveedor, y chequeo de saltos sobre las 1000 MÁS RECIENTES (order desc).
     hist_validation = {}
     for t in ["ASML", "TSM", "NVDA"]:
         try:
-            rows = cli.get(f"{base}/price_history", params={"select": "as_of,close", "ticker": f"eq.{t}",
-                                                            "order": "as_of.asc", "limit": "2000"}).json()
-            closes = [float(r["close"]) for r in rows if r.get("close") is not None]
-            dates = [r["as_of"] for r in rows]
+            cnt = cli.get(f"{base}/price_history", params={"select": "as_of", "ticker": f"eq.{t}", "limit": "0"},
+                          headers={"Prefer": "count=exact"})
+            total = cnt.headers.get("content-range", "").split("/")[-1]
+            first = cli.get(f"{base}/price_history", params={"select": "as_of", "ticker": f"eq.{t}", "order": "as_of.asc", "limit": "1"}).json()
+            last = cli.get(f"{base}/price_history", params={"select": "as_of,close,adjusted,source", "ticker": f"eq.{t}", "order": "as_of.desc", "limit": "1"}).json()
+            recent = cli.get(f"{base}/price_history", params={"select": "as_of,close", "ticker": f"eq.{t}", "order": "as_of.desc", "limit": "1000"}).json()
+            recent = list(reversed(recent))
+            closes = [float(r["close"]) for r in recent if r.get("close") is not None]
             rets = [abs(closes[i] / closes[i - 1] - 1) for i in range(1, len(closes)) if closes[i - 1] > 0]
-            maxret = max(rets) if rets else None
-            big = sum(1 for r in rets if r > 0.40)   # saltos >40% => posible split sin ajustar
             hist_validation[t] = {
-                "n": len(closes), "first": dates[0] if dates else None, "last": dates[-1] if dates else None,
-                "max_abs_daily_return": round(maxret, 4) if maxret is not None else None,
-                "days_over_40pct": big,  # esperado 0 si está ajustado por splits
+                "total_rows": total,
+                "min_date": (first[0]["as_of"] if first else None),
+                "max_date": (last[0]["as_of"] if last else None),
+                "last_close": (last[0].get("close") if last else None),
+                "adjusted_field": (last[0].get("adjusted") if last else None),
+                "source_field": (last[0].get("source") if last else None),
+                "recent_sample": len(closes),
+                "max_abs_daily_return_recent1000": round(max(rets), 4) if rets else None,
+                "days_over_40pct_recent1000": sum(1 for r in rets if r > 0.40),
             }
         except Exception as e:
             hist_validation[t] = {"error": f"{type(e).__name__}: {str(e)[:80]}"}
