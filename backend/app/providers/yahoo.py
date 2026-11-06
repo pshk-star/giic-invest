@@ -59,15 +59,24 @@ def parse_yahoo_meta(payload: dict) -> dict:
         return {
             "name": m.get("longName") or m.get("shortName"),
             "asset_class": asset_class,
+            "instrument_type_raw": m.get("instrumentType"),
             "exchange": m.get("fullExchangeName") or m.get("exchangeName"),
+            "exchange_code": m.get("exchangeName"),
+            "quote_currency": m.get("currency") or None,
             "currency": m.get("currency") or "USD",
+            "timezone": m.get("exchangeTimezoneName") or m.get("timezone"),
+            "symbol": m.get("symbol"),
         }
     except (KeyError, IndexError, TypeError):
         return {}
 
 
 def parse_yahoo_history_bars(payload: dict) -> List[dict]:
-    """Barras diarias {as_of, close (AJUSTADO), volume} desde la respuesta chart."""
+    """Barras diarias {as_of, close, volume, adjusted} desde la respuesta chart.
+
+    `adjusted` indica si el cierre proviene de adjclose (ajustado por splits y
+    dividendos). Si Yahoo no entrega adjclose y se usa el cierre crudo, adjusted=False
+    (control: NO marcar ajustado por defecto)."""
     res = (payload or {}).get("chart", {}).get("result")
     if not res:
         return []
@@ -77,7 +86,8 @@ def parse_yahoo_history_bars(payload: dict) -> List[dict]:
     adj = (ind.get("adjclose") or [{}])[0].get("adjclose")
     close = (ind.get("quote") or [{}])[0].get("close")
     vol = (ind.get("quote") or [{}])[0].get("volume")
-    series = adj if adj else close
+    use_adj = bool(adj)
+    series = adj if use_adj else close
     if not ts or not series:
         return []
     out: List[dict] = []
@@ -90,6 +100,7 @@ def parse_yahoo_history_bars(payload: dict) -> List[dict]:
             "as_of": datetime.fromtimestamp(float(t), tz=timezone.utc).date().isoformat(),
             "close": float(c),
             "volume": float(v) if v is not None else None,
+            "adjusted": use_adj,
         })
     return out
 

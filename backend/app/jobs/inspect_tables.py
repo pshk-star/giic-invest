@@ -139,8 +139,74 @@ def run() -> dict:
         "price_history_counts": hist_counts,
         "price_history_validation": hist_validation,
         "edgar_diagnostic": edgar_diag(["ASML", "TSM"]),
+        "identity_resolution": identity_diag(["NVDA", "TSM", "ASML", "VOO", "MELI"]),
         "rls_sql_for_pablo": RLS_SQL,
     }
+
+
+def identity_diag(tickers: list) -> dict:
+    """Resuelve identidad EN VIVO desde fuentes verificables (Yahoo meta, SEC, OpenFIGI)
+    y la pasa por resolve_identity. Prueba que GIIC identifica cualquier ticker sin listas."""
+    import datetime as _dt
+    import httpx
+    from ..services.identity import resolve_identity
+    today = _dt.date.today().isoformat()
+    ua = os.getenv("EDGAR_USER_AGENT", "") or "GIIC research admin@giic.app"
+    cli = httpx.Client(timeout=30.0, headers={"User-Agent": ua})
+
+    cikmap = {}
+    try:
+        tk = cli.get("https://www.sec.gov/files/company_tickers.json").json()
+        cikmap = {r["ticker"].upper(): int(r["cik_str"]) for r in tk.values()}
+    except Exception:
+        cikmap = {}
+
+    def yahoo_meta(t):
+        try:
+            p = cli.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{t}", params={"range": "5d", "interval": "1d"}).json()
+            m = (((p or {}).get("chart", {}) or {}).get("result") or [{}])[0].get("meta", {}) or {}
+            it = (m.get("instrumentType") or "").upper()
+            return {"name": m.get("longName") or m.get("shortName"),
+                    "asset_class": "equity" if it == "EQUITY" else "etf" if it == "ETF" else "unknown",
+                    "quote_currency": m.get("currency"), "currency": m.get("currency"),
+                    "exchange": m.get("fullExchangeName") or m.get("exchangeName"),
+                    "exchange_code": m.get("exchangeName"),
+                    "timezone": m.get("exchangeTimezoneName")}
+        except Exception as e:
+            return {"_error": f"{type(e).__name__}"}
+
+    def report_ccy(cik):
+        if not cik:
+            return (None, None)
+        try:
+            f = cli.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json").json().get("facts", {})
+            for tax, names in (("us-gaap", ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "NetIncomeLoss"]),
+                               ("ifrs-full", ["RevenueFromContractsWithCustomers", "Revenue", "ProfitLoss"])):
+                node = f.get(tax, {})
+                for n in names:
+                    for u in ((node.get(n, {}) or {}).get("units", {}) or {}):
+                        if "/" not in u and len(u) == 3 and u.isalpha():
+                            return (u.upper(), tax)
+        except Exception:
+            pass
+        return (None, None)
+
+    def figi(t):
+        try:
+            r = cli.post("https://api.openfigi.com/v3/mapping", json=[{"idType": "TICKER", "idValue": t, "exchCode": "US"}])
+            data = r.json()
+            d = (data[0].get("data") if data and isinstance(data, list) else None) or []
+            return d[0].get("figi") if d else None
+        except Exception:
+            return None
+
+    out = {}
+    for t in tickers:
+        cik = cikmap.get(t.upper())
+        rc, tax = report_ccy(cik)
+        out[t] = resolve_identity(t, ymeta=yahoo_meta(t), cik=cik, report_currency=rc,
+                                  taxonomy=tax, figi=figi(t), today=today)
+    return out
 
 
 def edgar_diag(tickers: list) -> dict:

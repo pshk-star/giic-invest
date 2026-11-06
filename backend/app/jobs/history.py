@@ -62,7 +62,9 @@ def execute(backfill: bool, daily: bool, rng: str, dry_run: bool, tickers=None) 
         for b in bars:
             rows.append({
                 "ticker": t, "as_of": b["as_of"], "close": b["close"], "volume": b["volume"],
-                "adjusted": True, "reconstructed": reconstructed, "source": "yahoo", "updated_at": now,
+                # Control: el ajuste refleja si Yahoo entregó adjclose (no se asume True).
+                "adjusted": bool(b.get("adjusted", False)),
+                "reconstructed": reconstructed, "source": "yahoo", "updated_at": now,
             })
         per_ticker[t] = len(bars)
 
