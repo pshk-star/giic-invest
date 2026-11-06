@@ -85,6 +85,17 @@ class SupabaseWriter:
                               headers={"Prefer": "return=minimal"})
         r.raise_for_status()
 
+    def insert_append(self, table: str, rows: List[dict], on_conflict: str) -> int:
+        """Inserta ignorando duplicados (NO hace UPDATE). Para tablas APPEND-ONLY cuyos
+        triggers rechazan UPDATE: on conflict se omite la fila, no se actualiza."""
+        if not rows:
+            return 0
+        headers = {"Prefer": "resolution=ignore-duplicates,return=minimal"}
+        r = self._client.post(f"{self.base}/{table}", json=rows,
+                              params={"on_conflict": on_conflict}, headers=headers)
+        r.raise_for_status()
+        return len(rows)
+
     def get_transaction_tickers(self) -> List[str]:
         """Tickers distintos presentes en transactions (service_role omite RLS).
         Solo se leen tickers (no montos ni usuarios): sirve para precios/identificación."""
