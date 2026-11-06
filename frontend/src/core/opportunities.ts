@@ -72,7 +72,7 @@ function quality(roe: number | null, nm: number | null): OpportunityDecision["bu
 export function buildOpportunities(
   items: OpportunityInput[],
   cashAvailable: number,
-  portfolioValue: number,
+  _portfolioValue: number,   // reservado para dimensionar montos cuando haya valoración fundada
   maxWeightAsset: number,
 ): OpportunityReport {
   const out: OpportunityDecision[] = items.map((it) => {
