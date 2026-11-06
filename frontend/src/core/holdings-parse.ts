@@ -74,7 +74,7 @@ export function normalizeHoldings(matrix: string[][]): ParsedHoldings {
     const clsRaw = (iCl >= 0 ? (row[iCl] || "") : "").toLowerCase();
     let cls = "equity";
     const blob = (name + " " + clsRaw).toLowerCase();
-    if (clsRaw.includes("cash") || blob.includes("money market") || blob.includes("u.s. dollar")) cls = "cash";
+    if (blob.includes("cash") || blob.includes("money market") || blob.includes("u.s. dollar")) cls = "cash";
     else if (/(future|swap|option|forward|derivative)/.test(clsRaw)) cls = "derivative";
     else if (/(bond|treasury|note|bill)/.test(clsRaw)) cls = "bond";
     raw.push({ name: name || null, ticker: ticker || null, cusip: iC >= 0 ? (row[iC] || "").trim() || null : null,
