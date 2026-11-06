@@ -376,6 +376,70 @@ def _resolve_tickers_openfigi(lines: List[dict]) -> None:
 ADAPTERS = {"ssga": fetch_ssga, "invesco": fetch_invesco,
             "vanguard": fetch_vanguard, "commodity": fetch_commodity, "nport": fetch_nport}
 
+_TICKER_CIK: Dict[str, str] = {}
+_SECTOR_CACHE: Dict[str, Optional[str]] = {}
+
+# Mapa SIC (descripción de la SEC) -> sector GICS aproximado. Verificable (fuente SEC); no inventa.
+_SECTOR_RULES = [
+    (("semiconductor", "prepackaged software", "computer", "electronic", "instruments", "communications equip"), "Tecnología"),
+    (("pharmaceutical", "biological", "medicinal", "surgical", "medical", "health", "in vitro"), "Salud"),
+    (("national commercial bank", "state commercial bank", "bank", "insurance", "security brokers", "investment", "finance services", "credit"), "Financiero"),
+    (("crude petroleum", "petroleum", "oil", "natural gas", "drilling", "coal mining"), "Energía"),
+    (("retail", "grocery", "eating places", "apparel", "department store", "catalog"), "Consumo discrecional"),
+    (("beverage", "food", "tobacco", "household", "soap"), "Consumo básico"),
+    (("telephone", "telecommunications", "television", "cable", "motion picture", "advertising"), "Comunicaciones"),
+    (("electric", "gas", "water supply", "utilit"), "Servicios públicos"),
+    (("real estate", "reit", "land subdividers"), "Inmobiliario"),
+    (("aircraft", "motor vehicle", "machinery", "industrial", "construction", "railroad", "air transport", "trucking"), "Industriales"),
+    (("chemical", "metal mining", "steel", "paper", "mining", "plastics"), "Materiales"),
+]
+
+
+def _sic_to_sector(sicdesc: str) -> Optional[str]:
+    s = (sicdesc or "").lower()
+    if not s:
+        return None
+    for keys, sector in _SECTOR_RULES:
+        if any(k in s for k in keys):
+            return sector
+    return None
+
+
+def _sector_for(ticker: str) -> Optional[str]:
+    """Sector por código SIC de la SEC (ticker->CIK->sicDescription). Best-effort, cacheado."""
+    import time
+    t = ticker.upper()
+    if t in _SECTOR_CACHE:
+        return _SECTOR_CACHE[t]
+    if len(_SECTOR_CACHE) > 600:   # cota de seguridad por corrida
+        return None
+    if not _TICKER_CIK:
+        try:
+            r = httpx.get("https://www.sec.gov/files/company_tickers.json", headers=SEC_UA, timeout=60)
+            for row in r.json().values():
+                _TICKER_CIK[str(row["ticker"]).upper()] = str(row["cik_str"]).zfill(10)
+        except Exception:
+            pass
+    cik = _TICKER_CIK.get(t)
+    sector = None
+    if cik:
+        try:
+            r = httpx.get(f"https://data.sec.gov/submissions/CIK{cik}.json", headers=SEC_UA, timeout=45)
+            if r.status_code == 200:
+                sector = _sic_to_sector(r.json().get("sicDescription", ""))
+            time.sleep(0.12)
+        except Exception:
+            pass
+    _SECTOR_CACHE[t] = sector
+    return sector
+
+
+def enrich_sectors(rows: List[dict]) -> None:
+    # por peso descendente para priorizar la exposición principal dentro de la cota
+    for r in sorted(rows, key=lambda x: -(x.get("weight") or 0)):
+        if r.get("asset_class") == "equity" and r.get("ticker") and not r.get("sector"):
+            r["sector"] = _sector_for(r["ticker"])
+
 
 def normalize(etf: str, provider: str, as_of: str, lines: List[dict]) -> Tuple[List[dict], dict]:
     out = []
@@ -426,6 +490,7 @@ def run(writer, etfs: Optional[List[str]], dry: bool) -> dict:
             report["results"].append({"etf": etf, "status": "failed", "errors": errors})
             continue
         issuer = provider
+        enrich_sectors(rows)
         sample = sorted([r for r in rows if r["weight"]], key=lambda r: -(r["weight"] or 0))[:5]
         meta["top5"] = [{"ticker": r["ticker"], "name": (r["name"] or "")[:28], "weight": r["weight"]} for r in sample]
         if not dry and meta["status"] == "complete":
