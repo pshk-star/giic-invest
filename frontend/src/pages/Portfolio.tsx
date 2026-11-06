@@ -13,6 +13,7 @@ import { classifyQuote } from "../core/quotefmt";
 import { mergeValuation } from "../core/price-source";
 import { investmentCashFlows, xirr } from "../core/returns";
 import { ValuationStamp } from "../components/ValuationStamp";
+import { FintualPanel } from "../components/FintualPanel";
 import { money, num, pct } from "../format";
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -61,14 +62,17 @@ export function Portfolio() {
     return () => window.clearInterval(id);
   }, [txns]);
 
+  // Transacciones de ACCIONES/ETF (excluye movimientos de fondos, que maneja FintualPanel).
+  const secTxns = useMemo(() => txns.filter((t) => !t.fund_id), [txns]);
+
   // Precio efectivo + metadatos: MISMA regla que el Dashboard (core/valuation).
   const heldTickers = useMemo(
-    () => Array.from(new Set(txns.map((x) => x.ticker.toUpperCase()))), [txns]);
+    () => Array.from(new Set(secTxns.map((x) => x.ticker.toUpperCase()))), [secTxns]);
   const valuation = useMemo(
     () => mergeValuation(heldTickers, eod, quotes), [heldTickers, eod, quotes]);
   const mergedPrices = valuation.prices;
 
-  const positions = useMemo(() => derivePositions(txns, mergedPrices, instMap, splits), [txns, mergedPrices, instMap, splits]);
+  const positions = useMemo(() => derivePositions(secTxns, mergedPrices, instMap, splits), [secTxns, mergedPrices, instMap, splits]);
   const totals = useMemo(() => portfolioTotals(positions), [positions]);
 
   // P&L del día: suma de qty × (precio − cierre previo) para posiciones con cotización.
@@ -86,9 +90,9 @@ export function Portfolio() {
   // financiamiento, no retorno). Base USD; si hay transacciones en otra moneda, no se calcula
   // aún (requiere FX; llega con Fintual/multimoneda).
   const xirrPct = useMemo(() => {
-    const b = investmentCashFlows(txns, totals.marketValue, todayISO(), "USD");
+    const b = investmentCashFlows(secTxns, totals.marketValue, todayISO(), "USD");
     return { value: b.mixedCurrency ? null : xirr(b.flows), mixed: b.mixedCurrency };
-  }, [txns, totals.marketValue]);
+  }, [secTxns, totals.marketValue]);
 
   const appliedSplits = useMemo(
     () => splits.filter((s) => positions.some((p) => p.qty > 1e-9 && p.ticker === s.ticker.toUpperCase())),
@@ -201,6 +205,8 @@ export function Portfolio() {
           )}
         </Panel>
       )}
+
+      <FintualPanel txns={txns} stocksUsd={totals.marketValue} onChange={() => { load().catch(() => {}); }} />
 
       <Panel title="Registrar operación">
         <form onSubmit={submit} className="grid gap-2">

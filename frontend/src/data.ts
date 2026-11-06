@@ -217,6 +217,40 @@ export async function getPredictionsByTicker(ticker: string): Promise<Prediction
   return (data ?? []) as PredictionRow[];
 }
 
+// ---- Fondos Fintual (requiere migración 0009; degrada a vacío si aún no existe) ----
+export interface FundRow {
+  id: string; symbol: string; name: string | null; provider: string; currency: string; archived: boolean;
+}
+export async function getFunds(): Promise<FundRow[]> {
+  const { data, error } = await supabase
+    .from("user_funds").select("id,symbol,name,provider,currency,archived")
+    .eq("archived", false).order("symbol");
+  if (error) return []; // tabla aún no creada (migración pendiente) -> vacío
+  return (data ?? []) as FundRow[];
+}
+export async function addFund(f: { symbol: string; name?: string; currency: string; provider?: string }): Promise<void> {
+  const { error } = await supabase.from("user_funds").insert({
+    symbol: f.symbol.toUpperCase().trim(), name: f.name ?? null,
+    currency: f.currency, provider: f.provider ?? "fintual",
+  });
+  if (error) throw error;
+}
+export async function archiveFund(id: string): Promise<void> {
+  const { error } = await supabase.from("user_funds").update({ archived: true }).eq("id", id);
+  if (error) throw error;
+}
+export interface FundNavRow { fund_id: string; as_of: string; nav: number; currency: string; }
+export async function getFundNavs(): Promise<FundNavRow[]> {
+  const { data, error } = await supabase
+    .from("fund_navs").select("fund_id,as_of,nav,currency").order("as_of", { ascending: false });
+  if (error) return [];
+  return (data ?? []).map((r) => ({ fund_id: r.fund_id, as_of: r.as_of, nav: Number(r.nav), currency: r.currency }));
+}
+export async function addFundNav(n: { fund_id: string; as_of: string; nav: number; currency: string }): Promise<void> {
+  const { error } = await supabase.from("fund_navs").upsert(n, { onConflict: "fund_id,as_of" });
+  if (error) throw error;
+}
+
 export interface OutcomeRow {
   prediction_id: number;
   realized_return: number | null;

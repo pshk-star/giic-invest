@@ -21,6 +21,7 @@ export interface Txn {
   executed_at: string; // YYYY-MM-DD
   notes?: string | null;
   created_at?: string;
+  fund_id?: string | null; // NOT NULL => movimiento de fondo (Fintual); NULL => acción/ETF
 }
 
 export interface PriceInfo {
