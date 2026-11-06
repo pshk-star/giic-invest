@@ -159,7 +159,19 @@ export function forecast(assetsIn: AssetHistory[], opts?: ForecastOpts): Forecas
 // Helpers de alineación de precios -> retornos diarios conjuntos (compartidos por
 // la página de Proyección y el Investment Advisor). Fechas comunes a todos los
 // activos, todo el historial común disponible (cap 10 años), misma longitud entre series.
-export type PriceBarLite = { as_of: string; close: number };
+export type PriceBarLite = { as_of: string; close: number; adjusted?: boolean | null };
+
+// Control de integridad: una serie NO debe mezclar silenciosamente precios ajustados y
+// sin ajustar. Devuelve true si entre las barras con flag hay tanto ajustadas como no.
+export function hasMixedAdjustment(bars: PriceBarLite[]): boolean {
+  let anyAdj = false, anyRaw = false;
+  for (const b of bars) {
+    if (b.adjusted === true) anyAdj = true;
+    else if (b.adjusted === false) anyRaw = true;
+    if (anyAdj && anyRaw) return true;
+  }
+  return false;
+}
 
 export function alignReturns(hist: Record<string, PriceBarLite[]>, tickers: string[]): Record<string, number[]> {
   const maps = tickers.map((t) => new Map((hist[t] ?? []).map((b) => [b.as_of, b.close])));
@@ -185,10 +197,18 @@ export function alignReturns(hist: Record<string, PriceBarLite[]>, tickers: stri
   return out;
 }
 
+// Tickers con ajuste mezclado (para avisar al usuario; se excluyen del motor).
+export function mixedAdjustmentTickers(hist: Record<string, PriceBarLite[]>, tickers: string[]): string[] {
+  return tickers.filter((t) => hasMixedAdjustment(hist[t] ?? hist[t.toUpperCase()] ?? []));
+}
+
 // Construye AssetHistory[] desde un mapa de valores por ticker; opcionalmente añade
 // un activo EFECTIVO (retornos 0) para reflejar liquidez dentro de la cartera.
 export function buildAssets(hist: Record<string, PriceBarLite[]>, valueMap: Record<string, number>): AssetHistory[] {
-  const tickers = Object.keys(valueMap).filter((t) => valueMap[t] > 0 && t !== "EFECTIVO");
+  // Excluye (no silenciosamente: ver mixedAdjustmentTickers) series con ajuste mezclado.
+  const tickers = Object.keys(valueMap).filter(
+    (t) => valueMap[t] > 0 && t !== "EFECTIVO" && !hasMixedAdjustment(hist[t] ?? []),
+  );
   const rets = alignReturns(hist, tickers);
   const assets: AssetHistory[] = tickers.map((t) => ({ ticker: t, valueUsd: valueMap[t], returns: rets[t] ?? [] }));
   const n = Math.max(0, ...assets.map((a) => a.returns.length));

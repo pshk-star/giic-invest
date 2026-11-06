@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { forecast, type AssetHistory } from "./forecast";
+import { forecast, buildAssets, hasMixedAdjustment, type AssetHistory, type PriceBarLite } from "./forecast";
 
 // genera retornos deterministas pseudo-aleatorios con media/vol dadas
 function series(n: number, mean: number, vol: number, seed: number): number[] {
@@ -81,5 +81,28 @@ describe("consistencia por horizonte e individual vs consolidado", () => {
     const r2 = forecast(a, { sims: 200, seed: 5 });
     expect(r1.horizons[3].valP50).toBe(r2.horizons[3].valP50);
     expect(r1.annVol).toBeCloseTo(r2.annVol, 12);
+  });
+});
+
+
+describe("integridad de ajuste (ajustado vs sin ajustar)", () => {
+  const bars = (n: number, adj: boolean | undefined): PriceBarLite[] =>
+    Array.from({ length: n }, (_, i) => ({ as_of: `2026-01-${(i % 28) + 1}`, close: 100 + i, adjusted: adj }));
+
+  it("hasMixedAdjustment detecta mezcla, no falso positivo", () => {
+    expect(hasMixedAdjustment([{ as_of: "a", close: 1, adjusted: true }, { as_of: "b", close: 2, adjusted: false }])).toBe(true);
+    expect(hasMixedAdjustment([{ as_of: "a", close: 1, adjusted: true }, { as_of: "b", close: 2, adjusted: true }])).toBe(false);
+    expect(hasMixedAdjustment([{ as_of: "a", close: 1 }])).toBe(false); // sin flags, no se asume
+  });
+
+  it("buildAssets EXCLUYE series con ajuste mezclado (no silenciosamente)", () => {
+    // fechas comunes para que A entre al motor
+    const dates = Array.from({ length: 70 }, (_, i) => `2026-${String((i % 12) + 1).padStart(2, "0")}-${String((i % 28) + 1).padStart(2, "0")}`);
+    const mk = (adjs: (boolean | undefined)[]) => dates.map((d, i) => ({ as_of: d, close: 100 + i, adjusted: adjs[i % adjs.length] }));
+    const hist: Record<string, PriceBarLite[]> = { A: mk([true]), B: mk([true, false]) };
+    const assets = buildAssets(hist, { A: 1000, B: 1000 });
+    const tks = assets.map((a) => a.ticker);
+    expect(tks).toContain("A");
+    expect(tks).not.toContain("B"); // B mezcla ajuste -> excluida
   });
 });

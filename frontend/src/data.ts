@@ -110,7 +110,7 @@ export async function getQuotes(tickers: string[]): Promise<Record<string, Quote
   return out;
 }
 
-export interface PriceBar { as_of: string; close: number; volume: number | null; }
+export interface PriceBar { as_of: string; close: number; volume: number | null; adjusted?: boolean | null; }
 
 export async function getPriceHistory(ticker: string, fromISO?: string): Promise<PriceBar[]> {
   // Trae el historial COMPLETO paginando (el servidor topa ~1000 filas por página),
@@ -118,13 +118,13 @@ export async function getPriceHistory(ticker: string, fromISO?: string): Promise
   const PAGE = 1000;
   const out: PriceBar[] = [];
   for (let offset = 0; ; offset += PAGE) {
-    let q = supabase.from("price_history").select("as_of,close,volume")
+    let q = supabase.from("price_history").select("as_of,close,volume,adjusted")
       .eq("ticker", ticker.toUpperCase()).order("as_of", { ascending: true }).range(offset, offset + PAGE - 1);
     if (fromISO) q = q.gte("as_of", fromISO);
     const { data, error } = await q;
     if (error) throw error;
     const batch = data ?? [];
-    for (const r of batch) out.push({ as_of: r.as_of, close: Number(r.close), volume: r.volume != null ? Number(r.volume) : null });
+    for (const r of batch) out.push({ as_of: r.as_of, close: Number(r.close), volume: r.volume != null ? Number(r.volume) : null, adjusted: r.adjusted ?? null });
     if (batch.length < PAGE) break;
   }
   return out;

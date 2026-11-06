@@ -6,7 +6,7 @@ import {
 } from "../data";
 import { derivePositions } from "../core/portfolio-tx";
 import { mergeValuation } from "../core/price-source";
-import { forecast, buildAssets, type ForecastResult, type PriceBarLite } from "../core/forecast";
+import { forecast, buildAssets, mixedAdjustmentTickers, type ForecastResult, type PriceBarLite } from "../core/forecast";
 import { FundamentalView, type FundRow } from "../components/FundamentalView";
 import { valuateCompany } from "../core/fundamental";
 import { computeCoverage, type CovItem } from "../core/coverage";
@@ -166,6 +166,15 @@ export function Forecast() {
     </div>
   );
 
+  const mixedTk = mixedAdjustmentTickers(hist, fundRows.map((r) => r.ticker));
+  const mixedBanner = mixedTk.length > 0 && (
+    <div className="rounded-lg border border-term-crit/40 bg-term-crit/10 px-3 py-2 text-xs text-term-crit">
+      <b>Series con ajuste inconsistente excluidas:</b> {mixedTk.join(", ")}. Mezclan precios ajustados y sin
+      ajustar (splits/dividendos), lo que falsea los retornos; se <b>excluyen del motor</b> hasta re-ingerir su
+      historial ajustado. No se usan silenciosamente.
+    </div>
+  );
+
   const partialBanner = coverage && !coverage.statSufficient && (
     <div className="rounded-lg border border-term-warn/40 bg-term-warn/10 px-3 py-2 text-xs text-term-warn">
       <b>Proyección PARCIAL.</b> Solo el {pct(coverage.statPct)} del patrimonio tiene simulación estadística;
@@ -181,6 +190,7 @@ export function Forecast() {
         {perspective}
         {twoEngines}
         {coveragePanel}
+        {mixedBanner}
         <FundamentalView rows={fundRows} fundamentals={fundamentals} />
       </div>
     );
@@ -198,6 +208,7 @@ export function Forecast() {
       {perspective}
       {twoEngines}
       {coveragePanel}
+      {mixedBanner}
       {partialBanner}
       <div className="rounded-lg border border-term-border bg-term-panel2 px-3 py-2 text-xs text-term-muted">
         <b className="text-term-fg">Proyección por simulación histórica</b> (bootstrap por bloques multivariante, {base.nObs} días reales, con correlaciones).

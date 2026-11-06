@@ -233,9 +233,13 @@ def identity_diag(tickers: list) -> dict:
     for t in tickers:
         cik = cikmap.get(t.upper())
         rc, tax = report_ccy(cik)
+        sub = issuer_country(cik)
         r = resolve_identity(t, ymeta=yahoo_meta(t), cik=cik, report_currency=rc,
-                             taxonomy=tax, figi=figi(t), today=today)
-        r["_submissions_country_raw"] = issuer_country(cik)
+                             taxonomy=tax, figi=figi(t),
+                             edgar_incorp=sub.get("stateOfIncorporation"),
+                             edgar_state_country=sub.get("business_stateOrCountry"),
+                             today=today)
+        r["_submissions_country_raw"] = sub
         out[t] = r
     return out
 

@@ -9,7 +9,7 @@ import {
 import { QuoteView } from "../components/Quote";
 import { PriceChart } from "../components/PriceChart";
 import { derivePositions, portfolioTotals } from "../core/portfolio-tx";
-import { buildAssets, forecast } from "../core/forecast";
+import { buildAssets, forecast, hasMixedAdjustment } from "../core/forecast";
 import {
   type FundamentalsPayload, type ScanFactors, factorExplanation, fairValueByFcfYield,
   fairValueByPE, impliedFcfGrowth, missingFundamentals, peerMedian, riskFlags,
@@ -63,7 +63,9 @@ function StatProjection({ ticker, bars, price }: { ticker: string; bars: PriceBa
         (bootstrap por bloques; misma metodología que Portfolio Forecast). Independiente del modelo A/B/C y de los
         fundamentales. Es una <b>distribución condicionada a supuestos históricos</b>, no una predicción validada.
       </p>
-      {!price ? (
+      {hasMixedAdjustment(bars) ? (
+        <p className="text-sm text-term-crit">Serie con ajuste inconsistente (mezcla precios ajustados y sin ajustar): se excluye de la proyección hasta re-ingerir el historial ajustado. No se proyecta con datos no comparables.</p>
+      ) : !price ? (
         <p className="text-sm text-term-warn">Sin precio actual: no se puede anclar la proyección.</p>
       ) : bars.length < 61 ? (
         <p className="text-sm text-term-warn">Historial insuficiente ({bars.length} sesiones; se requieren ≥61). No se proyecta.</p>

@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
-# Zona horaria de la bolsa -> país (ISO-3166 alfa-2). Mapa verificable y acotado;
-# lo no cubierto queda en None (no se inventa el país).
+# PAÍS DE COTIZACIÓN (listing) por zona horaria de la bolsa. NO es el país del EMISOR.
+# Mapa verificable y acotado; lo no cubierto queda None (no se inventa).
 TZ_COUNTRY = {
     "America/New_York": "US", "America/Chicago": "US", "America/Los_Angeles": "US",
     "America/Toronto": "CA", "America/Sao_Paulo": "BR", "America/Mexico_City": "MX",
@@ -35,6 +35,37 @@ TZ_COUNTRY = {
 # NO es la solución definitiva: se marca source="curated" y debe poder resolverse de
 # forma dinámica (prospecto/banco depositario) a futuro. Lo no cubierto queda null.
 ADR_RATIO_SEED = {"TSM": 5.0, "ASML": 1.0, "NVO": 1.0, "TM": 5.0, "BABA": 8.0, "SONY": 1.0}
+
+# PAÍS DEL EMISOR (domicilio), distinto del país de cotización. Fuentes, en orden:
+#   1) EDGAR submissions (stateOfIncorporation / business.stateOrCountry).
+#   2) Semilla curada verificable para emisores extranjeros conocidos (EDGAR a veces
+#      no lo expone, p. ej. TSM). Marcada source="curated"; extensible, no definitiva.
+US_STATE_CODES = {
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "DC", "FL", "GA", "HI", "ID", "IL",
+    "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE",
+    "NV", "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD",
+    "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "PR", "VI", "GU", "AS", "MP",
+}
+# Códigos EDGAR de país extranjero (confiables) -> ISO-3166 alfa-2.
+EDGAR_FOREIGN_CODE = {"P7": "NL", "F4": "TW", "X3": "AR", "D8": "DE", "L2": "CH", "M6": "GB"}
+ISSUER_COUNTRY_SEED = {
+    "TSM": "TW", "ASML": "NL", "NVO": "DK", "TM": "JP", "MELI": "AR", "BABA": "CN",
+    "SONY": "JP", "SAP": "DE", "SHEL": "GB", "TTE": "FR", "NVS": "CH", "AZN": "GB",
+}
+
+
+def resolve_issuer_country(ticker, edgar_incorp=None, edgar_state_country=None):
+    """País del EMISOR con procedencia. (valor, source, status)."""
+    for code in (edgar_incorp, edgar_state_country):
+        c = (code or "").upper()
+        if c in US_STATE_CODES:
+            return ("US", "sec_edgar", "verified")
+        if c in EDGAR_FOREIGN_CODE:
+            return (EDGAR_FOREIGN_CODE[c], "sec_edgar", "verified")
+    seed = ISSUER_COUNTRY_SEED.get(ticker.upper())
+    if seed:
+        return (seed, "curated", "seed")
+    return (None, None, "unavailable")
 
 COMMODITY_ETFS = {"GLD", "SLV", "IAU", "PPLT", "PALL", "SGOL", "SIVR"}
 
@@ -56,6 +87,8 @@ def resolve_identity(
     lei: Optional[str] = None,
     adr_ratio: Optional[float] = None,
     adr_ratio_source: Optional[str] = None,
+    edgar_incorp: Optional[str] = None,
+    edgar_state_country: Optional[str] = None,
     today: Optional[str] = None,
 ) -> dict:
     tk = ticker.upper()
@@ -63,7 +96,8 @@ def resolve_identity(
     quote_currency = ymeta.get("quote_currency") or ymeta.get("currency")
     asset_class = ymeta.get("asset_class") or "unknown"
     tz = ymeta.get("timezone")
-    country = TZ_COUNTRY.get(tz) if tz else None
+    country_listing = TZ_COUNTRY.get(tz) if tz else None   # país de COTIZACIÓN (bolsa)
+    issuer_c, issuer_src, issuer_status = resolve_issuer_country(tk, edgar_incorp, edgar_state_country)
 
     # Tipo de instrumento (no aplicar valoración de empresa a lo que no corresponde).
     if tk in COMMODITY_ETFS:
@@ -95,7 +129,10 @@ def resolve_identity(
         "instrument_type": instrument_type,
         "exchange": ymeta.get("exchange"),
         "exchange_code": ymeta.get("exchange_code"),
-        "country": country,
+        "country_listing": country_listing,   # dónde COTIZA (bolsa)
+        "country_issuer": issuer_c,            # domicilio del EMISOR (EDGAR/curado)
+        "country_issuer_source": issuer_src,
+        "country_issuer_status": issuer_status,
         "quote_currency": quote_currency,
         "report_currency": report_currency,
         "currency": quote_currency,   # alias heredado = quote_currency
@@ -112,6 +149,7 @@ def resolve_identity(
         "identity_as_of": today,
         "sources": {
             "meta": "yahoo_chart_meta" if ymeta else None,
-            "country": "exchange_timezone" if country else None,
+            "country_listing": "exchange_timezone" if country_listing else None,
+            "country_issuer": issuer_src,
         },
     }

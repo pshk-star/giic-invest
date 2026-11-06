@@ -12,22 +12,25 @@
 -- que mezclan precio (quote) con fundamentales (report), una sola vez.
 
 alter table public.instruments
-  add column if not exists country         text,      -- país de cotización (ISO-3166-1 alfa-2); null si no se resuelve
-  add column if not exists quote_currency  text,      -- moneda de cotización
-  add column if not exists report_currency text,      -- moneda de los estados financieros
-  add column if not exists instrument_type text,      -- stock | adr | gdr | etf | commodity_etf | reit | cash | unknown
-  add column if not exists adr_ratio        numeric,  -- acciones ordinarias por ADR/GDR; null si no aplica o no verificado
-  add column if not exists cik              text,     -- SEC Central Index Key
-  add column if not exists isin             text,
-  add column if not exists figi             text,
-  add column if not exists lei              text,
-  add column if not exists identity         jsonb,    -- por identificador: {value, source, as_of, status}
-  add column if not exists identity_as_of   date;     -- fecha de la última resolución de identidad
+  add column if not exists country_listing  text,      -- país donde COTIZA el instrumento (bolsa); ISO-3166-1 alfa-2
+  add column if not exists country_issuer   text,      -- país del EMISOR (domicilio); ISO-3166-1 alfa-2
+  add column if not exists quote_currency   text,      -- moneda de cotización
+  add column if not exists report_currency  text,      -- moneda de los estados financieros
+  add column if not exists instrument_type  text,      -- stock | adr | gdr | etf | commodity_etf | reit | cash | unknown
+  add column if not exists adr_ratio         numeric,  -- acciones ordinarias por ADR/GDR; null si no aplica o no verificado
+  add column if not exists cik               text,     -- SEC Central Index Key
+  add column if not exists isin              text,
+  add column if not exists figi              text,
+  add column if not exists lei               text,
+  add column if not exists identity          jsonb,    -- por identificador: {value, source, as_of, status}
+  add column if not exists identity_as_of    date;     -- fecha de la última resolución de identidad
 
+comment on column public.instruments.country_listing is 'País donde COTIZA el instrumento (bolsa). Distinto del domicilio del emisor.';
+comment on column public.instruments.country_issuer  is 'País del EMISOR (domicilio), de EDGAR o fuente curada verificable. NO de la zona horaria de la bolsa.';
 comment on column public.instruments.quote_currency  is 'Moneda de cotización (precio de mercado). No reconvertir el precio.';
 comment on column public.instruments.report_currency is 'Moneda de los estados financieros (fundamentales).';
 comment on column public.instruments.currency        is 'Alias heredado = quote_currency (compatibilidad).';
-comment on column public.instruments.identity        is 'jsonb con {cik,isin,figi,lei,adr_relation} cada uno {value,source,as_of,status}. status: verified|seed|derived|unavailable|not_applicable. No se inventan identificadores.';
+comment on column public.instruments.identity        is 'jsonb con {cik,isin,figi,lei,adr_relation,country_issuer} cada uno {value,source,as_of,status}. status: verified|seed|derived|unavailable|not_applicable. No se inventan identificadores.';
 
 -- Las políticas RLS existentes de instruments siguen vigentes (SELECT autenticado,
 -- escritura por service role). No se redefinen aquí.
@@ -38,7 +41,8 @@ comment on column public.instruments.identity        is 'jsonb con {cik,isin,fig
 -- status, source, updated_at) y todos los datos permanecen intactos.
 -- ----------------------------------------------------------------------------
 -- alter table public.instruments
---   drop column if exists country,
+--   drop column if exists country_listing,
+--   drop column if exists country_issuer,
 --   drop column if exists quote_currency,
 --   drop column if exists report_currency,
 --   drop column if exists instrument_type,

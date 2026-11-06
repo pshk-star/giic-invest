@@ -1,0 +1,46 @@
+name: GIIC resolver de identidad de instrumentos
+
+# Persiste la identidad (país emisor/cotización, monedas, tipo, ADR, CIK/FIGI/…)
+# en public.instruments. Seguro: si la migración 0012 no está aplicada, aborta sin
+# escribir. Disparo manual tras aplicar 0012.
+on:
+  workflow_dispatch:
+    inputs:
+      tickers:
+        description: "Tickers explícitos (separados por espacio); vacío = cartera"
+        required: false
+      dry_run:
+        description: "Solo imprimir, sin escribir"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: giic-resolve-identity
+  cancel-in-progress: false
+
+jobs:
+  resolve-identity:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-job.txt
+      - name: Resolver y persistir identidad
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
+        run: |
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            python -m app.jobs.resolve_identity --dry-run ${{ github.event.inputs.tickers }}
+          else
+            python -m app.jobs.resolve_identity ${{ github.event.inputs.tickers }}
+          fi
