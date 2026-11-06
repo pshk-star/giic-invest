@@ -1,22 +1,26 @@
-"""Experimento A/B/C: ¿aportan información incremental los fundamentales (B) y la macro (C)
-sobre un modelo de solo-precio (A)? Comparación OOS rigurosa, sin forzar un resultado.
+"""Experimento A/B/C instrumentado: diagnostica la pérdida de historia (funnel por filtro)
+y corre DOS experimentos separados con la MÁXIMA historia PIT válida de cada uno:
+  - AB : muestra común precio + fundamentales (sin exigir macro) -> historia más larga.
+  - ABC: muestra común triple (precio + fundamentales + macro).
+Comparaciones pareadas DENTRO de cada experimento (no se mezclan muestras distintas).
 
-Condiciones:
- - MUESTRA COMÚN: una fila (ticker, fecha) entra solo si A, B y C tienen TODOS sus features
-   disponibles ese día (evita que diferencias de cobertura generen mejoras artificiales).
- - PIT estricto: fundamentales con filing_date<=as_of (de-acumulación YTD con linaje);
-   macro con vintage<=as_of y release_date<=as_of-lag. WALCL EXCLUIDA (limitación PIT).
- - Walk-forward con purga/embargo; rank IC por fecha; test incremental PAREADO (B-A, C-B)
-   con bootstrap por BLOQUES (dependencia temporal) y corrección de Holm (comparaciones
-   múltiples); HOLDOUT final (último 20% del tiempo) aislado de toda selección.
- - Evaluación económica neta de costos. Veredicto: observado vs defendible.
+PIT estricto: fundamentales filing_date<=as_of (de-acumulación YTD con linaje); macro
+vintage<=as_of y release_date<=as_of; WALCL excluida (limitación PIT).
 
-Uso: python -m app.research.abc_compare --range 8y
+Nota de validación: el 'oos_period' (último 20%) YA fue consultado en la corrida anterior;
+aquí se reporta como OOS histórico, NO como holdout virgen. La validación verdaderamente
+prospectiva es la emisión diaria (track record), no este periodo.
+
+Incluye evaluación ECONÓMICA (h=20): retorno neto de costos, turnover, exposición
+sectorial, drawdown, vs benchmark equiponderado.
+
+Uso: python -m app.research.abc_compare --range max
 """
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import random
 import sys
@@ -25,22 +29,26 @@ from typing import Dict, List, Optional
 
 from ..providers import get_provider
 from ..jobs.universe import get_universe
-from .features import (correlation, daily_log_returns, drawdown_from_high_at, momentum_12_1,
-                       reversal, trailing_return, trailing_vol, volume_ratio)
-from .fundamentals import is_ytd, is_quarterly, quarterly_values
+from .features import (drawdown_from_high_at, momentum_12_1, reversal, trailing_return,
+                       trailing_vol, volume_ratio)
+from .fundamentals import is_quarterly, is_ytd, quarterly_values
 from .stats import spearman_ic
 
 HORIZONS = [1, 5, 20, 60, 120, 252]
 STEP = 20
+COST = 0.001
 FLOW = {"Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "NetIncomeLoss",
         "GrossProfit", "OperatingIncomeLoss", "NetCashProvidedByUsedInOperatingActivities",
         "PaymentsToAcquirePropertyPlantAndEquipment"}
 INSTANT = {"Assets", "Liabilities", "StockholdersEquity", "LongTermDebtNoncurrent"}
-MACRO = ["DGS10", "T10Y2Y", "CPIAUCSL", "UNRATE", "BAMLH0A0HYM2", "NFCI"]  # WALCL excluida (limitación PIT)
-MACRO_LAG = 2  # días de disponibilidad conservadores
+MACRO = ["DGS10", "T10Y2Y", "CPIAUCSL", "UNRATE", "BAMLH0A0HYM2", "NFCI"]
 
 
-# ---------- carga de datos ----------
+def _d(s):
+    from datetime import date
+    y, m, dd = map(int, s.split("-")); return date(y, m, dd)
+
+
 def load_prices(provider, tickers, rng):
     out = {}
     for t in tickers:
@@ -50,22 +58,20 @@ def load_prices(provider, tickers, rng):
     return out
 
 
-def read_fundamentals(writer, tickers) -> Dict[str, Dict[str, list]]:
-    """Por ticker -> concepto -> serie trimestral (flujo de-acumulado / instant as-of), con filing_date."""
+def read_fundamentals(writer, tickers):
     rows = writer.select_rows("fundamentals_pit",
                               select="ticker,concept,period_start,period_end,value,filing_date,unit",
                               params={"ticker": "in.(" + ",".join(tickers) + ")", "unit": "eq.USD"})
     by = defaultdict(lambda: defaultdict(list))
     for r in rows:
         by[r["ticker"]][r["concept"]].append(r)
-    out: Dict[str, Dict[str, list]] = {}
+    out = {}
     for t, concepts in by.items():
         tl = {}
         for c, facts in concepts.items():
             if c in FLOW:
-                tl[c] = quarterly_values(facts)  # de-acumulado, con filing_date y source (linaje)
+                tl[c] = quarterly_values(facts)
             elif c in INSTANT:
-                # instant: por period_end, última versión (mayor filing_date)
                 d = {}
                 for f in facts:
                     pe = f["period_end"]
@@ -73,14 +79,13 @@ def read_fundamentals(writer, tickers) -> Dict[str, Dict[str, list]]:
                         continue
                     if pe not in d or (f.get("filing_date") or "") > (d[pe].get("filing_date") or ""):
                         d[pe] = f
-                tl[c] = sorted(({"period_end": pe, "value": float(x["value"]),
-                                 "filing_date": x.get("filing_date")} for pe, x in d.items()),
-                               key=lambda z: z["period_end"])
+                tl[c] = sorted(({"period_end": pe, "value": float(x["value"]), "filing_date": x.get("filing_date")}
+                                for pe, x in d.items()), key=lambda z: z["period_end"])
         out[t] = tl
     return out
 
 
-def read_macro(writer) -> Dict[str, list]:
+def read_macro(writer):
     rows = writer.select_rows("macro_pit", select="series_id,obs_date,value,release_date,vintage",
                               params={"series_id": "in.(" + ",".join(MACRO) + ")"})
     by = defaultdict(list)
@@ -88,18 +93,23 @@ def read_macro(writer) -> Dict[str, list]:
         by[r["series_id"]].append(r)
     for s in by:
         by[s].sort(key=lambda z: (z["obs_date"], z["vintage"] or ""))
-    return by
+    # rango real de disponibilidad por serie (diagnóstico)
+    span = {s: {"first_vintage": (rws[0]["vintage"] if rws else None),
+                "first_obs": (rws[0]["obs_date"] if rws else None), "rows": len(rws)}
+            for s, rws in by.items()}
+    return by, span
 
 
-# ---------- features ----------
-def _rev(tl, concept_primary="Revenues", alt="RevenueFromContractWithCustomerExcludingAssessedTax"):
-    a = tl.get(concept_primary) or []
-    b = tl.get(alt) or []
-    return a if len(a) >= len(b) else b  # unifica los dos tags de ingresos
+def read_sectors(writer, tickers):
+    try:
+        rows = writer.select_rows("instruments", select="ticker,sector",
+                                  params={"ticker": "in.(" + ",".join(tickers) + ")"})
+        return {r["ticker"]: (r.get("sector") or "Otro") for r in rows}
+    except Exception:
+        return {}
 
 
-def _asof(series: list, d: str):
-    """Último elemento con filing_date <= d (lista ordenada por period_end)."""
+def _asof(series, d):
     best = None
     for x in series:
         if (x.get("filing_date") or "9999") <= d:
@@ -107,79 +117,187 @@ def _asof(series: list, d: str):
     return best
 
 
-def _ttm(series: list, d: str, n=4):
+def _ttm(series, d, n=4):
     vals = [x for x in series if (x.get("filing_date") or "9999") <= d]
     return sum(v["value"] for v in vals[-n:]) if len(vals) >= n else None
 
 
-def fund_features(tl, d: str) -> Optional[List[float]]:
-    rev = _rev(tl); ni = tl.get("NetIncomeLoss") or []
-    eq = tl.get("StockholdersEquity") or []; li = tl.get("Liabilities") or []
-    ocf = tl.get("NetCashProvidedByUsedInOperatingActivities") or []
+def fund_features(tl, d):
+    rev_a = tl.get("Revenues") or []
+    rev_b = tl.get("RevenueFromContractWithCustomerExcludingAssessedTax") or []
+    rev = rev_a if len(rev_a) >= len(rev_b) else rev_b
+    ni = tl.get("NetIncomeLoss") or []; eq = tl.get("StockholdersEquity") or []
+    li = tl.get("Liabilities") or []; ocf = tl.get("NetCashProvidedByUsedInOperatingActivities") or []
     capex = tl.get("PaymentsToAcquirePropertyPlantAndEquipment") or []
     rev_q = _asof(rev, d); ni_q = _asof(ni, d); eq_a = _asof(eq, d)
     if not rev_q or not ni_q or not eq_a or rev_q["value"] == 0 or eq_a["value"] == 0:
         return None
-    # crecimiento YoY (trimestre vs 4 atrás, ambos disponibles a d)
+
     def yoy(series):
-        avail = [x for x in series if (x.get("filing_date") or "9999") <= d]
-        if len(avail) < 5 or avail[-5]["value"] == 0:
+        av = [x for x in series if (x.get("filing_date") or "9999") <= d]
+        if len(av) < 5 or av[-5]["value"] == 0:
             return 0.0
-        return avail[-1]["value"] / abs(avail[-5]["value"]) - 1.0
-    rev_g = yoy(rev); ni_g = yoy(ni)
-    # aceleración de crecimiento
-    avail_rev = [x for x in rev if (x.get("filing_date") or "9999") <= d]
+        return av[-1]["value"] / abs(av[-5]["value"]) - 1.0
+    rev_g, ni_g = yoy(rev), yoy(ni)
+    av_rev = [x for x in rev if (x.get("filing_date") or "9999") <= d]
     accel = 0.0
-    if len(avail_rev) >= 6 and avail_rev[-6]["value"]:
-        prev_g = avail_rev[-2]["value"] / abs(avail_rev[-6]["value"]) - 1.0
-        accel = rev_g - prev_g
+    if len(av_rev) >= 6 and av_rev[-6]["value"]:
+        accel = rev_g - (av_rev[-2]["value"] / abs(av_rev[-6]["value"]) - 1.0)
     net_margin = ni_q["value"] / rev_q["value"]
     ni_ttm = _ttm(ni, d); roe = (ni_ttm / eq_a["value"]) if ni_ttm is not None else 0.0
-    li_a = _asof(li, d); leverage = (li_a["value"] / eq_a["value"]) if (li_a and eq_a["value"]) else 0.0
+    li_a = _asof(li, d); leverage = (li_a["value"] / eq_a["value"]) if li_a else 0.0
     ocf_q = _asof(ocf, d); cap_q = _asof(capex, d)
     fcf_margin = ((ocf_q["value"] - cap_q["value"]) / rev_q["value"]) if (ocf_q and cap_q) else 0.0
     return [rev_g, ni_g, accel, net_margin, roe, leverage, fcf_margin]
 
 
-def macro_asof(macro: Dict[str, list], d: str) -> Dict[str, float]:
-    out = {}
-    for s, rows in macro.items():
+def macro_features(macro, d):
+    def level(s):
         best = None
-        for r in rows:
+        for r in macro.get(s, []):
             if (r.get("vintage") or "9999") <= d and (r.get("release_date") or "9999") <= d and r.get("value") is not None:
                 best = r
-        out[s] = float(best["value"]) if best else None
-    return out
-
-
-def macro_features(macro, d: str) -> Optional[List[float]]:
-    m = macro_asof(macro, d)
-    need = ["DGS10", "T10Y2Y", "UNRATE", "BAMLH0A0HYM2", "NFCI"]
-    if any(m.get(k) is None for k in need):
+        return float(best["value"]) if best else None
+    need = {s: level(s) for s in ["DGS10", "T10Y2Y", "UNRATE", "BAMLH0A0HYM2", "NFCI"]}
+    if any(v is None for v in need.values()):
         return None
-    # CPI YoY (dato de hace ~12m también disponible a d)
-    cpi_rows = [r for r in macro.get("CPIAUCSL", [])
-                if (r.get("vintage") or "9999") <= d and (r.get("release_date") or "9999") <= d and r.get("value")]
-    cpi_yoy = 0.0
-    if len(cpi_rows) >= 13:
-        cpi_yoy = float(cpi_rows[-1]["value"]) / float(cpi_rows[-13]["value"]) - 1.0
-    return [m["DGS10"], m["T10Y2Y"], m["UNRATE"], m["BAMLH0A0HYM2"], m["NFCI"], cpi_yoy]
+    cpi = [r for r in macro.get("CPIAUCSL", [])
+           if (r.get("vintage") or "9999") <= d and (r.get("release_date") or "9999") <= d and r.get("value")]
+    cpi_yoy = (float(cpi[-1]["value"]) / float(cpi[-13]["value"]) - 1.0) if len(cpi) >= 13 else 0.0
+    return [need["DGS10"], need["T10Y2Y"], need["UNRATE"], need["BAMLH0A0HYM2"], need["NFCI"], cpi_yoy]
 
 
-# ---------- experimento ----------
-def run(provider, writer, tickers, rng="8y") -> dict:
+def block_boot(xs, nb=800, block=4):
+    if len(xs) < 6:
+        return (None, None, None)
+    means = []
+    nblk = (len(xs) + block - 1) // block
+    for _ in range(nb):
+        s = []
+        for _b in range(nblk):
+            st = random.randrange(0, max(1, len(xs) - block))
+            s += xs[st:st + block]
+        s = s[:len(xs)]
+        means.append(sum(s) / len(s))
+    means.sort()
+    return (sum(xs) / len(xs), means[int(0.05 * nb)], means[int(0.95 * nb)])
+
+
+def experiment(rows, families, label):
     import numpy as np
     from sklearn.linear_model import Ridge
     from sklearn.preprocessing import StandardScaler
 
+    dec_dates = sorted({r["date"] for r in rows})
+    oos_start = dec_dates[int(0.8 * len(dec_dates))] if len(dec_dates) > 5 else dec_dates[-1]
+
+    def X(rr, fam):
+        if fam == "A":
+            return [r["A"] for r in rr]
+        if fam == "B":
+            return [r["A"] + r["B"] for r in rr]
+        return [r["A"] + r["B"] + r["C"] for r in rr]
+
+    res = {}
+    econ = None
+    for h in HORIZONS:
+        valid = [r for r in rows if h in r["fwd"]]
+        dh = sorted({r["date"] for r in valid})
+        if len(dh) < 20:
+            res[f"{h}s"] = {"note": "insuficiente", "n_dates": len(dh)}
+            continue
+        per = {f: {} for f in families}
+        prev_names = None
+        strat_rets, bench_rets, turnovers = [], [], []
+        sector_count = defaultdict(int); sel_total = 0
+        for di in range(12, len(dh)):
+            d = dh[di]
+            train = [r for r in valid if r["realize"][h] <= d]
+            test = [r for r in valid if r["date"] == d]
+            if len(train) < 80 or len(test) < 8:
+                continue
+            ytr = np.array([r["fwd"][h] for r in train]); yte = [r["fwd"][h] for r in test]
+            preds = {}
+            for fam in families:
+                sc = StandardScaler().fit(np.array(X(train, fam)))
+                mdl = Ridge(alpha=1.0).fit(sc.transform(np.array(X(train, fam))), ytr)
+                p = mdl.predict(sc.transform(np.array(X(test, fam)))).tolist()
+                preds[fam] = p
+                ic = spearman_ic(p, yte)
+                if ic is not None:
+                    per[fam][d] = ic
+            # economía (h=20, familia más rica disponible)
+            if h == 20:
+                fam = families[-1]
+                order = sorted(range(len(test)), key=lambda k: preds[fam][k], reverse=True)
+                top = order[: max(1, len(order) // 5)]
+                names = set(test[k]["ticker"] for k in top)
+                to = 1.0 if prev_names is None else len(names ^ prev_names) / max(1, len(names | prev_names))
+                prev_names = names; turnovers.append(to)
+                strat_rets.append(sum(yte[k] for k in top) / len(top) - to * COST)
+                bench_rets.append(0.0)
+                for k in top:
+                    sector_count[test[k].get("sector", "Otro")] += 1; sel_total += 1
+        res[f"{h}s"] = _summ(per, families, oos_start)
+        if h == 20 and strat_rets:
+            eq = [1.0]
+            for r in strat_rets:
+                eq.append(eq[-1] * (1 + r))
+            peak = eq[0]; mdd = 0.0
+            for v in eq:
+                peak = max(peak, v); mdd = min(mdd, v / peak - 1)
+            m = sum(strat_rets) / len(strat_rets)
+            sd = (sum((x - m) ** 2 for x in strat_rets) / (len(strat_rets) - 1)) ** 0.5 if len(strat_rets) > 1 else 0
+            econ = {
+                "horizon": "20s", "family": families[-1], "rebalances": len(strat_rets),
+                "cum_return_net": round(eq[-1] - 1, 4),
+                "ann_sharpe": round((m / sd) * math.sqrt(252 / 20), 3) if sd > 0 else None,
+                "avg_turnover": round(sum(turnovers) / len(turnovers), 3),
+                "max_drawdown": round(mdd, 4),
+                "sector_exposure": {k: round(v / sel_total, 3) for k, v in sorted(sector_count.items(), key=lambda x: -x[1])[:6]} if sel_total else {},
+                "note": "retorno RELATIVO al mercado, neto de costos (turnover*10bps); benchmark equiponderado=0.",
+            }
+    return {"label": label, "companies": len({r["ticker"] for r in rows}),
+            "observations": len(rows), "decision_dates": len(dec_dates),
+            "first_date": dec_dates[0], "last_date": dec_dates[-1],
+            "years": round((_d(dec_dates[-1]) - _d(dec_dates[0])).days / 365.0, 1),
+            "oos_start_consulted": oos_start, "by_horizon": res, "economics_h20": econ}
+
+
+def _summ(per, families, oos_start):
+    def dev(f):
+        return [per[f][d] for d in sorted(per[f]) if d < oos_start]
+
+    def oos(f):
+        return [per[f][d] for d in sorted(per[f]) if d >= oos_start]
+    out = {}
+    for f in families:
+        dv = dev(f); m, lo, hi = block_boot(dv); ov = oos(f)
+        out[f] = {"dev_ic": round(m, 4) if m is not None else None,
+                  "dev_ci90": [round(lo, 4), round(hi, 4)] if lo is not None else None,
+                  "dev_n": len(dv),
+                  "oos_ic_consulted": round(sum(ov) / len(ov), 4) if ov else None, "oos_n": len(ov)}
+    inc = {}
+    pairs = [("B", "A")] + ([("C", "B")] if "C" in families else [])
+    for x, y in pairs:
+        common = [d for d in sorted(per[x]) if d in per[y] and d < oos_start]
+        diffs = [per[x][d] - per[y][d] for d in common]
+        m, lo, hi = block_boot(diffs)
+        inc[f"{x}_minus_{y}"] = {"mean_diff": round(m, 4) if m is not None else None,
+                                 "ci90": [round(lo, 4), round(hi, 4)] if lo is not None else None,
+                                 "n": len(diffs), "defendable": bool(lo is not None and lo > 0)}
+    out["incremental"] = inc
+    return out
+
+
+def run(provider, writer, tickers, rng="max"):
     prices = load_prices(provider, tickers, rng)
     if len(prices) < 10:
         return {"error": "universo insuficiente"}
     funds = read_fundamentals(writer, list(prices.keys()))
-    macro = read_macro(writer)
+    macro, macro_span = read_macro(writer)
+    sectors = read_sectors(writer, list(prices.keys()))
 
-    # mercado (retorno log diario promedio por fecha)
-    import math
     acc = defaultdict(list)
     for b in prices.values():
         c = [x["close"] for x in b]; dts = [x["as_of"] for x in b]
@@ -187,23 +305,24 @@ def run(provider, writer, tickers, rng="8y") -> dict:
             if c[k - 1] > 0 and c[k] > 0:
                 acc[dts[k]].append(math.log(c[k] / c[k - 1]))
     mkt = {d: sum(v) / len(v) for d, v in acc.items() if v}
-    mkt_dates = sorted(mkt); mkt_idx = {d: i for i, d in enumerate(mkt_dates)}
+    mdates = sorted(mkt); midx = {d: i for i, d in enumerate(mdates)}
 
     def mkt_cum(dates, i, lag):
         if i - lag < 0:
             return None
         d0, d1 = dates[i - lag], dates[i]
-        if d0 not in mkt_idx or d1 not in mkt_idx:
+        if d0 not in midx or d1 not in midx:
             return None
-        return math.exp(sum(mkt[mkt_dates[k]] for k in range(mkt_idx[d0] + 1, mkt_idx[d1] + 1))) - 1.0
+        return math.exp(sum(mkt[mdates[k]] for k in range(midx[d0] + 1, midx[d1] + 1))) - 1.0
 
-    # construir filas de la MUESTRA COMÚN (A,B,C disponibles)
-    rows = []  # (date, ticker, A(list), Bextra(list), Cextra(list), fwd_by_h dict, realize_by_h, sector)
-    sectors = {}
+    funnel = {"grid_points": 0, "pass_price": 0, "pass_price_fund": 0, "pass_price_fund_macro": 0,
+              "lost_fund": 0, "lost_macro": 0}
+    rows_ab, rows_abc = [], []
     for t, b in prices.items():
         closes = [x["close"] for x in b]; vols = [x.get("volume") for x in b]; dts = [x["as_of"] for x in b]
-        tl = funds.get(t, {})
+        tl = funds.get(t, {}); sec = sectors.get(t, "Otro")
         for i in range(252, len(closes) - 1, STEP):
+            funnel["grid_points"] += 1
             d = dts[i]
             fA = [momentum_12_1(closes, i), trailing_return(closes, i, 20), trailing_return(closes, i, 60),
                   trailing_return(closes, i, 120), reversal(closes, i, 5), trailing_vol(closes, i, 20),
@@ -212,148 +331,43 @@ def run(provider, writer, tickers, rng="8y") -> dict:
             fA.append((r60 - m60) if (r60 is not None and m60 is not None) else None)
             if any(x is None for x in fA):
                 continue
-            fB = fund_features(tl, d)
-            if fB is None:
-                continue
-            fC = macro_features(macro, d)
-            if fC is None:
-                continue
+            funnel["pass_price"] += 1
             fwd, realize = {}, {}
             for h in HORIZONS:
                 if i + h < len(closes) and closes[i] > 0:
                     mf = mkt_cum(dts, i + h, h)
                     if mf is not None:
-                        fwd[h] = closes[i + h] / closes[i] - 1.0 - mf   # retorno relativo al mercado
-                        realize[h] = dts[i + h]
+                        fwd[h] = closes[i + h] / closes[i] - 1.0 - mf; realize[h] = dts[i + h]
             if not fwd:
                 continue
-            rows.append((d, t, fA, fB, fC, fwd, realize))
-    if len(rows) < 300:
-        return {"error": f"muestra común insuficiente ({len(rows)} filas)"}
-
-    # ---- stats de la muestra común (sesgo de selección) ----
-    all_tickers = sorted({r[1] for r in rows})
-    all_dates = sorted({r[0] for r in rows})
-    sample_info = {
-        "companies": len(all_tickers), "observations": len(rows),
-        "years_covered": round((_d(all_dates[-1]) - _d(all_dates[0])).days / 365.0, 1),
-        "first_date": all_dates[0], "last_date": all_dates[-1],
-        "universe_size": len(tickers), "with_price_history": len(prices),
-        "excluded_no_fundamentals_or_macro": len(prices) - len(all_tickers),
-        "selection_bias_note": ("La muestra común exige fundamentales PIT + macro; excluye "
-                                "empresas sin companyfacts y el periodo previo a que cada empresa "
-                                "tuviera >=5 trimestres. Sesgo hacia emisores US con historial; "
-                                "resultados condicionados a ese subconjunto."),
-    }
-
-    # ---- walk-forward por horizonte + holdout ----
-    decision_dates = sorted({r[0] for r in rows})
-    holdout_start = decision_dates[int(0.8 * len(decision_dates))]  # último 20% AISLADO
-    sample_info["holdout_start"] = holdout_start
-
-    def build_X(rr, fam):
-        if fam == "A":
-            return [r[2] for r in rr]
-        if fam == "B":
-            return [r[2] + r[3] for r in rr]
-        return [r[2] + r[3] + r[4] for r in rr]
-
-    results = {}
-    for h in HORIZONS:
-        valid = [r for r in rows if h in r[5]]
-        dates_h = sorted({r[0] for r in valid})
-        if len(dates_h) < 20:
-            results[f"{h}s"] = {"note": "insuficiente"}
-            continue
-        per_date = {"A": {}, "B": {}, "C": {}}  # date -> IC (dev), y holdout aparte
-        for di in range(12, len(dates_h)):
-            d = dates_h[di]
-            train = [r for r in valid if r[6][h] <= d]      # purga: target ya realizado
-            test = [r for r in valid if r[0] == d]
-            if len(train) < 80 or len(test) < 8:
+            fB = fund_features(tl, d)
+            if fB is None:
+                funnel["lost_fund"] += 1
                 continue
-            yte = np.array([r[5][h] for r in test])
-            ytr = np.array([r[5][h] for r in train])
-            for fam in ("A", "B", "C"):
-                Xtr = np.array(build_X(train, fam)); Xte = np.array(build_X(test, fam))
-                sc = StandardScaler().fit(Xtr)
-                mdl = Ridge(alpha=1.0).fit(sc.transform(Xtr), ytr)
-                ic = spearman_ic(mdl.predict(sc.transform(Xte)).tolist(), yte.tolist())
-                if ic is not None:
-                    per_date[fam][d] = ic
-        results[f"{h}s"] = _summarize(per_date, holdout_start)
+            funnel["pass_price_fund"] += 1
+            row = {"date": d, "ticker": t, "A": fA, "B": fB, "fwd": fwd, "realize": realize, "sector": sec}
+            rows_ab.append(row)
+            fC = macro_features(macro, d)
+            if fC is None:
+                funnel["lost_macro"] += 1
+                continue
+            funnel["pass_price_fund_macro"] += 1
+            r2 = dict(row); r2["C"] = fC
+            rows_abc.append(r2)
 
-    return {
-        "experimental": True,
-        "note": "A=precio, B=+fundamentales PIT, C=+macro PIT. Retorno objetivo = relativo al mercado.",
-        "sample": sample_info,
-        "macro_excluded": ["WALCL (limitación PIT: semanal, revisable, sin vintages verificables)"],
-        "results_by_horizon": results,
-    }
-
-
-def _d(s):
-    from datetime import date
-    y, m, dd = map(int, s.split("-")); return date(y, m, dd)
-
-
-def _summarize(per_date: dict, holdout_start: str) -> dict:
-    import numpy as np
-
-    def dev_ics(fam):
-        return [per_date[fam][d] for d in sorted(per_date[fam]) if d < holdout_start]
-
-    def hold_ics(fam):
-        return [per_date[fam][d] for d in sorted(per_date[fam]) if d >= holdout_start]
-
-    def block_boot_mean_ci(xs, nb=800, block=4):
-        if len(xs) < 6:
-            return (None, None, None)
-        means = []
-        nblocks = (len(xs) + block - 1) // block
-        for _ in range(nb):
-            s = []
-            for _b in range(nblocks):
-                st = random.randrange(0, max(1, len(xs) - block))
-                s += xs[st:st + block]
-            s = s[:len(xs)]
-            means.append(sum(s) / len(s))
-        means.sort()
-        return (sum(xs) / len(xs), means[int(0.05 * nb)], means[int(0.95 * nb)])
-
-    out = {}
-    for fam in ("A", "B", "C"):
-        dev = dev_ics(fam); hold = hold_ics(fam)
-        m, lo, hi = block_boot_mean_ci(dev)
-        hm = (sum(hold) / len(hold)) if hold else None
-        half = len(dev) // 2
-        out[fam] = {
-            "dev_mean_ic": round(m, 4) if m is not None else None,
-            "dev_ci90": [round(lo, 4), round(hi, 4)] if lo is not None else None,
-            "dev_n_dates": len(dev),
-            "subperiods": [round(sum(dev[:half]) / half, 4) if half else None,
-                           round(sum(dev[half:]) / (len(dev) - half), 4) if len(dev) - half else None],
-            "holdout_mean_ic": round(hm, 4) if hm is not None else None,
-            "holdout_n": len(hold),
-        }
-    # tests incrementales pareados por fecha (dev) con bootstrap por bloques
-    def paired(famx, famy):
-        common = [d for d in sorted(per_date[famx]) if d in per_date[famy] and d < holdout_start]
-        diffs = [per_date[famx][d] - per_date[famy][d] for d in common]
-        m, lo, hi = block_boot_mean_ci(diffs)
-        return {"mean_diff": round(m, 4) if m is not None else None,
-                "ci90": [round(lo, 4), round(hi, 4)] if lo is not None else None, "n": len(diffs)}
-    inc = {"B_minus_A": paired("B", "A"), "C_minus_B": paired("C", "B")}
-    # Holm sobre las 2 comparaciones (por horizonte): defendible si CI90 inferior > 0
-    for k, v in inc.items():
-        v["defendable_ci"] = bool(v["ci90"] and v["ci90"][0] > 0)
-    out["incremental"] = inc
+    out = {"experimental": True, "macro_availability": macro_span,
+           "macro_excluded": ["WALCL (limitación PIT)"], "funnel": funnel,
+           "validation_note": ("El periodo OOS (último 20%) YA fue consultado en la corrida previa; "
+                               "se reporta como OOS histórico, no como holdout virgen. La validación "
+                               "prospectiva real es la emisión diaria.")}
+    out["experiment_AB"] = experiment(rows_ab, ["A", "B"], "A vs B (precio+fundamentales, historia máx)") if len(rows_ab) >= 300 else {"error": f"AB insuficiente ({len(rows_ab)})"}
+    out["experiment_ABC"] = experiment(rows_abc, ["A", "B", "C"], "A vs B vs C (triple, historia máx)") if len(rows_abc) >= 300 else {"error": f"ABC insuficiente ({len(rows_abc)})"}
     return out
 
 
 def main(argv=None):
     p = argparse.ArgumentParser()
-    p.add_argument("--range", default="8y")
+    p.add_argument("--range", default="max")
     p.add_argument("--tickers", nargs="*")
     args = p.parse_args(argv)
     random.seed(42)
@@ -364,8 +378,7 @@ def main(argv=None):
         out = run(get_provider("yahoo"), writer, tickers, args.range)
     except Exception as e:
         import traceback
-        print(json.dumps({"error": type(e).__name__, "message": str(e)[:300],
-                          "tb": traceback.format_exc()[-800:]}, indent=2))
+        print(json.dumps({"error": type(e).__name__, "message": str(e)[:300], "tb": traceback.format_exc()[-900:]}, indent=2))
         return 1
     print(json.dumps(out, indent=2, default=str))
     return 0
