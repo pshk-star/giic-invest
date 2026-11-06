@@ -118,7 +118,10 @@ export function forecast(assetsIn: AssetHistory[], opts?: ForecastOpts): Forecas
     const path = new Array(maxDays);
     let day = 0;
     while (day < maxDays) {
-      const start = Math.floor(rnd() * Math.max(1, n - block));
+      // start ∈ [0, n-block] para que el bloque pueda incluir la ÚLTIMA observación
+      // (índices start..start+block-1 ≤ n-1). Antes usaba (n-block), que excluía el
+      // último retorno histórico. n ≥ 60 y block = 10, así que n-block+1 ≥ 51.
+      const start = Math.floor(rnd() * Math.max(1, n - block + 1));
       for (let b = 0; b < block && day < maxDays; b++, day++) {
         for (let i = 0; i < k; i++) cum[i] *= (1 + simRets[i][start + b]);
         let v = cash;
