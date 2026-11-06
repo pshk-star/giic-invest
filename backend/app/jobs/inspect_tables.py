@@ -58,7 +58,14 @@ def run() -> dict:
         except Exception as e:
             n = f"error: {type(e).__name__}"
         out[t] = {"exists_in_rest": exists, "columns": cols, "row_count": n}
-    return {"tables": out, "rls_sql_for_pablo": RLS_SQL}
+    # volcado de fx_rates (solo lectura) para confirmar par MXN/USD utilizable
+    fx = []
+    try:
+        fx = cli.get(f"{base}/fx_rates", params={"select": "base,currency,rate,as_of",
+                                                 "order": "as_of.desc", "limit": "50"}).json()
+    except Exception as e:
+        fx = [{"error": f"{type(e).__name__}"}]
+    return {"tables": out, "fx_rates_rows": fx, "rls_sql_for_pablo": RLS_SQL}
 
 
 def main(argv=None):
