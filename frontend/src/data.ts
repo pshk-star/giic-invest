@@ -273,27 +273,44 @@ export interface XrayWeightRow {
   etf: string; ticker: string | null; name: string | null; weight: number | null;
   asset_class: string; company_key: string | null; sector?: string | null;
 }
-export async function addUserEtfHoldings(rows: Record<string, unknown>[]): Promise<void> {
-  const { error } = await supabase.from("user_etf_holdings").insert(rows);
-  if (error) throw error;
+export type ImportStatus = "complete" | "partial" | "failed";
+// Registra una importación: snapshot de estado (user_etf_imports) + líneas (user_etf_holdings).
+// Idempotente: reimportar el mismo archivo no duplica (upsert por clave de línea).
+export async function addUserEtfImport(p: {
+  etf: string; as_of: string; status: ImportStatus; n_lines: number;
+  weight_sum: number; source_file: string; lines: Record<string, unknown>[];
+}): Promise<void> {
+  const s = await supabase.from("user_etf_imports").upsert(
+    { etf: p.etf, as_of: p.as_of, status: p.status, n_lines: p.n_lines,
+      weight_sum: p.weight_sum, source_file: p.source_file },
+    { onConflict: "user_id,etf,as_of" });
+  if (s.error) throw s.error;
+  if (p.lines.length) {
+    const h = await supabase.from("user_etf_holdings")
+      .upsert(p.lines, { onConflict: "user_id,etf,as_of,line_key", ignoreDuplicates: true });
+    if (h.error) throw h.error;
+  }
 }
 
-interface UserHoldingRow extends XrayWeightRow { as_of: string; }
+// Solo importaciones COMPLETAS y validadas; la más reciente por ETF. Las parcial/fallida se
+// ignoran aquí (nunca reemplazan la última válida).
 async function userHoldingsLatest(etfs: string[]): Promise<Map<string, { as_of: string; rows: XrayWeightRow[] }>> {
   const out = new Map<string, { as_of: string; rows: XrayWeightRow[] }>();
-  const q = await supabase.from("user_etf_holdings")
-    .select("etf,ticker,name,weight,asset_class,company_key,sector,as_of")
-    .order("as_of", { ascending: false });
-  if (q.error) return out; // tabla aún no creada (0011 pendiente)
+  const imp = await supabase.from("user_etf_imports")
+    .select("etf,as_of,status").eq("status", "complete").order("as_of", { ascending: false });
+  if (imp.error) return out; // 0011 aún no aplicada
   const up = etfs.map((e) => e.toUpperCase());
-  for (const r of (q.data ?? []) as UserHoldingRow[]) {
-    const e = r.etf.toUpperCase();
-    if (!up.includes(e)) continue;
-    if (!out.has(e)) out.set(e, { as_of: r.as_of, rows: [] });
-    const cur = out.get(e)!;
-    if (r.as_of === cur.as_of) cur.rows.push({ etf: e, ticker: r.ticker, name: r.name,
+  const chosen = new Map<string, string>();
+  for (const r of imp.data ?? []) {
+    const e = (r.etf as string).toUpperCase();
+    if (up.includes(e) && !chosen.has(e)) chosen.set(e, r.as_of);
+  }
+  for (const [e, as_of] of chosen) {
+    const { data } = await supabase.from("user_etf_holdings")
+      .select("etf,ticker,name,weight,asset_class,company_key,sector").eq("etf", e).eq("as_of", as_of);
+    out.set(e, { as_of, rows: (data ?? []).map((r) => ({ etf: e, ticker: r.ticker, name: r.name,
       weight: r.weight != null ? Number(r.weight) : null, asset_class: r.asset_class,
-      company_key: r.company_key, sector: r.sector });
+      company_key: r.company_key, sector: r.sector })) });
   }
   return out;
 }

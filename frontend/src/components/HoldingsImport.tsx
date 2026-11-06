@@ -1,6 +1,6 @@
 import { useState } from "react";
 import * as XLSX from "xlsx";
-import { addUserEtfHoldings } from "../data";
+import { addUserEtfImport } from "../data";
 import { normalizeHoldings, parseCsv, type ParsedHoldings } from "../core/holdings-parse";
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -39,13 +39,18 @@ export function HoldingsImport({ etfs, onImported }: { etfs: string[]; onImporte
     if (!parsed || parsed.lines.length === 0) { setMsg("Nada que importar."); return; }
     setBusy(true); setMsg(null);
     try {
-      const rows = parsed.lines.map((l) => ({
+      const lines = parsed.lines.map((l) => ({
         etf: etf.toUpperCase(), as_of: asOf, provider: "manual", source_file: fileName,
         ticker: l.ticker, name: l.name, cusip: l.cusip, company_key: l.companyKey,
         sector: l.sector, asset_class: l.assetClass, weight: l.weight, line_key: l.lineKey,
       }));
-      await addUserEtfHoldings(rows);
-      setMsg(`Importado: ${rows.length} líneas de ${etf.toUpperCase()} (${parsed.status === "complete" ? "completo" : "parcial"}).`);
+      await addUserEtfImport({
+        etf: etf.toUpperCase(), as_of: asOf, status: parsed.status,
+        n_lines: parsed.nLines, weight_sum: parsed.weightSum, source_file: fileName, lines,
+      });
+      setMsg(parsed.status === "complete"
+        ? `Importado y validado: ${lines.length} líneas de ${etf.toUpperCase()}. Ya se refleja en el X-Ray.`
+        : `Registrado como PARCIAL (Σ pesos ${(parsed.weightSum * 100).toFixed(1)}%). El X-Ray NO lo usará hasta tener una composición completa.`);
       setParsed(null); setFileName("");
       onImported();
     } catch (e) {
