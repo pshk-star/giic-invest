@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Panel } from "./Panel";
 import { getXrayData, type XraySnapshot } from "../data";
 import { effectiveExposure, type EtfWeight, type PortfolioHolding } from "../core/xray";
-import { money, num } from "../format";
+import { money } from "../format";
 
 // Portfolio X-Ray: exposición económica efectiva por empresa (directa + indirecta vía ETFs),
 // concentración, solapamiento y cobertura. No inventa: lo no identificado se marca.
