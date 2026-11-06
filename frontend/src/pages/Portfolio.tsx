@@ -11,6 +11,7 @@ import {
 } from "../core/portfolio-tx";
 import { classifyQuote } from "../core/quotefmt";
 import { mergeValuation } from "../core/price-source";
+import { xirr, type CashFlow } from "../core/returns";
 import { ValuationStamp } from "../components/ValuationStamp";
 import { money, num, pct } from "../format";
 
@@ -79,6 +80,24 @@ export function Portfolio() {
     }
     return any ? s : null;
   }, [positions, quotes]);
+
+  // Rentabilidad money-weighted (TIR/XIRR) de las inversiones: flujos de compra/venta/dividendo
+  // + valor de mercado actual como flujo terminal. Excluye depósitos/retiros de efectivo (son
+  // financiamiento, no retorno). Base USD; si hay transacciones en otra moneda, no se calcula
+  // aún (requiere FX; llega con Fintual/multimoneda).
+  const xirrPct = useMemo(() => {
+    const secTx = txns.filter((t) => ["buy", "sell", "dividend"].includes(t.side));
+    if (secTx.some((t) => (t.currency || "USD") !== "USD")) return { value: null as number | null, mixed: true };
+    const flows: CashFlow[] = [];
+    for (const t of secTx) {
+      const q = t.quantity ?? 0, p = t.price ?? 0, fee = t.fees ?? 0;
+      if (t.side === "buy") flows.push({ date: t.executed_at, amount: -(q * p + fee) });
+      else if (t.side === "sell") flows.push({ date: t.executed_at, amount: q * p - fee });
+      else if (t.side === "dividend") flows.push({ date: t.executed_at, amount: t.amount ?? 0 });
+    }
+    if (totals.marketValue > 0) flows.push({ date: todayISO(), amount: totals.marketValue });
+    return { value: xirr(flows), mixed: false };
+  }, [txns, totals.marketValue]);
 
   const appliedSplits = useMemo(
     () => splits.filter((s) => positions.some((p) => p.qty > 1e-9 && p.ticker === s.ticker.toUpperCase())),
@@ -159,7 +178,21 @@ export function Portfolio() {
               value={money(totals.realized + totals.dividends)}
               tone={totals.realized + totals.dividends >= 0 ? "text-term-good" : "text-term-crit"} />
           </div>
-          <div className="mt-2"><ValuationStamp meta={valuation.meta} /></div>
+          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <ValuationStamp meta={valuation.meta} />
+            <span className="text-xs text-term-muted">
+              · Rentabilidad (TIR anual, money-weighted):{" "}
+              {xirrPct.mixed ? (
+                <span className="text-term-faint">pendiente (transacciones multimoneda)</span>
+              ) : xirrPct.value !== null ? (
+                <span className={`tabnum font-semibold ${xirrPct.value >= 0 ? "text-term-good" : "text-term-crit"}`}>
+                  {pct(xirrPct.value)}
+                </span>
+              ) : (
+                <span className="text-term-faint">n/d</span>
+              )}
+            </span>
+          </div>
           <p className="mt-1 text-xs text-term-muted">
             Las cotizaciones se actualizan solas cada 60 s mientras usas GIIC (fuente gratuita
             <strong> retrasada</strong>, no tiempo real). P&L del día = Σ cantidad × (precio − cierre previo).
