@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { Panel } from "../components/Panel";
 import {
-  getCorporateActions, getInstruments, getPriceHistory, getPrices, getQuotes, getTransactions,
+  getCorporateActions, getFundamentals, getInstruments, getPriceHistory, getPrices, getQuotes,
+  getTransactions,
 } from "../data";
 import { derivePositions } from "../core/portfolio-tx";
 import { mergeValuation } from "../core/price-source";
 import { forecast, buildAssets, type ForecastResult, type PriceBarLite } from "../core/forecast";
+import { FundamentalView, type FundRow } from "../components/FundamentalView";
+import type { FundamentalsPayload } from "../core/valuation";
 import { money } from "../format";
 
 type Bars = PriceBarLite[];
@@ -13,8 +16,11 @@ type Bars = PriceBarLite[];
 export function Forecast() {
   const [hist, setHist] = useState<Record<string, Bars>>({});
   const [valueMap, setValueMap] = useState<Record<string, number>>({});
+  const [fundRows, setFundRows] = useState<FundRow[]>([]);
+  const [fundamentals, setFundamentals] = useState<Record<string, FundamentalsPayload>>({});
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [view, setView] = useState<"riesgo" | "fundamental">("riesgo");
   const [horizon, setHorizon] = useState(252);
   const [drift, setDrift] = useState<"historical" | "neutral">("neutral");
 
@@ -30,8 +36,9 @@ export function Forecast() {
       const txns = (await getTransactions()).filter((t) => !t.fund_id);
       if (!txns.length) { setLoading(false); return; }
       const tickers = Array.from(new Set(txns.map((t) => t.ticker.toUpperCase())));
-      const [prices, quotes, instruments, ca] = await Promise.all([
+      const [prices, quotes, instruments, ca, funds] = await Promise.all([
         getPrices(tickers), getQuotes(tickers), getInstruments(tickers), getCorporateActions(tickers),
+        getFundamentals(tickers),
       ]);
       const { prices: merged } = mergeValuation(tickers, prices, quotes);
       const positions = derivePositions(txns, merged, instruments, ca)
@@ -40,6 +47,13 @@ export function Forecast() {
       await Promise.all(positions.map(async (p) => { h[p.ticker] = await getPriceHistory(p.ticker); }));
       setHist(h);
       setValueMap(Object.fromEntries(positions.map((p) => [p.ticker, p.marketValue ?? 0])));
+      setFundamentals(funds);
+      setFundRows(positions.map((p) => ({
+        ticker: p.ticker, name: p.name,
+        sector: instruments[p.ticker]?.sector ?? null,
+        assetClass: instruments[p.ticker]?.asset_class ?? p.asset_class ?? null,
+        price: p.price, priceAsOf: p.priceAsOf, qty: p.qty, marketValue: p.marketValue,
+      })));
     })().catch((e) => setErr(String(e))).finally(() => setLoading(false));
   }, []);
 
@@ -89,8 +103,37 @@ export function Forecast() {
 
   if (loading) return <div className="grid gap-3">{[0, 1, 2].map((i) => <div key={i} className="h-24 animate-pulse rounded-xl bg-term-panel2" />)}</div>;
   if (err) return <p className="text-sm text-term-crit">Error: {err}</p>;
-  if (!base) return <p className="text-sm text-term-muted">Sin posiciones para proyectar. Registra operaciones en «Mi Cartera».</p>;
-  if (!base.horizons.length) return <p className="text-sm text-term-warn">No hay historial de precios suficiente (≥60 días) en tus posiciones para proyectar. {base.warnings.join(" ")}</p>;
+
+  const perspective = (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-xs text-term-faint">Perspectiva:</span>
+      <div className="flex gap-1">
+        <button onClick={() => setView("riesgo")}
+          className={`rounded px-3 py-1.5 text-sm ${view === "riesgo" ? "bg-term-accent text-term-bg" : "bg-term-panel2 text-term-muted"}`}>A · Riesgo histórico</button>
+        <button onClick={() => setView("fundamental")}
+          className={`rounded px-3 py-1.5 text-sm ${view === "fundamental" ? "bg-term-accent text-term-bg" : "bg-term-panel2 text-term-muted"}`}>B · Valoración fundamental</button>
+      </div>
+    </div>
+  );
+  const twoEngines = (
+    <p className="text-xs text-term-faint">
+      Dos motores independientes. <b className="text-term-fg">A (riesgo histórico):</b> «¿qué resultados podría experimentar mi cartera si los retornos se parecen a los históricos?» (bootstrap, correlaciones).
+      <b className="text-term-fg"> B (valoración fundamental):</b> «¿cuánto podrían valer mis empresas bajo escenarios económicos?» (EPS, múltiplos). No se combinan en una sola cifra.
+    </p>
+  );
+
+  if (view === "fundamental") {
+    return (
+      <div className="grid gap-4">
+        {perspective}
+        {twoEngines}
+        <FundamentalView rows={fundRows} fundamentals={fundamentals} />
+      </div>
+    );
+  }
+
+  if (!base) return <div className="grid gap-4">{perspective}<p className="text-sm text-term-muted">Sin posiciones para proyectar. Registra operaciones en «Mi Cartera».</p></div>;
+  if (!base.horizons.length) return <div className="grid gap-4">{perspective}<p className="text-sm text-term-warn">No hay historial de precios suficiente (≥60 días) en tus posiciones para proyectar. {base.warnings.join(" ")}</p></div>;
 
   const hz = base.horizons.find((h) => h.days === horizon) ?? base.horizons[base.horizons.length - 1];
   const bandSlice = base.band.filter((b) => b.day <= horizon);
@@ -98,6 +141,8 @@ export function Forecast() {
 
   return (
     <div className="grid gap-4">
+      {perspective}
+      {twoEngines}
       <div className="rounded-lg border border-term-border bg-term-panel2 px-3 py-2 text-xs text-term-muted">
         <b className="text-term-fg">Proyección por simulación histórica</b> (bootstrap por bloques multivariante, {base.nObs} días reales, con correlaciones).
         <b> No es predicción calibrada</b> ni usa A/B/C. Precios ajustados por splits y dividendos (cierre ajustado de Yahoo). Sin look-ahead.
