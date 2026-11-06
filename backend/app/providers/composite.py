@@ -76,13 +76,26 @@ class CompositeProvider(MarketDataProvider):
         return self.prices.get_price_history(ticker, start, end)
 
     def get_fundamentals(self, tickers: List[str]) -> Dict[str, Fundamentals]:
-        # El proveedor de fundamentales puede necesitar precios (market cap, P/E).
+        # El proveedor de fundamentales puede necesitar precios (market cap, P/E) y FX
+        # (emisores extranjeros IFRS que reportan en EUR/TWD/… -> convertir a USD).
         quotes = self.prices.get_quotes(tickers)
         prices = {t: q.price for t, q in quotes.items()}
+        fx_map: Dict[str, float] = {}
+        if self.fx is not None:
+            try:
+                fx_map = self.fx.get_fx_rates("USD", [
+                    "EUR", "TWD", "JPY", "GBP", "HKD", "CAD", "CHF", "KRW",
+                    "ILS", "DKK", "SEK", "BRL", "CLP", "AUD", "SGD", "CNY",
+                ])
+            except Exception:
+                fx_map = {}
         try:
-            return self.fundamentals.get_fundamentals(tickers, prices=prices)  # EDGAR acepta prices
+            return self.fundamentals.get_fundamentals(tickers, prices=prices, fx_map=fx_map)
         except TypeError:
-            return self.fundamentals.get_fundamentals(tickers)
+            try:
+                return self.fundamentals.get_fundamentals(tickers, prices=prices)
+            except TypeError:
+                return self.fundamentals.get_fundamentals(tickers)
 
     def get_etf_holdings(self, etf_ticker: str) -> List[ETFHolding]:
         return self.fundamentals.get_etf_holdings(etf_ticker)

@@ -14,6 +14,9 @@ import sys
 
 TABLES = ["fx_rates", "etf_holdings", "settings", "user_funds", "fund_navs"]
 
+# Tickers a verificar en detalle (evidencia de datos reales llegando a la UI).
+FUND_TICKERS = ["ASML", "TSM", "NVDA", "META", "NFLX"]
+
 RLS_SQL = (
     "-- Columnas, tipos y RLS (correr en el editor SQL de Supabase):\n"
     "select table_name, column_name, data_type, is_nullable, column_default\n"
@@ -65,7 +68,37 @@ def run() -> dict:
                                                  "order": "as_of.desc", "limit": "50"}).json()
     except Exception as e:
         fx = [{"error": f"{type(e).__name__}"}]
-    return {"tables": out, "fx_rates_rows": fx, "rls_sql_for_pablo": RLS_SQL}
+
+    # EVIDENCIA: fundamentales reales + precios por ticker objetivo (ASML/TSM/…).
+    inlist = ",".join(FUND_TICKERS)
+    fundamentals = []
+    try:
+        fundamentals = cli.get(f"{base}/fundamentals",
+                               params={"select": "ticker,payload", "ticker": f"in.({inlist})"}).json()
+    except Exception as e:
+        fundamentals = [{"error": f"{type(e).__name__}"}]
+    prices_now = []
+    try:
+        prices_now = cli.get(f"{base}/prices",
+                             params={"select": "ticker,close,as_of,currency", "ticker": f"in.({inlist})"}).json()
+    except Exception as e:
+        prices_now = [{"error": f"{type(e).__name__}"}]
+    # Comparación de precio para ASML (Prioridad 3): últimas filas de price_history.
+    asml_hist = []
+    try:
+        asml_hist = cli.get(f"{base}/price_history",
+                            params={"select": "ticker,close,as_of", "ticker": "eq.ASML",
+                                    "order": "as_of.desc", "limit": "3"}).json()
+    except Exception as e:
+        asml_hist = [{"error": f"{type(e).__name__}"}]
+
+    return {
+        "tables": out, "fx_rates_rows": fx,
+        "fundamentals_target": fundamentals,
+        "prices_target": prices_now,
+        "asml_price_history_latest": asml_hist,
+        "rls_sql_for_pablo": RLS_SQL,
+    }
 
 
 def main(argv=None):

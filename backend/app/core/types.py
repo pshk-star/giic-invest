@@ -66,6 +66,9 @@ class Fundamentals:
     net_margin: Optional[float] = None
     debt_to_equity: Optional[float] = None
     market_cap: Optional[float] = None
+    currency: Optional[str] = None        # divisa de reporte (EDGAR): USD, EUR, TWD, ...
+    as_of: Optional[str] = None           # fin del último periodo anual usado (YYYY-MM-DD)
+    taxonomy: Optional[str] = None        # us-gaap | ifrs-full (procedencia)
     is_sample: bool = False
 
 

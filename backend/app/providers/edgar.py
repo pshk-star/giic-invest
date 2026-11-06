@@ -30,12 +30,37 @@ def _parse_date(s: str) -> Optional[date]:
         return None
 
 
-def _annual_points(unit_rows: list) -> List[Tuple[date, float]]:
-    """Valores anuales (duración ~365d, formulario 10-K) ordenados por fecha fin."""
+# Formularios anuales: 10-K (US), 20-F / 40-F (emisores extranjeros). Más enmiendas (/A).
+ANNUAL_FORMS = ("10-K", "20-F", "40-F")
+
+# Conceptos por taxonomía. us-gaap (emisores domésticos) e ifrs-full (20-F).
+US_GAAP_MAP = {
+    "rev": ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"],
+    "ni": ["NetIncomeLoss"],
+    "eps": ["EarningsPerShareDiluted", "EarningsPerShareBasic"],
+    "equity": ["StockholdersEquity"],
+    "ocf": ["NetCashProvidedByUsedInOperatingActivities"],
+    "capex": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets"],
+}
+IFRS_MAP = {
+    "rev": ["RevenueFromContractsWithCustomers", "Revenue"],
+    "ni": ["ProfitLoss"],
+    "eps": ["DilutedEarningsLossPerShare", "BasicEarningsLossPerShare",
+            "DilutedEarningsPerShare", "BasicEarningsPerShare"],
+    "equity": ["Equity"],
+    "ocf": ["CashFlowsFromUsedInOperatingActivities"],
+    "capex": ["PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities"],
+}
+# ADR: 1 ADR = N acciones ordinarias (hechos verificables, no estimaciones).
+ADR_RATIO = {"TSM": 5.0, "ASML": 1.0}
+
+
+def _annual_points(unit_rows: list, forms: Tuple[str, ...] = ANNUAL_FORMS) -> List[Tuple[date, float]]:
+    """Valores anuales (duración ~365d, formulario anual) ordenados por fecha fin."""
     out = {}
     for r in unit_rows or []:
-        start, end, val, form = r.get("start"), r.get("end"), r.get("val"), r.get("form", "")
-        if val is None or not start or not end or not str(form).startswith("10-K"):
+        start, end, val, form = r.get("start"), r.get("end"), r.get("val"), str(r.get("form", ""))
+        if val is None or not start or not end or not any(form.startswith(p) for p in forms):
             continue
         d0, d1 = _parse_date(start), _parse_date(end)
         if not d0 or not d1:
@@ -46,12 +71,12 @@ def _annual_points(unit_rows: list) -> List[Tuple[date, float]]:
     return sorted(out.items())
 
 
-def _instant_points(unit_rows: list) -> List[Tuple[date, float]]:
-    """Valores de balance (instantáneos) de formularios 10-K, por fecha."""
+def _instant_points(unit_rows: list, forms: Tuple[str, ...] = ANNUAL_FORMS) -> List[Tuple[date, float]]:
+    """Valores de balance (instantáneos) de formularios anuales, por fecha."""
     out = {}
     for r in unit_rows or []:
-        end, val, form = r.get("end"), r.get("val"), r.get("form", "")
-        if val is None or not end or not str(form).startswith("10-K"):
+        end, val, form = r.get("end"), r.get("val"), str(r.get("form", ""))
+        if val is None or not end or not any(form.startswith(p) for p in forms):
             continue
         d = _parse_date(end)
         if d:
@@ -74,26 +99,56 @@ def _first_concept(facts, taxonomy, names, unit):
     return []
 
 
+def _currency_for(facts, taxonomy, names) -> Optional[str]:
+    """Divisa de reporte: primera unidad monetaria (3 letras, sin '/') con datos."""
+    try:
+        node = facts["facts"][taxonomy]
+    except (KeyError, TypeError):
+        return None
+    for n in names:
+        units = (node.get(n, {}) or {}).get("units", {}) or {}
+        for u in units:
+            if "/" not in u and len(u) == 3 and u.isalpha():
+                return u.upper()
+    return None
+
+
 def parse_companyfacts(facts: dict, ticker: str,
                        price: Optional[float] = None,
-                       shares: Optional[float] = None) -> Fundamentals:
-    """Construye Fundamentals desde company facts de EDGAR. Campos ausentes => None."""
-    rev = _annual_points(_first_concept(
-        facts, "us-gaap",
-        ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"], "USD"))
-    ni = _annual_points(_concept(facts, "us-gaap", "NetIncomeLoss", "USD"))
-    eps = _annual_points(_first_concept(
-        facts, "us-gaap", ["EarningsPerShareDiluted", "EarningsPerShareBasic"], "USD/shares"))
-    equity = _instant_points(_concept(facts, "us-gaap", "StockholdersEquity", "USD"))
-    ocf = _annual_points(_concept(
-        facts, "us-gaap", "NetCashProvidedByUsedInOperatingActivities", "USD"))
-    capex = _annual_points(_first_concept(
-        facts, "us-gaap", ["PaymentsToAcquirePropertyPlantAndEquipment",
-                           "PaymentsToAcquireProductiveAssets"], "USD"))
+                       shares: Optional[float] = None,
+                       fx_map: Optional[Dict[str, float]] = None,
+                       adr_ratio: Optional[float] = None) -> Fundamentals:
+    """Construye Fundamentals desde company facts de EDGAR. Campos ausentes => None.
+
+    Cubre us-gaap (USD) e ifrs-full (emisores 20-F; divisa detectada, p. ej. EUR/TWD).
+    - Ratios adimensionales (margen, ROE, crecimientos) son correctos en cualquier divisa.
+    - pe_ttm / fcf_yield / market_cap mezclan precio en USD con cifras en divisa de reporte:
+      se convierten con `fx_map` (USD por 1 unidad de divisa) y el `adr_ratio` (acciones
+      ordinarias por ADR). Sin FX disponible para una divisa != USD => quedan en None
+      (no se fabrican).
+    """
+    fx_map = fx_map or {}
+    root = (facts or {}).get("facts", {}) or {}
+
+    # Taxonomía + divisa de reporte.
+    if root.get("us-gaap") and (_first_concept(facts, "us-gaap", US_GAAP_MAP["rev"], "USD")
+                                or _concept(facts, "us-gaap", "NetIncomeLoss", "USD")):
+        tax, ccy, M = "us-gaap", "USD", US_GAAP_MAP
+    elif root.get("ifrs-full"):
+        tax, M = "ifrs-full", IFRS_MAP
+        ccy = _currency_for(facts, "ifrs-full", M["rev"] + M["ni"] + M["equity"]) or "USD"
+    else:
+        tax, ccy, M = "us-gaap", "USD", US_GAAP_MAP
+
+    rev = _annual_points(_first_concept(facts, tax, M["rev"], ccy))
+    ni = _annual_points(_first_concept(facts, tax, M["ni"], ccy))
+    eps = _annual_points(_first_concept(facts, tax, M["eps"], f"{ccy}/shares"))
+    equity = _instant_points(_first_concept(facts, tax, M["equity"], ccy))
+    ocf = _annual_points(_first_concept(facts, tax, M["ocf"], ccy))
+    capex = _annual_points(_first_concept(facts, tax, M["capex"], ccy))
     if shares is None:
-        sh = _instant_points(_first_concept(
-            facts, "dei", ["EntityCommonStockSharesOutstanding"], "shares")) or \
-            _instant_points(_concept(facts, "us-gaap", "CommonStockSharesOutstanding", "shares"))
+        sh = _instant_points(_first_concept(facts, "dei", ["EntityCommonStockSharesOutstanding"], "shares")) or \
+            _instant_points(_first_concept(facts, tax, ["CommonStockSharesOutstanding"], "shares"))
         shares = sh[-1][1] if sh else None
 
     def latest(points):
@@ -109,13 +164,22 @@ def parse_companyfacts(facts: dict, ticker: str,
 
     rev_l, ni_l, eps_l = latest(rev), latest(ni), latest(eps)
     eq_l, ocf_l, capex_l = latest(equity), latest(ocf), latest(capex)
+    as_of = (rev[-1][0].isoformat() if rev else (ni[-1][0].isoformat() if ni else None))
 
+    # Adimensionales: válidos en cualquier divisa.
     net_margin = (ni_l / rev_l) if (ni_l is not None and rev_l) else None
     roe = (ni_l / eq_l) if (ni_l is not None and eq_l) else None
+
+    # Dependientes de divisa/ADR.
+    adr = adr_ratio if adr_ratio else 1.0
+    fx = 1.0 if ccy == "USD" else fx_map.get(ccy)      # USD por 1 unidad de la divisa
+    eps_usd = (eps_l * adr * fx) if (eps_l is not None and fx) else None
+    adr_count = (shares / adr) if shares else None
+    market_cap = (price * adr_count) if (price and adr_count) else None
     fcf = (ocf_l - capex_l) if (ocf_l is not None and capex_l is not None) else None
-    market_cap = (price * shares) if (price and shares) else None
-    fcf_yield = (fcf / market_cap) if (fcf is not None and market_cap) else None
-    pe_ttm = (price / eps_l) if (price and eps_l and eps_l > 0) else None
+    fcf_usd = (fcf * fx) if (fcf is not None and fx) else None
+    fcf_yield = (fcf_usd / market_cap) if (fcf_usd is not None and market_cap) else None
+    pe_ttm = (price / eps_usd) if (price and eps_usd and eps_usd > 0) else None
 
     return Fundamentals(
         ticker=ticker,
@@ -130,6 +194,9 @@ def parse_companyfacts(facts: dict, ticker: str,
         net_margin=net_margin,
         debt_to_equity=None,
         market_cap=market_cap,
+        currency=ccy,
+        as_of=as_of,
+        taxonomy=tax,
         is_sample=False,
     )
 
@@ -174,14 +241,17 @@ class EDGARProvider(MarketDataProvider):
             return None
         return r.json()
 
-    def get_fundamentals(self, tickers: List[str], prices: Optional[Dict[str, float]] = None) -> Dict[str, Fundamentals]:
+    def get_fundamentals(self, tickers: List[str], prices: Optional[Dict[str, float]] = None,
+                         fx_map: Optional[Dict[str, float]] = None) -> Dict[str, Fundamentals]:
         prices = prices or {}
+        fx_map = fx_map or {}
         out = {}
         for t in tickers:
             facts = self._facts(t)
             if facts is None:
                 continue
-            out[t] = parse_companyfacts(facts, t, price=prices.get(t))
+            out[t] = parse_companyfacts(facts, t, price=prices.get(t), fx_map=fx_map,
+                                        adr_ratio=ADR_RATIO.get(t.upper(), 1.0))
         return out
 
     # EDGAR no da precios/FX/holdings
