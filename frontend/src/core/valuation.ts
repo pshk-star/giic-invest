@@ -9,6 +9,8 @@ export interface FundamentalsPayload {
   eps_basis?: string | null;      // reported_annual | ttm | normalized | forward
   eps_consistent?: boolean | null; // identidad EPS×acciones≈utilidad neta
   eps_check_ratio?: number | null; // EPS×acciones / utilidad neta (≈1 si coherente)
+  ni_reconstructed?: boolean;     // utilidad neta reconstruida de EPS×acciones (etiqueta directa ausente)
+  shares_source?: string | null;  // procedencia de las acciones vigentes
 
   pe_forward: number | null;      // no disponible gratis (EDGAR) -> null
   ev_ebitda: number | null;       // no disponible gratis -> null

@@ -36,28 +36,50 @@ ANNUAL_FORMS = ("10-K", "20-F", "40-F")
 # Conceptos por taxonomía. us-gaap (emisores domésticos) e ifrs-full (20-F).
 US_GAAP_MAP = {
     "rev": ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"],
-    "ni": ["NetIncomeLoss"],
+    "ni": ["NetIncomeLoss", "ProfitLoss", "NetIncomeLossAvailableToCommonStockholdersBasic"],
     "eps": ["EarningsPerShareDiluted", "EarningsPerShareBasic"],
     "equity": ["StockholdersEquity"],
     "ocf": ["NetCashProvidedByUsedInOperatingActivities"],
     "capex": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets"],
+    "wdil": ["WeightedAverageNumberOfDilutedSharesOutstanding"],
+    "wbas": ["WeightedAverageNumberOfSharesOutstandingBasic", "WeightedAverageNumberOfShareOutstandingBasicAndDiluted"],
 }
 IFRS_MAP = {
     "rev": ["RevenueFromContractsWithCustomers", "Revenue"],
-    "ni": ["ProfitLoss"],
+    "ni": ["ProfitLoss", "ProfitLossAttributableToOwnersOfParent"],
     "eps": ["DilutedEarningsLossPerShare", "BasicEarningsLossPerShare",
             "DilutedEarningsPerShare", "BasicEarningsPerShare"],
-    "equity": ["Equity"],
+    "equity": ["Equity", "EquityAttributableToOwnersOfParent"],
     "ocf": ["CashFlowsFromUsedInOperatingActivities"],
     "capex": ["PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities"],
+    "wdil": ["WeightedAverageShares", "AdjustedWeightedAverageShares"],
+    "wbas": ["WeightedAverageShares"],
 }
+
+
+def _at(points: List[Tuple[date, float]], ref: Optional[date], tol_days: int = 20) -> Optional[float]:
+    """Valor cuyo fin coincide con el período de referencia (±tol). Evita MEZCLAR períodos
+    (p. ej. tomar la utilidad neta de 2013 con el EPS de 2025). None si no hay en ese período."""
+    if not points or ref is None:
+        return None
+    best = None
+    for d, v in points:
+        gap = abs((d - ref).days)
+        if gap <= tol_days and (best is None or gap < best[0]):
+            best = (gap, v)
+    return best[1] if best else None
 # ADR: 1 ADR = N acciones ordinarias (hechos verificables, no estimaciones).
 ADR_RATIO = {"TSM": 5.0, "ASML": 1.0}
 
 
 def _annual_points(unit_rows: list, forms: Tuple[str, ...] = ANNUAL_FORMS) -> List[Tuple[date, float]]:
-    """Valores anuales (duración ~365d, formulario anual) ordenados por fecha fin."""
-    out = {}
+    """Valores anuales (duración ~365d, formulario anual) ordenados por fecha fin.
+
+    Dedup por fecha fin con GANA EL DE PRESENTACIÓN MÁS RECIENTE (filed), para que un
+    valor REEXPRESADO (p. ej. EPS post-split de Netflix) sustituya al original. Si no hay
+    filed, gana el último en orden de aparición.
+    """
+    out = {}  # end_date -> (val, filed)
     for r in unit_rows or []:
         start, end, val, form = r.get("start"), r.get("end"), r.get("val"), str(r.get("form", ""))
         if val is None or not start or not end or not any(form.startswith(p) for p in forms):
@@ -65,23 +87,27 @@ def _annual_points(unit_rows: list, forms: Tuple[str, ...] = ANNUAL_FORMS) -> Li
         d0, d1 = _parse_date(start), _parse_date(end)
         if not d0 or not d1:
             continue
-        span = (d1 - d0).days
-        if 330 <= span <= 400:                 # ~1 año fiscal
-            out[d1] = float(val)                # dedupe por fecha fin (gana la última)
-    return sorted(out.items())
+        if 330 <= (d1 - d0).days <= 400:        # ~1 año fiscal
+            filed = _parse_date(r.get("filed")) or date.min
+            if d1 not in out or filed >= out[d1][1]:
+                out[d1] = (float(val), filed)
+    return sorted((d, v) for d, (v, _f) in out.items())
 
 
 def _instant_points(unit_rows: list, forms: Tuple[str, ...] = ANNUAL_FORMS) -> List[Tuple[date, float]]:
-    """Valores de balance (instantáneos) de formularios anuales, por fecha."""
-    out = {}
+    """Valores de balance (instantáneos) de formularios anuales; filed más reciente gana."""
+    out = {}  # end_date -> (val, filed)
     for r in unit_rows or []:
         end, val, form = r.get("end"), r.get("val"), str(r.get("form", ""))
         if val is None or not end or not any(form.startswith(p) for p in forms):
             continue
         d = _parse_date(end)
-        if d:
-            out[d] = float(val)
-    return sorted(out.items())
+        if not d:
+            continue
+        filed = _parse_date(r.get("filed")) or date.min
+        if d not in out or filed >= out[d][1]:
+            out[d] = (float(val), filed)
+    return sorted((d, v) for d, (v, _f) in out.items())
 
 
 def _concept(facts: dict, taxonomy: str, name: str, unit: str) -> list:
@@ -180,13 +206,10 @@ def parse_companyfacts(facts: dict, ticker: str,
     equity = _best_instant(facts, tax, M["equity"], ccy)
     ocf = _best_annual(facts, tax, M["ocf"], ccy)
     capex = _best_annual(facts, tax, M["capex"], ccy)
-    if shares is None:
-        sh = _best_instant(facts, "dei", ["EntityCommonStockSharesOutstanding"], "shares") or \
-            _best_instant(facts, tax, ["CommonStockSharesOutstanding"], "shares")
-        shares = sh[-1][1] if sh else None
-
-    def latest(points):
-        return points[-1][1] if points else None
+    wdil = _best_annual(facts, tax, M.get("wdil", []), "shares")   # acciones promedio diluidas
+    # Acciones VIGENTES (para market cap): portada dei; si está obsoleta, se marca abajo.
+    entity_sh_pts = _best_instant(facts, "dei", ["EntityCommonStockSharesOutstanding"], "shares") or \
+        _best_instant(facts, tax, ["CommonStockSharesOutstanding"], "shares")
 
     def yoy(points):
         if len(points) < 2 or points[-2][1] in (0, None):
@@ -196,21 +219,64 @@ def parse_companyfacts(facts: dict, ticker: str,
             return None
         return points[-1][1] / prev - 1.0
 
-    rev_l, ni_l, eps_l = latest(rev), latest(ni), latest(eps)
-    eq_l, ocf_l, capex_l = latest(equity), latest(ocf), latest(capex)
-    as_of = (rev[-1][0].isoformat() if rev else (ni[-1][0].isoformat() if ni else None))
+    # PERÍODO DE REFERENCIA: ancla en el EPS diluido reciente (el dato mejor etiquetado).
+    # Todos los flujos se toman EN ESE período (evita mezclar p. ej. NI 2013 con EPS 2025).
+    ref = (eps[-1][0] if eps else (eps_usd_series[-1][0] if eps_usd_series
+           else (ni[-1][0] if ni else (rev[-1][0] if rev else None))))
+    eps_l = _at(eps, ref)
+    rev_l = _at(rev, ref)
+    eq_l = _at(equity, ref)
+    ocf_l = _at(ocf, ref)
+    capex_l = _at(capex, ref)
+    wdil_l = _at(wdil, ref)
 
-    # Adimensionales: válidos en cualquier divisa.
+    # Utilidad neta EN EL PERÍODO de referencia. Si la etiqueta directa no existe en ese
+    # período (p. ej. MA dejó de etiquetar NetIncomeLoss), se RECONSTRUYE como EPS×acciones
+    # diluidas (definición de EPS), nunca mezclando un período antiguo.
+    ni_direct = _at(ni, ref)
+    ni_reconstructed = False
+    ni_l = ni_direct
+    if ni_l is None and eps_l is not None and wdil_l:
+        ni_l = eps_l * wdil_l
+        ni_reconstructed = True
+    as_of = ref.isoformat() if ref else None
+
+    # Consistencia: identidad EPS × acciones diluidas ≈ utilidad neta (misma divisa, mismo período).
+    eps_consistent = None
+    eps_check_ratio = None
+    if ni_reconstructed:
+        eps_consistent, eps_check_ratio = True, 1.0      # por construcción
+    elif eps_l is not None and wdil_l and ni_direct not in (None, 0):
+        eps_check_ratio = (eps_l * wdil_l) / ni_direct
+        eps_consistent = abs(eps_check_ratio - 1.0) <= 0.15
+
+    # Adimensionales (válidos en cualquier divisa) SOLO si numerador/denominador son del mismo período.
     net_margin = (ni_l / rev_l) if (ni_l is not None and rev_l) else None
     roe = (ni_l / eq_l) if (ni_l is not None and eq_l) else None
 
-    # Dependientes de divisa/ADR.
+    # Acciones vigentes para market cap: portada si es reciente; si es obsoleta (>400d que la
+    # referencia) se usa el promedio diluido reciente como proxy (marcado); si no, lo que haya.
+    shares_source = None
+    if shares is None:
+        entity_last_end = entity_sh_pts[-1][0] if entity_sh_pts else None
+        entity_val = entity_sh_pts[-1][1] if entity_sh_pts else None
+        stale_entity = (entity_last_end is not None and ref is not None
+                        and (ref - entity_last_end).days > 400)
+        if entity_val is not None and not stale_entity:
+            shares, shares_source = entity_val, "dei_entity_coverpage"
+        elif wdil_l:
+            shares, shares_source = wdil_l, "weighted_diluted_proxy(portada_obsoleta)"
+        elif entity_val is not None:
+            shares, shares_source = entity_val, "dei_entity_coverpage(obsoleta)"
+    else:
+        shares_source = "provided"
+
     adr = adr_ratio if adr_ratio else 1.0
     fx = 1.0 if ccy == "USD" else fx_map.get(ccy)      # USD por 1 unidad de la divisa
     # EPS por ADR en USD: preferir la cifra oficial en USD/shares (conv=1); si no, convertir
     # la local con FX. En ambos casos × adr una sola vez (acción ordinaria -> ADR).
     if eps_usd_series:
-        eps_for_pe, eps_conv = eps_usd_series[-1][1], 1.0
+        eps_for_pe, eps_conv = _at(eps_usd_series, ref) or eps_usd_series[-1][1], 1.0
     else:
         eps_for_pe, eps_conv = eps_l, fx
     eps_usd = (eps_for_pe * adr * eps_conv) if (eps_for_pe is not None and eps_conv) else None
@@ -221,21 +287,15 @@ def parse_companyfacts(facts: dict, ticker: str,
     fcf_yield = (fcf_usd / market_cap) if (fcf_usd is not None and market_cap) else None
     pe_ttm = (price / eps_usd) if (price and eps_usd and eps_usd > 0) else None
 
-    # Consistencia: identidad EPS × acciones ≈ utilidad neta (ambos en divisa de reporte).
-    # Valida coherencia de EPS con moneda/acciones antes de usarlo; ADR se refleja aparte.
-    eps_consistent = None
-    eps_check_ratio = None
-    if eps_l is not None and shares and ni_l not in (None, 0):
-        eps_check_ratio = (eps_l * shares) / ni_l
-        eps_consistent = abs(eps_check_ratio - 1.0) <= 0.15   # tolera básico/diluido y timing de acciones
-
     return Fundamentals(
         ticker=ticker,
         pe_ttm=pe_ttm,
-        eps=eps_usd,                # EPS reportado (USD por ADR) → rendimiento de beneficios NO circular
-        eps_basis="reported_annual",  # único disponible hoy; TTM/normalizado/forward pendientes de proveedor
+        eps=eps_usd,                # EPS reportado (USD por ADR) en el período de referencia
+        eps_basis="reported_annual",  # anual; TTM/normalizado/forward pendientes de proveedor
         eps_consistent=eps_consistent,
         eps_check_ratio=(round(eps_check_ratio, 4) if eps_check_ratio is not None else None),
+        ni_reconstructed=ni_reconstructed,
+        shares_source=shares_source,
         pe_forward=None,            # no disponible gratis en EDGAR
         ev_ebitda=None,             # requiere deuda/caja + EBITDA fiables
         fcf_yield=fcf_yield,

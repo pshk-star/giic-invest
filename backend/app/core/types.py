@@ -60,6 +60,8 @@ class Fundamentals:
     eps_basis: Optional[str] = None       # base del EPS: reported_annual | ttm | normalized | forward
     eps_consistent: Optional[bool] = None  # identidad EPS×acciones≈utilidad neta (coherencia moneda/ADR)
     eps_check_ratio: Optional[float] = None  # EPS×acciones / utilidad neta (≈1 si coherente)
+    ni_reconstructed: bool = False        # utilidad neta reconstruida de EPS×acciones (etiqueta directa ausente)
+    shares_source: Optional[str] = None   # procedencia de las acciones vigentes usadas en market cap
     pe_forward: Optional[float] = None
     ev_ebitda: Optional[float] = None
     fcf_yield: Optional[float] = None     # free cash flow / market cap

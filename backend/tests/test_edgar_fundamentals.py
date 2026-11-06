@@ -95,6 +95,61 @@ TSM_FACTS = {
 }
 
 
+def _row(y, v, form="10-K", filed=None):
+    return {"start": f"{y}-01-01", "end": f"{y}-12-31", "val": v, "form": form, "filed": filed or f"{y+1}-02-15"}
+
+
+def test_period_alignment_reconstructs_ni_when_direct_tag_is_stale():
+    # Caso MA: NetIncomeLoss sólo etiquetado en 2013; EPS/acciones diluidas en 2025.
+    # NO debe mezclar; reconstruye NI = EPS×acciones diluidas en el período de referencia.
+    facts = {"facts": {"us-gaap": {
+        "Revenues": {"units": {"USD": [_row(2024, 3000), _row(2025, 3400)]}},
+        "NetIncomeLoss": {"units": {"USD": [_row(2013, 300)]}},          # obsoleto
+        "EarningsPerShareDiluted": {"units": {"USD/shares": [_row(2024, 16.0), _row(2025, 17.0)]}},
+        "WeightedAverageNumberOfDilutedSharesOutstanding": {"units": {"shares": [_row(2024, 100), _row(2025, 100)]}},
+        "StockholdersEquity": {"units": {"USD": [{"end": "2025-12-31", "val": 3400, "form": "10-K", "filed": "2026-02-15"}]}},
+    }, "dei": {"EntityCommonStockSharesOutstanding": {"units": {"shares": [{"end": "2025-12-31", "val": 100, "form": "10-K", "filed": "2026-02-15"}]}}}}}
+    f = parse_companyfacts(facts, "MA", price=170.0)
+    assert f.as_of == "2025-12-31"                 # período de referencia = EPS reciente
+    assert f.ni_reconstructed is True              # NI directo (2013) NO usado
+    assert abs(f.net_margin - (17.0 * 100 / 3400)) < 1e-9   # 1700/3400 = 0.5, NO el NI de 2013
+    assert abs(f.pe_ttm - 10.0) < 1e-9             # 170/17
+    assert f.eps_consistent is True                # consistente por construcción
+
+
+def test_split_restatement_prefers_latest_filed_value():
+    # Caso NFLX: mismo ejercicio con valor original (pre-split) y reexpresado (post-split).
+    # Gana el de presentación más reciente (post-split); el crecimiento no se corrompe.
+    facts = {"facts": {"us-gaap": {
+        "Revenues": {"units": {"USD": [_row(2024, 300), _row(2025, 340)]}},
+        "NetIncomeLoss": {"units": {"USD": [_row(2024, 200), _row(2025, 250)]}},
+        "EarningsPerShareDiluted": {"units": {"USD/shares": [
+            _row(2024, 20.0, filed="2025-01-20"),      # original pre-split
+            _row(2024, 2.0, filed="2026-01-20"),       # reexpresado post-split (gana)
+            _row(2025, 2.5, filed="2026-01-20"),
+        ]}},
+        "WeightedAverageNumberOfDilutedSharesOutstanding": {"units": {"shares": [_row(2024, 100), _row(2025, 100)]}},
+        "StockholdersEquity": {"units": {"USD": [{"end": "2025-12-31", "val": 500, "form": "10-K", "filed": "2026-02-15"}]}},
+    }, "dei": {"EntityCommonStockSharesOutstanding": {"units": {"shares": [{"end": "2025-12-31", "val": 100, "form": "10-K", "filed": "2026-02-15"}]}}}}}
+    f = parse_companyfacts(facts, "NFLX", price=25.0)
+    assert abs(f.eps_growth_yoy - 0.25) < 1e-9     # 2.5/2.0-1 (post-split), NO 2.5/20-1
+    assert abs(f.pe_ttm - 10.0) < 1e-9             # 25/2.5
+
+
+def test_consistency_guard_flags_eps_shares_ni_mismatch():
+    facts = {"facts": {"us-gaap": {
+        "Revenues": {"units": {"USD": [_row(2025, 1000)]}},
+        "NetIncomeLoss": {"units": {"USD": [_row(2025, 2000)]}},
+        "EarningsPerShareDiluted": {"units": {"USD/shares": [_row(2025, 10.0)]}},
+        "WeightedAverageNumberOfDilutedSharesOutstanding": {"units": {"shares": [_row(2025, 500)]}},
+        "StockholdersEquity": {"units": {"USD": [{"end": "2025-12-31", "val": 4000, "form": "10-K", "filed": "2026-02-15"}]}},
+    }, "dei": {"EntityCommonStockSharesOutstanding": {"units": {"shares": [{"end": "2025-12-31", "val": 500, "form": "10-K", "filed": "2026-02-15"}]}}}}}
+    f = parse_companyfacts(facts, "BAD", price=100.0)
+    assert f.ni_reconstructed is False             # NI directo presente en el período
+    assert f.eps_consistent is False               # 10×500/2000 = 2.5 ≠ 1
+    assert abs(f.eps_check_ratio - 2.5) < 1e-9
+
+
 def test_tsm_prefers_official_usd_eps_no_twd_fx():
     # Sin FX de TWD: aun así el P/E se calcula con el EPS oficial en USD/shares × ADR(5).
     f = parse_companyfacts(TSM_FACTS, "TSM", price=371.0, fx_map={}, adr_ratio=5.0)

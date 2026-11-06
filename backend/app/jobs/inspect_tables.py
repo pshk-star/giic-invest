@@ -100,6 +100,7 @@ def opp_decision(payload, price, price_as_of):
         "price": price, "price_as_of": price_as_of,
         "eps_reported": eps_rep, "earnings_basis": f.get("eps_basis"),
         "eps_consistent": f.get("eps_consistent"), "eps_check_ratio": f.get("eps_check_ratio"),
+        "ni_reconstructed": f.get("ni_reconstructed"), "shares_source": f.get("shares_source"),
         "earnings_yield": round(earnings_yield, 4) if earnings_yield is not None else None,
         "fcf_yield": round(fcf_yield, 4) if fcf_yield is not None else None,
         "reference_yield": _REFERENCE_YIELD, "yield_vs_reference": yield_vs_reference,
