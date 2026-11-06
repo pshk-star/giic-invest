@@ -39,8 +39,12 @@ SERIES: List[Dict] = [
 ALFRED_URL = "https://api.stlouisfed.org/fred/series/observations"
 
 
-def parse_fred_observations(payload: dict, series_id: str) -> List[dict]:
-    """Convierte observaciones ALFRED (con realtime) en filas macro_pit (puro)."""
+def parse_fred_observations(payload: dict, series_id: str, single_vintage: bool = False) -> List[dict]:
+    """Convierte observaciones (ALFRED con realtime, o single-vintage) en filas macro_pit.
+
+    single_vintage=True (series NO revisadas, p.ej. tasas diarias): el valor de cada fecha
+    se conoce en esa misma fecha; vintage/release = obs_date (point-in-time por naturaleza).
+    """
     out: List[dict] = []
     seen_by_date: Dict[str, int] = {}
     obs = (payload or {}).get("observations", []) or []
@@ -49,7 +53,7 @@ def parse_fred_observations(payload: dict, series_id: str) -> List[dict]:
     for o in obs_sorted:
         val = o.get("value")
         d = o.get("date")
-        rt = o.get("realtime_start")
+        rt = d if single_vintage else o.get("realtime_start")
         if val in (None, ".", "") or not d or not rt:
             continue
         try:
@@ -69,16 +73,18 @@ class FredError(Exception):
     pass
 
 
-def fetch_series(client, series_id: str, api_key: str) -> List[dict]:
-    params = {
-        "series_id": series_id, "api_key": api_key, "file_type": "json",
-        "realtime_start": "1776-07-04", "realtime_end": "9999-12-31",
-    }
+def fetch_series(client, series_id: str, api_key: str, vintages: bool = True) -> List[dict]:
+    params = {"series_id": series_id, "api_key": api_key, "file_type": "json"}
+    if vintages:
+        # ALFRED: todas las versiones (solo series que SÍ se revisan; FRED topa ~2000 vintages
+        # por petición, por eso las diarias no revisadas van en modo single-vintage).
+        params["realtime_start"] = "1776-07-04"
+        params["realtime_end"] = "9999-12-31"
     r = client.get(ALFRED_URL, params=params)
     if r.status_code != 200:
         # Diagnóstico SIN filtrar la clave (FRED no la repite en el cuerpo de error).
         raise FredError(f"HTTP {r.status_code}: {r.text[:180]}")
-    return parse_fred_observations(r.json(), series_id)
+    return parse_fred_observations(r.json(), series_id, single_vintage=not vintages)
 
 
 def execute(dry_run: bool = False) -> dict:
@@ -97,7 +103,7 @@ def execute(dry_run: bool = False) -> dict:
     novint = []  # series sin vintages reales (una sola versión por observación)
     for s in SERIES:
         try:
-            rows = fetch_series(client, s["id"], api_key)
+            rows = fetch_series(client, s["id"], api_key, vintages=s["revisable"])
         except Exception as e:
             per[s["id"]] = f"error: {str(e)[:200]}"
             continue
