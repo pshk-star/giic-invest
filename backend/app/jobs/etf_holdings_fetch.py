@@ -227,9 +227,10 @@ def fetch_vanguard(ticker: str) -> Tuple[Optional[str], List[dict]]:
 
 
 def fetch_commodity(ticker: str) -> Tuple[Optional[str], List[dict]]:
+    # asset_class 'other' (etf_holdings no permite 'commodity'); no es exposición a empresas.
     name = COMMODITY.get(ticker.upper(), "Materia prima")
     return date.today().isoformat(), [{"name": name, "ticker": None, "cusip": None,
-                                       "weight": 1.0, "asset_class": "commodity", "sector": "Materias primas"}]
+                                       "weight": 1.0, "asset_class": "other", "sector": "Materias primas"}]
 
 
 ADAPTERS = {"ssga": fetch_ssga, "invesco": fetch_invesco,
