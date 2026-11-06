@@ -50,7 +50,10 @@ def extract_pit_rows(facts: dict, ticker: str, cik: Optional[int],
                 form = f.get("form") or ""
                 fy, fp = f.get("fy"), f.get("fp")
                 frame = f.get("frame")
-                context = frame or (f"{fp}-{fy}" if (fp or fy) else "")
+                start = f.get("start")
+                # context_ref DEBE distinguir la DURACIÓN del periodo (trimestral vs YTD):
+                # el frame de EDGAR ya la codifica; si no hay frame, usamos start_end.
+                context = frame or f"{start or 'NA'}_{end}"
                 out.append({
                     "provider": "edgar",
                     "cik": str(cik) if cik is not None else None,
