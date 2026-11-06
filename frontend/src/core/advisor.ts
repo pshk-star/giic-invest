@@ -46,6 +46,40 @@ export interface Recommendation {
   composite?: number;
 }
 
+// Modelo de riesgo (opcional) proveniente del motor de Proyección (forecast.ts):
+// contribución al riesgo por covarianzas, concentración efectiva y prob. de pérdida.
+export interface RiskModel {
+  annVol: number;
+  effectiveN: number;
+  hhi: number;
+  probLoss12m: number;
+  contrib: { ticker: string; weightPct: number; riskPct: number }[];
+}
+
+export type DecisionAction =
+  | "COMPRAR" | "AUMENTAR" | "MANTENER" | "REDUCIR" | "VENDER" | "NO_HACER_NADA";
+
+// Decisión priorizada y explicable (lo que el roadmap pide como entregable central).
+export interface Decision {
+  id: string;
+  action: DecisionAction;
+  ticker: string | null;          // null = decisión a nivel cartera
+  label: string;                  // ticker o "Cartera"
+  headline: string;               // conclusión en una línea
+  priority: number;               // 1 = más importante
+  severity: number;               // puntaje interno de orden (no se muestra)
+  rationale: string[];            // cifras concretas que la respaldan
+  metricNow: string;              // estado observado
+  reference: string;              // umbral/base de comparación
+  suggestedDeltaUsd: number | null;   // monto a mover (con signo); null si no aplica
+  suggestedTargetWeight: number | null;
+  expectedImpact: string;         // antes→después (peso/concentración/riesgo), sin inventar
+  confidence: "alta" | "media" | "baja";
+  whatWouldChange: string[];      // qué invalidaría o haría revisar la decisión
+  dataSources: string[];
+  limitations: string[];
+}
+
 export interface AllocationItem {
   ticker: string;
   kind: "add_existing" | "new_idea";
@@ -71,6 +105,7 @@ export interface AdvisorReport {
     note: string;
     blocked: string | null;             // si faltan restricciones esenciales, no damos montos
   };
+  decisions: Decision[];                // 3-5 decisiones priorizadas con vocabulario completo
   compliance: { ok: boolean; remaining: string[] };   // incumplimientos que PERSISTEN tras la sugerencia
   alternatives: string[];               // mantener liquidez, ETF diversificado, etc.
   dataGaps: string[];                   // datos faltantes
@@ -153,7 +188,8 @@ export function buildAdvice(
   scan: ScanInfo[],
   cash: number,
   constraints: Constraints,
-  scanAsOf?: string
+  scanAsOf?: string,
+  risk?: RiskModel
 ): AdvisorReport {
   const scanBy = new Map(scan.map((s) => [s.ticker.toUpperCase(), s]));
   const held = new Set(holdings.map((h) => h.ticker.toUpperCase()));
@@ -369,10 +405,18 @@ export function buildAdvice(
       ? "Ninguna candidata cumple tus reglas hoy (score o límites): mantener liquidez es la opción consistente."
       : `Reparto determinístico por diversificación: ${usd(invested)} en partes equitativas (con tope por activo); ${usd(cashLeftover)} quedarían en liquidez.`;
 
+  // ------------------------------------------ Decisiones priorizadas (3-5)
+  const decisions = buildDecisions({
+    holdings, constraints, cashInt, V, secW, scanBy, items,
+    beforeHhi: hhiFrom(beforeWeights), afterHhi: hhiFrom(afterWeights),
+    scanAsOf, risk,
+  });
+
   return {
     portfolioValue: V,
     diagnostics,
     ideas,
+    decisions,
     allocation: {
       cash: cashInt, invested, cashLeftover, items,
       method: "Partes iguales entre las candidatas seleccionadas por ranking, con tope por activo y redistribución del sobrante. El score filtra y ordena; NO dimensiona el monto.",
@@ -389,6 +433,237 @@ export function buildAdvice(
     dataUsed,
     constraints,
   };
+}
+
+const effN = (hhi: number): number => (hhi > 0 ? 1 / hhi : 0);
+
+interface DecisionInput {
+  holdings: Holding[];
+  constraints: Constraints;
+  cashInt: number;
+  V: number;
+  secW: Record<string, number>;
+  scanBy: Map<string, ScanInfo>;
+  items: AllocationItem[];
+  beforeHhi: number;
+  afterHhi: number;
+  scanAsOf?: string;
+  risk?: RiskModel;
+}
+
+// Sintetiza 3-5 decisiones priorizadas con el vocabulario completo. Determinístico.
+// No inventa: cifras de peso/concentración son exactas; el riesgo (si hay modelo) es
+// histórico por covarianzas; el score es atractivo relativo, nunca predicción.
+function buildDecisions(inp: DecisionInput): Decision[] {
+  const { holdings, constraints, cashInt, V, secW, scanBy, items, beforeHhi, afterHhi, scanAsOf, risk } = inp;
+  const out: Decision[] = [];
+  const riskBy = new Map((risk?.contrib ?? []).map((c) => [c.ticker.toUpperCase(), c]));
+  const maxRiskPct = risk && risk.contrib.length ? Math.max(...risk.contrib.map((c) => c.riskPct)) : 0;
+  const MAX_RISK = 0.45;
+  const STUB_W = 0.015;
+  const srcBase = [`Posiciones derivadas de tus operaciones (valor ${usd(V)}).`];
+  const scanSrc = scanAsOf
+    ? `Scanner del ${scanAsOf} (score multifactor = atractivo relativo, no predicción).`
+    : "Scanner: snapshot más reciente.";
+  const riskSrc = risk ? "Modelo de riesgo por covarianzas (motor de Proyección, histórico de precios ajustado)." : null;
+
+  // 1) REDUCIR por concentración de PESO (autofinanciado a efectivo)
+  for (const h of holdings) {
+    if (!h.marketValue) continue;
+    if (h.weight > constraints.maxWeightAsset) {
+      const cap = constraints.maxWeightAsset;
+      const delta = h.marketValue - cap * V;
+      const after = holdings.map((x) => (x.ticker === h.ticker ? cap : (x.marketValue ?? 0) / V));
+      after.push(h.weight - cap);
+      const hhiA = hhiFrom(after);
+      const rc = riskBy.get(h.ticker.toUpperCase());
+      out.push({
+        id: `red-${h.ticker}`, action: "REDUCIR", ticker: h.ticker, label: h.ticker,
+        headline: `${h.ticker} pesa ${pctStr(h.weight)} — por encima de tu límite del ${pctStr(cap)}.`,
+        priority: 0, severity: 100 + (h.weight - cap) * 100 + (rc && rc.riskPct > MAX_RISK ? 20 : 0),
+        rationale: [
+          `Peso ${pctStr(h.weight)} vs límite ${pctStr(cap)} (sobre tu cartera total).`,
+          `Valor de la posición ${usd(h.marketValue)}.`,
+          rc
+            ? `Aporta ${pctStr(rc.riskPct)} del riesgo${rc.riskPct >= maxRiskPct ? " (la mayor de la cartera)" : ""}.`
+            : `Sin modelo de riesgo cargado: el diagnóstico es por peso.`,
+        ],
+        metricNow: `Peso ${pctStr(h.weight)}${rc ? `, ${pctStr(rc.riskPct)} del riesgo` : ""}`,
+        reference: `Límite por activo ${pctStr(cap)}`,
+        suggestedDeltaUsd: -Math.round(delta), suggestedTargetWeight: cap,
+        expectedImpact: `Recortar ${usd(delta)} lleva el peso a ${pctStr(cap)} y la concentración efectiva de ${effN(beforeHhi).toFixed(1)} a ${effN(hhiA).toFixed(1)} posiciones. Autofinanciado: el efectivo liberado queda disponible.`,
+        confidence: rc ? (rc.riskPct > MAX_RISK ? "alta" : "media") : "media",
+        whatWouldChange: [
+          `Deja de aplicar si subes el límite por encima de ${pctStr(h.weight)} o si recortas la posición.`,
+          "Recortar un ganador reduce el upside si sigue subiendo; considera impuestos y costos.",
+        ],
+        dataSources: riskSrc ? [...srcBase, riskSrc] : srcBase,
+        limitations: [
+          "El límite por activo es tuyo, no una ley de mercado.",
+          rc ? "La contribución al riesgo es histórica (covarianzas), no predictiva." : "Sin modelo de riesgo: el impacto en riesgo no se cuantifica.",
+        ],
+      });
+    }
+  }
+
+  // 2) REDUCIR por concentración de RIESGO (peso ok, riesgo dominante)
+  if (risk) {
+    for (const c of risk.contrib) {
+      const h = holdings.find((x) => x.ticker.toUpperCase() === c.ticker.toUpperCase());
+      if (!h || !h.marketValue) continue;
+      if (h.weight <= constraints.maxWeightAsset && c.riskPct > MAX_RISK) {
+        out.push({
+          id: `redrisk-${c.ticker}`, action: "REDUCIR", ticker: c.ticker, label: c.ticker,
+          headline: `${c.ticker} concentra ${pctStr(c.riskPct)} del riesgo pese a pesar solo ${pctStr(h.weight)}.`,
+          priority: 0, severity: 90 + (c.riskPct - MAX_RISK) * 100,
+          rationale: [
+            `Contribución al riesgo ${pctStr(c.riskPct)} (> ${pctStr(MAX_RISK)}) por su volatilidad y correlaciones.`,
+            `Peso ${pctStr(h.weight)} — dentro del límite, pero el riesgo no.`,
+          ],
+          metricNow: `${pctStr(c.riskPct)} del riesgo, peso ${pctStr(h.weight)}`,
+          reference: `Umbral de riesgo por posición ${pctStr(MAX_RISK)}`,
+          suggestedDeltaUsd: null, suggestedTargetWeight: null,
+          expectedImpact: `Recortarla o diversificar hacia activos poco correlacionados baja la mayor fuente de varianza (concentración efectiva hoy ${effN(risk.hhi).toFixed(1)} posiciones).`,
+          confidence: "media",
+          whatWouldChange: ["Deja de aplicar si baja su volatilidad relativa o su correlación con el resto.", "Reevalúa si reduces la posición."],
+          dataSources: riskSrc ? [...srcBase, riskSrc] : srcBase,
+          limitations: ["La contribución al riesgo es histórica (covarianzas), no predictiva."],
+        });
+      }
+    }
+  }
+
+  // 3) REDUCIR sector sobreexpuesto
+  for (const [sec, w] of Object.entries(secW)) {
+    if (w > constraints.maxWeightSector) {
+      out.push({
+        id: `sec-${sec}`, action: "REDUCIR", ticker: null, label: `Sector ${sec}`,
+        headline: `Sobreexposición al sector ${sec}: ${pctStr(w)} (límite ${pctStr(constraints.maxWeightSector)}).`,
+        priority: 0, severity: 80 + (w - constraints.maxWeightSector) * 100,
+        rationale: [
+          `Peso del sector ${pctStr(w)} vs límite ${pctStr(constraints.maxWeightSector)} (ETF no cuentan como sector).`,
+          "Un shock sectorial te afecta de forma desproporcionada.",
+        ],
+        metricNow: `Sector ${pctStr(w)}`, reference: `Límite sectorial ${pctStr(constraints.maxWeightSector)}`,
+        suggestedDeltaUsd: null, suggestedTargetWeight: null,
+        expectedImpact: `Diversificar hacia un sector infrarrepresentado reduce el riesgo idiosincrático de ${sec}.`,
+        confidence: "media",
+        whatWouldChange: [`Deja de aplicar si reduces el sector por debajo de ${pctStr(constraints.maxWeightSector)}.`],
+        dataSources: [...srcBase, "Clasificación sectorial SIC≈GICS (SEC)."],
+        limitations: ["El sector usa SIC aproximado a GICS, no GICS oficial.", "Las posiciones sin sector clasificado no entran a este chequeo."],
+      });
+    }
+  }
+
+  // 4) COMPRAR / AUMENTAR (desplegar capital) — desde la asignación determinística
+  if (cashInt > 0) {
+    for (const it of items) {
+      const isNew = it.kind === "new_idea";
+      out.push({
+        id: `buy-${it.ticker}`, action: isNew ? "COMPRAR" : "AUMENTAR", ticker: it.ticker, label: it.ticker,
+        headline: `${isNew ? "Comprar" : "Aumentar"} ${it.ticker}: ${usd(it.amount)} (quedaría en ${pctStr(it.newWeight)}).`,
+        priority: 0, severity: 55 + it.composite / 10,
+        rationale: [
+          `Atractivo relativo alto (score ${Math.round(it.composite)}/100).`,
+          "Monto por diversificación (partes iguales con tope por activo), no por score.",
+          isNew ? "No está en tu cartera: investiga fundamentales antes de comprar." : "Ya la tienes y hay espacio bajo tu tope por activo.",
+        ],
+        metricNow: `Score ${Math.round(it.composite)}/100`, reference: `Umbral de atractivo ${STRONG}/100`,
+        suggestedDeltaUsd: it.amount, suggestedTargetWeight: it.newWeight,
+        expectedImpact: afterHhi > 0 && beforeHhi > 0
+          ? `Desplegar la asignación sube la concentración efectiva de ${effN(beforeHhi).toFixed(1)} a ${effN(afterHhi).toFixed(1)} posiciones.`
+          : "Despliega capital hacia la candidata seleccionada.",
+        confidence: scanAsOf ? "media" : "baja",
+        whatWouldChange: [
+          `Deja de aplicar si su score cae por debajo de ${STRONG} o rompe tu límite sectorial.`,
+          "El score es atractivo relativo (percentil), no una predicción de retorno.",
+        ],
+        dataSources: [...srcBase, scanSrc],
+        limitations: ["El score no predice retorno; el monto se dimensiona por diversificación.", isNew ? "Candidata aún no investigada a fondo." : ""].filter(Boolean),
+      });
+    }
+  }
+
+  // 5) VENDER posiciones ínfimas (higiene de cartera)
+  for (const h of holdings) {
+    if (!h.marketValue) continue;
+    if (h.weight < STUB_W) {
+      const s = scanBy.get(h.ticker.toUpperCase());
+      out.push({
+        id: `sell-${h.ticker}`, action: "VENDER", ticker: h.ticker, label: h.ticker,
+        headline: `${h.ticker} pesa ${pctStr(h.weight)}: demasiado pequeña para mover la aguja.`,
+        priority: 0, severity: 42,
+        rationale: [
+          `Peso ${pctStr(h.weight)} (${usd(h.marketValue)}): añade complejidad sin impacto material.`,
+          s ? `Score ${Math.round(s.composite)}/100.` : "Sin score en el scanner.",
+        ],
+        metricNow: `Peso ${pctStr(h.weight)}`, reference: `Posición mínima relevante ${pctStr(STUB_W)}`,
+        suggestedDeltaUsd: -Math.round(h.marketValue), suggestedTargetWeight: 0,
+        expectedImpact: "Cerrarla simplifica la cartera; el efecto en riesgo/retorno es insignificante por su tamaño.",
+        confidence: "media",
+        whatWouldChange: ["Mantener es razonable si piensas construir la posición pronto.", "Considera costos e impuestos de la venta."],
+        dataSources: srcBase, limitations: ["Decisión de higiene de cartera, no una señal de valoración."],
+      });
+    }
+  }
+
+  out.sort((a, b) => b.severity - a.severity);
+  const top = out.slice(0, 5);
+
+  // 6) MANTENER: si queda cupo, destaca una posición núcleo bien comportada
+  if (top.length < 5) {
+    const flagged = new Set(top.filter((d) => d.ticker).map((d) => d.ticker!.toUpperCase()));
+    const core = holdings
+      .filter((h) => h.marketValue && h.weight >= 0.08 && h.weight <= constraints.maxWeightAsset && !flagged.has(h.ticker.toUpperCase()))
+      .sort((a, b) => (b.marketValue ?? 0) - (a.marketValue ?? 0))[0];
+    if (core) {
+      const s = scanBy.get(core.ticker.toUpperCase());
+      top.push({
+        id: `hold-${core.ticker}`, action: "MANTENER", ticker: core.ticker, label: core.ticker,
+        headline: `Mantener ${core.ticker}: núcleo dentro de tus límites.`,
+        priority: 0, severity: 20,
+        rationale: [
+          `Peso ${pctStr(core.weight)} — dentro del límite del ${pctStr(constraints.maxWeightAsset)}.`,
+          s ? `Score ${Math.round(s.composite)}/100 (atractivo relativo).` : "Dentro de límites por peso (sin score).",
+        ],
+        metricNow: `Peso ${pctStr(core.weight)}`, reference: `Límite por activo ${pctStr(constraints.maxWeightAsset)}`,
+        suggestedDeltaUsd: null, suggestedTargetWeight: null,
+        expectedImpact: "Ninguno: no requiere acción hoy.",
+        confidence: "media",
+        whatWouldChange: ["Revísala si su peso supera el límite o su atractivo relativo cae.", "Un cambio de fundamentales cambia la tesis."],
+        dataSources: scanAsOf ? [...srcBase, scanSrc] : srcBase,
+        limitations: ["'Mantener' no es garantía de desempeño futuro."],
+      });
+    }
+  }
+
+  // 7) NO HACER NADA: si no hubo nada accionable
+  if (top.length === 0) {
+    top.push({
+      id: "noop", action: "NO_HACER_NADA", ticker: null, label: "Cartera",
+      headline: "Hoy no hay una acción que mejore tu cartera de forma clara.",
+      priority: 1, severity: 0,
+      rationale: [
+        "Ninguna posición supera tus límites de concentración por activo o sector.",
+        cashInt > 0 ? "Ninguna candidata del scanner supera tu umbral de atractivo con tus reglas." : "No indicaste capital nuevo a desplegar.",
+      ],
+      metricNow: risk
+        ? `Concentración efectiva ${risk.effectiveN.toFixed(1)} posiciones; prob. de pérdida a 12m ${pctStr(risk.probLoss12m)}.`
+        : "Dentro de tus límites.",
+      reference: `Límites ${pctStr(constraints.maxWeightAsset)} por activo, ${pctStr(constraints.maxWeightSector)} por sector`,
+      suggestedDeltaUsd: null, suggestedTargetWeight: null,
+      expectedImpact: "Sin cambios: esperar es consistente con tus reglas.",
+      confidence: "media",
+      whatWouldChange: [
+        "Aparecerá una acción si una posición rompe un límite, si subes el capital a desplegar, o si cambian los scores.",
+        "Puedes probar escenarios en «Proyección».",
+      ],
+      dataSources: scanAsOf ? [...srcBase, scanSrc] : srcBase,
+      limitations: ["Ausencia de acción no significa ausencia de riesgo."],
+    });
+  }
+
+  return top.map((d, i) => ({ ...d, priority: i + 1 }));
 }
 
 export { hhiFrom };

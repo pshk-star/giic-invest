@@ -121,3 +121,51 @@ describe("timing determinístico (sin predicción)", () => {
     expect(r.timing.join(" ").toLowerCase()).toContain("tramos");
   });
 });
+
+describe("decisiones priorizadas (vocabulario completo)", () => {
+  it("una posición sobre el límite genera REDUCIR como prioridad 1", () => {
+    const r = buildAdvice([h("NVDA", 4000, 0.8, "Semis"), h("KO", 1000, 0.2, "Staples")],
+      [scan("NVDA", 70, "Semis")], 0, C);
+    expect(r.decisions[0].action).toBe("REDUCIR");
+    expect(r.decisions[0].ticker).toBe("NVDA");
+    expect(r.decisions[0].priority).toBe(1);
+    expect(r.decisions[0].suggestedDeltaUsd!).toBeLessThan(0); // recorte
+  });
+
+  it("con capital y candidata fuerte propone COMPRAR", () => {
+    const r = buildAdvice([h("KO", 1000, 1, "Staples")], [scan("MU", 85)], 3000, C);
+    expect(r.decisions.some((d) => d.action === "COMPRAR" && d.ticker === "MU")).toBe(true);
+  });
+
+  it("una posición ínfima genera VENDER (higiene)", () => {
+    const r = buildAdvice([h("BIG", 9900, 0.99, "Tech"), h("STUB", 100, 0.01, "Tech")], [], 0, C);
+    expect(r.decisions.some((d) => d.action === "VENDER" && d.ticker === "STUB")).toBe(true);
+  });
+
+  it("cartera equilibrada sin capital: termina en MANTENER o NO_HACER_NADA, nunca vacío", () => {
+    // 5 posiciones de 20% en sectores distintos: dentro del límite por activo y sin stubs.
+    const hs = [
+      h("A", 2000, 0.2, "Tech"), h("B", 2000, 0.2, "Staples"), h("C", 2000, 0.2, "Energy"),
+      h("D", 2000, 0.2, "Health"), h("E", 2000, 0.2, "Finance"),
+    ];
+    const r = buildAdvice(hs, [], 0, C);
+    expect(r.decisions.length).toBeGreaterThanOrEqual(1);
+    expect(r.decisions.every((d, i) => d.priority === i + 1)).toBe(true);
+    expect(["MANTENER", "NO_HACER_NADA"]).toContain(r.decisions[r.decisions.length - 1].action);
+  });
+
+  it("usa el modelo de riesgo: REDUCIR por riesgo dominante aunque el peso esté dentro del límite", () => {
+    const risk = {
+      annVol: 0.3, effectiveN: 2, hhi: 0.5, probLoss12m: 0.3,
+      contrib: [{ ticker: "VOL", weightPct: 0.2, riskPct: 0.6 }, { ticker: "CALM", weightPct: 0.8, riskPct: 0.4 }],
+    };
+    const r = buildAdvice([h("VOL", 2000, 0.2, "Tech"), h("CALM", 8000, 0.8, "Staples")], [], 0, C, undefined, risk);
+    expect(r.decisions.some((d) => d.action === "REDUCIR" && d.ticker === "VOL")).toBe(true);
+  });
+
+  it("tope de 5 decisiones", () => {
+    const hs = Array.from({ length: 10 }, (_, i) => h(`T${i}`, 100, 0.001, "Tech")); // 10 stubs
+    const r = buildAdvice(hs, [], 0, C);
+    expect(r.decisions.length).toBeLessThanOrEqual(5);
+  });
+});

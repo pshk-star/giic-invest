@@ -5,41 +5,10 @@ import {
 } from "../data";
 import { derivePositions } from "../core/portfolio-tx";
 import { mergeValuation } from "../core/price-source";
-import { forecast, type AssetHistory, type ForecastResult } from "../core/forecast";
+import { forecast, buildAssets, type ForecastResult, type PriceBarLite } from "../core/forecast";
 import { money } from "../format";
 
-type Bars = { as_of: string; close: number }[];
-
-function alignReturns(hist: Record<string, Bars>, tickers: string[]): Record<string, number[]> {
-  const maps = tickers.map((t) => new Map((hist[t] ?? []).map((b) => [b.as_of, b.close])));
-  let common: string[] | null = null;
-  tickers.forEach((_t, i) => {
-    const dates = [...maps[i].keys()];
-    common = common === null ? dates : common.filter((d) => maps[i].has(d));
-  });
-  const dates = (common ?? []).sort().slice(-520);
-  const out: Record<string, number[]> = {};
-  tickers.forEach((t, i) => {
-    const r: number[] = [];
-    for (let k = 1; k < dates.length; k++) {
-      const p0 = maps[i].get(dates[k - 1])!, p1 = maps[i].get(dates[k])!;
-      if (p0 > 0 && p1 > 0) r.push(p1 / p0 - 1);
-    }
-    out[t] = r;
-  });
-  const minLen = Math.min(...tickers.map((t) => out[t].length || Infinity));
-  tickers.forEach((t) => { out[t] = (out[t] ?? []).slice(-minLen); });
-  return out;
-}
-
-function buildAssets(hist: Record<string, Bars>, valueMap: Record<string, number>): AssetHistory[] {
-  const tickers = Object.keys(valueMap).filter((t) => valueMap[t] > 0 && t !== "EFECTIVO");
-  const rets = alignReturns(hist, tickers);
-  const assets: AssetHistory[] = tickers.map((t) => ({ ticker: t, valueUsd: valueMap[t], returns: rets[t] ?? [] }));
-  const n = Math.max(0, ...assets.map((a) => a.returns.length));
-  if ((valueMap["EFECTIVO"] ?? 0) > 0) assets.push({ ticker: "EFECTIVO", valueUsd: valueMap["EFECTIVO"], returns: new Array(n).fill(0) });
-  return assets;
-}
+type Bars = PriceBarLite[];
 
 export function Forecast() {
   const [hist, setHist] = useState<Record<string, Bars>>({});

@@ -1,14 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
 import { Panel } from "../components/Panel";
 import {
-  getCorporateActions, getInstruments, getLatestRun, getLatestScan, getPrices, getSettings,
-  getTransactions, saveSettings, type ScanRow,
+  getCorporateActions, getInstruments, getLatestRun, getLatestScan, getPriceHistory, getPrices,
+  getSettings, getTransactions, saveSettings, type ScanRow,
 } from "../data";
 import { derivePositions, portfolioTotals } from "../core/portfolio-tx";
+import { buildAssets, forecast, type PriceBarLite } from "../core/forecast";
 import {
-  buildAdvice, type AdvisorReport, type Holding, type Recommendation, type ScanInfo,
+  buildAdvice, type AdvisorReport, type Decision, type Holding, type Recommendation,
+  type RiskModel, type ScanInfo,
 } from "../core/advisor";
 import { money, num, pct } from "../format";
+
+const ACTION_STYLE: Record<Decision["action"], { label: string; tone: string }> = {
+  COMPRAR: { label: "COMPRAR", tone: "text-term-good" },
+  AUMENTAR: { label: "AUMENTAR", tone: "text-term-good" },
+  MANTENER: { label: "MANTENER", tone: "text-term-accent" },
+  REDUCIR: { label: "REDUCIR", tone: "text-term-warn" },
+  VENDER: { label: "VENDER", tone: "text-term-crit" },
+  NO_HACER_NADA: { label: "NO HACER NADA", tone: "text-term-muted" },
+};
 
 export function Advisor() {
   const [holdings, setHoldings] = useState<Holding[]>([]);
@@ -20,6 +31,7 @@ export function Advisor() {
   const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
+  const [risk, setRisk] = useState<RiskModel | undefined>();
 
   useEffect(() => {
     (async () => {
@@ -31,16 +43,15 @@ export function Advisor() {
       ]);
       const pos = derivePositions(txns, prices, instruments, ca);
       const totals = portfolioTotals(pos);
-      const hs: Holding[] = pos
-        .filter((p) => p.qty > 1e-9)
-        .map((p) => ({
-          ticker: p.ticker, name: p.name,
-          sector: instruments[p.ticker]?.sector ?? null,
-          assetClass: instruments[p.ticker]?.asset_class ?? p.asset_class ?? null,
-          marketValue: p.marketValue,
-          weight: totals.weights[p.ticker] ?? 0,
-          priceAsOf: p.priceAsOf,
-        }));
+      const held = pos.filter((p) => p.qty > 1e-9);
+      const hs: Holding[] = held.map((p) => ({
+        ticker: p.ticker, name: p.name,
+        sector: instruments[p.ticker]?.sector ?? null,
+        assetClass: instruments[p.ticker]?.asset_class ?? p.asset_class ?? null,
+        marketValue: p.marketValue,
+        weight: totals.weights[p.ticker] ?? 0,
+        priceAsOf: p.priceAsOf,
+      }));
       setHoldings(hs);
       setScan(rows.map(scanRowToInfo));
       setScanAsOf(run?.as_of);
@@ -50,12 +61,30 @@ export function Advisor() {
         setMaxSector(settings.max_weight_per_sector || 0.40);
       }
       setLoaded(true);
+
+      // Modelo de riesgo (covarianzas) desde el motor de Proyección — alimenta las decisiones.
+      const priced = held.filter((p) => p.marketValue != null && p.marketValue > 0);
+      if (priced.length) {
+        const hist: Record<string, PriceBarLite[]> = {};
+        await Promise.all(priced.map(async (p) => { hist[p.ticker] = await getPriceHistory(p.ticker); }));
+        const valueMap = Object.fromEntries(priced.map((p) => [p.ticker, p.marketValue ?? 0]));
+        const assets = buildAssets(hist, valueMap);
+        if (assets.length) {
+          const f = forecast(assets, { drift: "neutral" });
+          const h12 = f.horizons.find((x) => x.days === 252);
+          setRisk({
+            annVol: f.annVol, effectiveN: f.effectiveN, hhi: f.hhi,
+            probLoss12m: h12?.probLoss ?? 0,
+            contrib: f.riskContrib.map((c) => ({ ticker: c.ticker, weightPct: c.weightPct, riskPct: c.riskPct })),
+          });
+        }
+      }
     })().catch((e) => setErr(String(e)));
   }, []);
 
   const report: AdvisorReport = useMemo(
-    () => buildAdvice(holdings, scan, cash, { maxWeightAsset: maxAsset, maxWeightSector: maxSector }, scanAsOf),
-    [holdings, scan, cash, maxAsset, maxSector, scanAsOf]
+    () => buildAdvice(holdings, scan, cash, { maxWeightAsset: maxAsset, maxWeightSector: maxSector }, scanAsOf, risk),
+    [holdings, scan, cash, maxAsset, maxSector, scanAsOf, risk]
   );
 
   const persist = async () => {
@@ -116,6 +145,26 @@ export function Advisor() {
 
       {!noData && (
         <>
+          {/* Decisiones priorizadas — entregable central */}
+          <Panel title="Tus decisiones de hoy (priorizadas)"
+            right={<span className="text-xs text-term-faint">{report.decisions.length} decisión(es)</span>}>
+            <p className="mb-3 text-sm text-term-muted">
+              Qué haría yo primero con tu cartera, en orden de importancia. Cada decisión es
+              explicable y sale de tus datos reales — no de un pronóstico.
+            </p>
+            {risk && (
+              <div className="mb-3 flex flex-wrap gap-4 rounded-lg border border-term-border bg-term-panel2 px-3 py-2 text-xs text-term-muted">
+                <span>Volatilidad anual <b className="text-term-fg tabnum">{(risk.annVol * 100).toFixed(1)}%</b></span>
+                <span>Concentración efectiva <b className="text-term-fg tabnum">{risk.effectiveN.toFixed(1)}</b> posiciones</span>
+                <span>Prob. de pérdida a 12m <b className="text-term-fg tabnum">{(risk.probLoss12m * 100).toFixed(0)}%</b></span>
+                <span className="text-term-faint">(modelo de riesgo por covarianzas, histórico ajustado)</span>
+              </div>
+            )}
+            <div className="grid gap-2">
+              {report.decisions.map((d) => <DecisionCard key={d.id} d={d} />)}
+            </div>
+          </Panel>
+
           {/* Asignación de capital */}
           <Panel title={`¿Dónde evaluar ${money(cash)}?`}>
             <p className="mb-2 text-sm text-term-muted">{report.allocation.note}</p>
@@ -222,6 +271,44 @@ export function Advisor() {
             </ul>
           </Panel>
         </>
+      )}
+    </div>
+  );
+}
+
+function DecisionCard({ d }: { d: Decision }) {
+  const [open, setOpen] = useState(d.priority <= 2);
+  const st = ACTION_STYLE[d.action];
+  const conf = d.confidence === "alta" ? "text-term-good" : d.confidence === "baja" ? "text-term-crit" : "text-term-muted";
+  return (
+    <div className="rounded-lg border border-term-border bg-term-panel2 p-3">
+      <button onClick={() => setOpen(!open)} className="flex w-full items-start justify-between gap-2 text-left">
+        <span className="flex items-start gap-2">
+          <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded bg-term-panel text-[11px] font-semibold text-term-faint tabnum">{d.priority}</span>
+          <span className="text-sm">
+            <span className={`font-mono text-xs font-bold ${st.tone}`}>{st.label}</span>
+            {d.ticker && <span className="ml-1 font-mono font-semibold text-term-fg">{d.ticker}</span>}
+            <span className="text-term-fg"> — {d.headline}</span>
+          </span>
+        </span>
+        <span className="shrink-0 text-xs text-term-faint">{open ? "▲" : "▼"}</span>
+      </button>
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 pl-7 text-xs text-term-muted">
+        <span>Ahora: <b className="text-term-fg">{d.metricNow}</b></span>
+        <span>Referencia: {d.reference}</span>
+        {d.suggestedDeltaUsd != null && (
+          <span>Sugerido: <b className={d.suggestedDeltaUsd < 0 ? "text-term-warn" : "text-term-good"}>{d.suggestedDeltaUsd < 0 ? "−" : "+"}{money(Math.abs(d.suggestedDeltaUsd))}</b>{d.suggestedTargetWeight != null && <> → {pct(d.suggestedTargetWeight)}</>}</span>
+        )}
+        <span>Confianza: <b className={conf}>{d.confidence}</b></span>
+      </div>
+      <p className="mt-1.5 pl-7 text-xs text-term-accent">{d.expectedImpact}</p>
+      {open && (
+        <div className="mt-2 grid gap-2 pl-7 text-xs">
+          <Block title="Por qué" items={d.rationale} tone="text-term-fg" />
+          <Block title="Qué cambiaría la decisión" items={d.whatWouldChange} tone="text-term-muted" />
+          <Block title="Datos usados" items={d.dataSources} tone="text-term-muted" />
+          <Block title="Limitaciones" items={d.limitations} tone="text-term-faint" />
+        </div>
       )}
     </div>
   );

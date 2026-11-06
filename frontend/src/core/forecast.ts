@@ -151,3 +151,42 @@ export function forecast(assetsIn: AssetHistory[], opts?: ForecastOpts): Forecas
   if (cash > 1) warnings.push(`${((cash / currentValue) * 100).toFixed(0)}% de la cartera sin historial (tratado como constante, 0% retorno).`);
   return { currentValue, annVol, nObs: n, horizons, riskContrib, hhi, effectiveN, top5WeightPct, band, drift, warnings };
 }
+
+// ----------------------------------------------------------------------------
+// Helpers de alineación de precios -> retornos diarios conjuntos (compartidos por
+// la página de Proyección y el Investment Advisor). Fechas comunes a todos los
+// activos, última ventana de 520 sesiones, misma longitud entre series.
+export type PriceBarLite = { as_of: string; close: number };
+
+export function alignReturns(hist: Record<string, PriceBarLite[]>, tickers: string[]): Record<string, number[]> {
+  const maps = tickers.map((t) => new Map((hist[t] ?? []).map((b) => [b.as_of, b.close])));
+  let common: string[] | null = null;
+  tickers.forEach((_t, i) => {
+    const dates = [...maps[i].keys()];
+    common = common === null ? dates : common.filter((d) => maps[i].has(d));
+  });
+  const dates = (common ?? []).sort().slice(-520);
+  const out: Record<string, number[]> = {};
+  tickers.forEach((t, i) => {
+    const r: number[] = [];
+    for (let k = 1; k < dates.length; k++) {
+      const p0 = maps[i].get(dates[k - 1])!, p1 = maps[i].get(dates[k])!;
+      if (p0 > 0 && p1 > 0) r.push(p1 / p0 - 1);
+    }
+    out[t] = r;
+  });
+  const minLen = Math.min(...tickers.map((t) => out[t].length || Infinity));
+  tickers.forEach((t) => { out[t] = (out[t] ?? []).slice(-minLen); });
+  return out;
+}
+
+// Construye AssetHistory[] desde un mapa de valores por ticker; opcionalmente añade
+// un activo EFECTIVO (retornos 0) para reflejar liquidez dentro de la cartera.
+export function buildAssets(hist: Record<string, PriceBarLite[]>, valueMap: Record<string, number>): AssetHistory[] {
+  const tickers = Object.keys(valueMap).filter((t) => valueMap[t] > 0 && t !== "EFECTIVO");
+  const rets = alignReturns(hist, tickers);
+  const assets: AssetHistory[] = tickers.map((t) => ({ ticker: t, valueUsd: valueMap[t], returns: rets[t] ?? [] }));
+  const n = Math.max(0, ...assets.map((a) => a.returns.length));
+  if ((valueMap["EFECTIVO"] ?? 0) > 0) assets.push({ ticker: "EFECTIVO", valueUsd: valueMap["EFECTIVO"], returns: new Array(n).fill(0) });
+  return assets;
+}
