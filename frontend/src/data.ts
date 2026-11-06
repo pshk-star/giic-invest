@@ -273,30 +273,64 @@ export interface XrayWeightRow {
   etf: string; ticker: string | null; name: string | null; weight: number | null;
   asset_class: string; company_key: string | null; sector?: string | null;
 }
+export async function addUserEtfHoldings(rows: Record<string, unknown>[]): Promise<void> {
+  const { error } = await supabase.from("user_etf_holdings").insert(rows);
+  if (error) throw error;
+}
+
+interface UserHoldingRow extends XrayWeightRow { as_of: string; }
+async function userHoldingsLatest(etfs: string[]): Promise<Map<string, { as_of: string; rows: XrayWeightRow[] }>> {
+  const out = new Map<string, { as_of: string; rows: XrayWeightRow[] }>();
+  const q = await supabase.from("user_etf_holdings")
+    .select("etf,ticker,name,weight,asset_class,company_key,sector,as_of")
+    .order("as_of", { ascending: false });
+  if (q.error) return out; // tabla aún no creada (0011 pendiente)
+  const up = etfs.map((e) => e.toUpperCase());
+  for (const r of (q.data ?? []) as UserHoldingRow[]) {
+    const e = r.etf.toUpperCase();
+    if (!up.includes(e)) continue;
+    if (!out.has(e)) out.set(e, { as_of: r.as_of, rows: [] });
+    const cur = out.get(e)!;
+    if (r.as_of === cur.as_of) cur.rows.push({ etf: e, ticker: r.ticker, name: r.name,
+      weight: r.weight != null ? Number(r.weight) : null, asset_class: r.asset_class,
+      company_key: r.company_key, sector: r.sector });
+  }
+  return out;
+}
+
 export async function getXrayData(etfs: string[]): Promise<{ snapshots: XraySnapshot[]; weights: XrayWeightRow[] }> {
   if (etfs.length === 0) return { snapshots: [], weights: [] };
+  const up = etfs.map((x) => x.toUpperCase());
+  // automático: último snapshot 'complete' por etf
+  const autoLatest = new Map<string, XraySnapshot>();
   const snapQ = await supabase.from("etf_snapshots")
     .select("etf,provider,as_of,status,equity_pct").eq("status", "complete")
     .order("as_of", { ascending: false });
-  if (snapQ.error) return { snapshots: [], weights: [] };
-  // último complete por etf (entre los que tiene el usuario)
-  const latest = new Map<string, XraySnapshot>();
-  for (const s of snapQ.data ?? []) {
-    const e = (s.etf as string).toUpperCase();
-    if (!etfs.map((x) => x.toUpperCase()).includes(e)) continue;
-    if (!latest.has(e)) latest.set(e, { etf: e, provider: s.provider, as_of: s.as_of, equity_pct: s.equity_pct });
+  if (!snapQ.error) {
+    for (const s of snapQ.data ?? []) {
+      const e = (s.etf as string).toUpperCase();
+      if (up.includes(e) && !autoLatest.has(e)) autoLatest.set(e, { etf: e, provider: s.provider, as_of: s.as_of, equity_pct: s.equity_pct });
+    }
   }
-  const snapshots = [...latest.values()];
+  const manual = await userHoldingsLatest(etfs);
+
+  const snapshots: XraySnapshot[] = [];
   const weights: XrayWeightRow[] = [];
-  for (const s of snapshots) {
-    const { data, error } = await supabase.from("etf_holdings")
-      .select("etf,ticker,name,weight,asset_class,company_key,sector")
-      .eq("etf", s.etf).eq("provider", s.provider).eq("as_of", s.as_of);
-    if (error) continue;
-    for (const r of data ?? []) weights.push({
-      etf: r.etf, ticker: r.ticker, name: r.name, weight: r.weight != null ? Number(r.weight) : null,
-      asset_class: r.asset_class, company_key: r.company_key, sector: r.sector,
-    });
+  for (const e of up) {
+    const a = autoLatest.get(e), m = manual.get(e);
+    const useManual = m && (!a || m.as_of >= a.as_of);
+    if (useManual && m) {
+      snapshots.push({ etf: e, provider: "manual", as_of: m.as_of, equity_pct: null });
+      weights.push(...m.rows);
+    } else if (a) {
+      snapshots.push(a);
+      const { data } = await supabase.from("etf_holdings")
+        .select("etf,ticker,name,weight,asset_class,company_key,sector")
+        .eq("etf", a.etf).eq("provider", a.provider).eq("as_of", a.as_of);
+      for (const r of data ?? []) weights.push({ etf: r.etf, ticker: r.ticker, name: r.name,
+        weight: r.weight != null ? Number(r.weight) : null, asset_class: r.asset_class,
+        company_key: r.company_key, sector: r.sector });
+    }
   }
   return { snapshots, weights };
 }

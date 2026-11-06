@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Panel } from "./Panel";
 import { getXrayData, type XraySnapshot } from "../data";
 import { effectiveExposure, type EtfWeight, type PortfolioHolding } from "../core/xray";
+import { HoldingsImport } from "./HoldingsImport";
 import { money } from "../format";
 
 // Portfolio X-Ray: exposición económica efectiva por empresa (directa + indirecta vía ETFs),
@@ -13,6 +14,7 @@ export function XRayPanel({ holdings, sectorByTicker }:
   const [loading, setLoading] = useState(true);
   const [showAll, setShowAll] = useState(false);
   const [sel, setSel] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   const etfs = useMemo(() => holdings.filter((h) => h.isEtf).map((h) => h.ticker.toUpperCase()), [holdings]);
 
@@ -26,7 +28,7 @@ export function XRayPanel({ holdings, sectorByTicker }:
         name: w.name ?? undefined, assetClass: w.asset_class, sector: w.sector ?? undefined,
       })));
     }).catch(() => { setSnapshots([]); setWeights([]); }).finally(() => setLoading(false));
-  }, [etfs.join(",")]);
+  }, [etfs.join(","), reloadKey]);
 
   const xray = useMemo(() => effectiveExposure(holdings, weights), [holdings, weights]);
   const coveredEtfs = new Set(snapshots.map((s) => s.etf));
@@ -139,6 +141,8 @@ export function XRayPanel({ holdings, sectorByTicker }:
           </div>
         </div>
       </div>
+      <div className="mt-3"><HoldingsImport etfs={etfs} onImported={() => setReloadKey((k) => k + 1)} /></div>
+
       <p className="mt-2 text-[10px] text-term-faint">
         Exposición efectiva = directa + Σ(valor en ETF × peso). Holdings oficiales del emisor; lo no
         identificado (efectivo/derivados/pesos faltantes) se reporta como desconocido, nunca se atribuye a acciones.

@@ -76,7 +76,7 @@ begin
   if not exists (select 1 from pg_constraint where conname='etf_holdings_snapshot_fk') then
     alter table public.etf_holdings
       add constraint etf_holdings_snapshot_fk foreign key (etf, provider, as_of)
-      references public.etf_snapshots(etf, provider, as_of) on delete cascade;
+      references public.etf_snapshots(etf, provider, as_of) on delete restrict;
   end if;
 end $$;
 
