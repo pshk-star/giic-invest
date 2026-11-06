@@ -351,6 +351,7 @@ def run() -> dict:
         "predictions_count": pred_count,
         "instruments_columns": instr_cols,
         "instruments_identity_persisted": instr_identity,
+        "sec_official_probe": sec_official_probe(),
         "yahoo_stats_probe": yahoo_stats_probe,
         "fundamentals_quality_matrix": quality_matrix,
         "advisor_opportunity_validation": advisor_validation,
@@ -518,6 +519,105 @@ def edgar_diag(tickers: list) -> dict:
             summ[tax] = {"n_concepts": len(node), "concepts": interesting,
                          "detail": detail, "per_share_units": per_share, "eps_latest": eps_values}
         out[t] = summ
+    return out
+
+
+def sec_official_probe() -> dict:
+    """Sonda SOLO LECTURA de fuentes oficiales SEC estructuradas (companyconcept + submissions)
+    para agotar lo gratuito antes de concluir: Visa (EPS/acciones bajo CUALQUIER concepto),
+    Micron (NI/ingresos/EPS crudos FY2025 vs FY2026 con accn/form/frame para hallar la causa),
+    ASML/TSM (tipos de formulario recientes e interinos disponibles)."""
+    ua = os.getenv("EDGAR_USER_AGENT", "")
+    if not ua or "@" not in ua:
+        return {"error": "sin EDGAR_USER_AGENT"}
+    import httpx
+    cli = httpx.Client(timeout=30.0, headers={"User-Agent": ua})
+    try:
+        tk = cli.get("https://www.sec.gov/files/company_tickers.json").json()
+    except Exception as e:
+        return {"error": f"company_tickers: {type(e).__name__}"}
+    cikmap = {r["ticker"].upper(): int(r["cik_str"]) for r in tk.values()}
+
+    def concept(cik, taxonomy, name):
+        try:
+            r = cli.get(f"https://data.sec.gov/api/xbrl/companyconcept/CIK{cik:010d}/{taxonomy}/{name}.json")
+            if r.status_code != 200:
+                return None
+            return r.json().get("units", {})
+        except Exception:
+            return None
+
+    def annual_tail(units, n=3):
+        out = {}
+        for un, rows in (units or {}).items():
+            pts = [r for r in rows if str(r.get("form", "")).startswith(("10-K", "20-F", "40-F"))
+                   and r.get("start") and r.get("end")]
+            # anuales ~365d
+            ann = []
+            for r in pts:
+                try:
+                    import datetime as _d
+                    s = _d.date.fromisoformat(r["start"][:10]); e = _d.date.fromisoformat(r["end"][:10])
+                    if 330 <= (e - s).days <= 400:
+                        ann.append({"end": r["end"], "val": r["val"], "fy": r.get("fy"), "form": r.get("form"),
+                                    "frame": r.get("frame"), "accn": r.get("accn")})
+                except Exception:
+                    pass
+            if ann:
+                out[un] = sorted(ann, key=lambda x: x["end"])[-n:]
+        return out
+
+    out = {}
+    # VISA: ¿EPS/acciones bajo CUALQUIER concepto oficial?
+    vc = cikmap.get("V")
+    v_eps = {}
+    for nm in ["EarningsPerShareDiluted", "EarningsPerShareBasic", "EarningsPerShareBasicAndDiluted",
+               "IncomeLossFromContinuingOperationsPerDilutedShare"]:
+        u = concept(vc, "us-gaap", nm)
+        if u:
+            v_eps[nm] = annual_tail(u)
+    v_sh = {}
+    for nm in ["WeightedAverageNumberOfDilutedSharesOutstanding", "WeightedAverageNumberOfShareOutstandingBasicAndDiluted",
+               "WeightedAverageNumberOfSharesOutstandingBasic"]:
+        u = concept(vc, "us-gaap", nm)
+        if u:
+            v_sh[nm] = annual_tail(u)
+    out["VISA"] = {"cik": vc, "eps_concepts_found": v_eps or "NINGUNO", "share_concepts_found": v_sh or "NINGUNO"}
+
+    # MICRON: crudo NI / ingresos / EPS FY2025 vs FY2026 con accn/form/frame.
+    mc = cikmap.get("MU")
+    out["MICRON"] = {"cik": mc,
+                     "NetIncomeLoss": annual_tail(concept(mc, "us-gaap", "NetIncomeLoss")),
+                     "Revenues": annual_tail(concept(mc, "us-gaap", "Revenues")),
+                     "RevenueFromContractWithCustomerExcludingAssessedTax": annual_tail(concept(mc, "us-gaap", "RevenueFromContractWithCustomerExcludingAssessedTax")),
+                     "EarningsPerShareDiluted": annual_tail(concept(mc, "us-gaap", "EarningsPerShareDiluted"))}
+
+    # ASML/TSM: formularios recientes (¿6-K con interinos?) + ¿ProfitLoss interino en EDGAR?
+    for t in ("ASML", "TSM"):
+        cc = cikmap.get(t)
+        forms = {}
+        try:
+            sub = cli.get(f"https://data.sec.gov/submissions/CIK{cc:010d}.json").json()
+            rec = sub.get("filings", {}).get("recent", {})
+            z = list(zip(rec.get("form", []), rec.get("filingDate", []), rec.get("primaryDocument", [])))
+            forms = {}
+            for form, fdate, doc in z[:40]:
+                forms.setdefault(form, []).append(fdate)
+            forms = {k: v[:3] for k, v in forms.items()}
+        except Exception as e:
+            forms = {"_error": type(e).__name__}
+        pl = concept(cc, "ifrs-full", "ProfitLoss") or {}
+        interim = 0
+        import datetime as _d
+        for un, rows in pl.items():
+            for r in rows or []:
+                try:
+                    s = _d.date.fromisoformat(r["start"][:10]); e = _d.date.fromisoformat(r["end"][:10])
+                    if 60 <= (e - s).days <= 300:
+                        interim += 1
+                except Exception:
+                    pass
+        out[t] = {"cik": cc, "recent_form_types": forms, "profitloss_interim_facts_in_edgar": interim}
     return out
 
 
