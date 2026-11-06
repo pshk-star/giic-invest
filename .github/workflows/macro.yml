@@ -1,0 +1,47 @@
+name: GIIC macro + audit
+
+# Ingesta FRED/ALFRED (macro_pit) y auditoría de cobertura/calidad de fundamentals_pit.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "fred | audit"
+        type: choice
+        options: ["fred", "audit"]
+        default: "fred"
+      dry_run:
+        type: boolean
+        default: false
+  schedule:
+    - cron: "15 8 * * 6"   # FRED semanal (sábado)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: giic-macro
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-job.txt
+      - name: Ejecutar
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" = "audit" ]; then
+            python -m app.jobs.edgar_audit
+          else
+            if [ "${{ inputs.dry_run }}" = "true" ]; then python -m app.jobs.fred_pit --dry-run; else python -m app.jobs.fred_pit; fi
+          fi

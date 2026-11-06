@@ -96,6 +96,24 @@ class SupabaseWriter:
         r.raise_for_status()
         return len(rows)
 
+    def select_rows(self, table: str, select: str = "*", page: int = 1000,
+                    params: Optional[dict] = None) -> List[dict]:
+        """Lee filas paginando (service role). Requiere columna 'id' para ordenar."""
+        out: List[dict] = []
+        offset = 0
+        while True:
+            p = {"select": select, "limit": str(page), "offset": str(offset), "order": "id"}
+            if params:
+                p.update(params)
+            r = self._client.get(f"{self.base}/{table}", params=p)
+            r.raise_for_status()
+            batch = r.json()
+            out.extend(batch)
+            if len(batch) < page:
+                break
+            offset += page
+        return out
+
     def get_transaction_tickers(self) -> List[str]:
         """Tickers distintos presentes en transactions (service_role omite RLS).
         Solo se leen tickers (no montos ni usuarios): sirve para precios/identificación."""
