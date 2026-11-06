@@ -13,7 +13,7 @@ import { classifyQuote } from "../core/quotefmt";
 import { mergeValuation } from "../core/price-source";
 import { investmentCashFlows, xirr } from "../core/returns";
 import { ValuationStamp } from "../components/ValuationStamp";
-import { FintualPanel } from "../components/FintualPanel";
+// import { FintualPanel } from "../components/FintualPanel"; // oculto por ahora (código conservado)
 import { money, num, pct } from "../format";
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -206,7 +206,7 @@ export function Portfolio() {
         </Panel>
       )}
 
-      <FintualPanel txns={txns} stocksUsd={totals.marketValue} onChange={() => { load().catch(() => {}); }} />
+      {/* Fondos (Fintual) oculto por ahora — código conservado en components/FintualPanel.tsx */}
 
       <Panel title="Registrar operación">
         <form onSubmit={submit} className="grid gap-2">
