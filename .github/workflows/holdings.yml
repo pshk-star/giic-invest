@@ -1,0 +1,44 @@
+name: GIIC ingesta de holdings de ETFs
+
+# Descarga holdings oficiales de emisores para los ETFs de la cartera. Escribe solo snapshots
+# 'complete' (no reemplaza válidos por incompletos). dry_run no escribe.
+on:
+  workflow_dispatch:
+    inputs:
+      etfs:
+        type: string
+        default: ""
+      dry_run:
+        type: boolean
+        default: true
+  schedule:
+    - cron: "40 23 * * 1-5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: etf-holdings
+  cancel-in-progress: false
+
+jobs:
+  holdings:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-job.txt
+      - name: Ingesta de holdings
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.etfs }}" ]; then ARGS="$ARGS --etfs ${{ inputs.etfs }}"; fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          python -m app.jobs.etf_holdings_fetch $ARGS
