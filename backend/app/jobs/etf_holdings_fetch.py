@@ -496,7 +496,7 @@ def run(writer, etfs: Optional[List[str]], dry: bool) -> dict:
         if not dry and meta["status"] == "complete":
             writer.upsert("etf_snapshots", [{k: meta[k] for k in ("etf", "provider", "as_of", "status", "n_lines", "weight_sum", "equity_pct")}],
                           on_conflict="etf,provider,as_of")
-            writer.insert_append("etf_holdings", rows, on_conflict="etf,provider,as_of,line_key")
+            writer.upsert("etf_holdings", rows, on_conflict="etf,provider,as_of,line_key")
             meta["written"] = len(rows)
         elif not dry:
             writer.upsert("etf_snapshots", [{k: meta[k] for k in ("etf", "provider", "as_of", "status", "n_lines", "weight_sum", "equity_pct")}],
