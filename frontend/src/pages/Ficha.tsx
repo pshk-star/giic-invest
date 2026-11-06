@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Panel } from "../components/Panel";
 import {
-  getFundamentals, getInstruments, getLatestRun, getLatestScan, getPrices, getTransactions,
-  type ScanRow,
+  getFundamentals, getInstruments, getLatestRun, getLatestScan, getPrices, getQuotes, getTransactions,
+  type QuoteRow, type ScanRow,
 } from "../data";
+import { QuoteView } from "../components/Quote";
 import { derivePositions, portfolioTotals } from "../core/portfolio-tx";
 import {
   type FundamentalsPayload, type ScanFactors, factorExplanation, fairValueByFcfYield,
@@ -46,6 +47,7 @@ export function CompanyFicha() {
   const [sector, setSector] = useState<string | null>(null);
   const [price, setPrice] = useState<number | null>(null);
   const [priceAsOf, setPriceAsOf] = useState<string | null>(null);
+  const [quote, setQuote] = useState<QuoteRow | null>(null);
   const [fund, setFund] = useState<FundamentalsPayload>(EMPTY_F);
   const [peers, setPeers] = useState<FundamentalsPayload[]>([]);
   const [peerCount, setPeerCount] = useState(0);
@@ -57,9 +59,11 @@ export function CompanyFicha() {
   useEffect(() => {
     (async () => {
       setLoaded(false); setErr(null);
-      const [scanAll, instMap, priceMap, run, txns] = await Promise.all([
-        getLatestScan(), getInstruments([ticker]), getPrices([ticker]), getLatestRun(), getTransactions(),
+      const [scanAll, instMap, priceMap, quoteMap, run, txns] = await Promise.all([
+        getLatestScan(), getInstruments([ticker]), getPrices([ticker]), getQuotes([ticker]),
+        getLatestRun(), getTransactions(),
       ]);
+      setQuote(quoteMap[ticker] ?? null);
       const meta = instMap[ticker];
       const cScan = scanAll.find((r) => r.ticker.toUpperCase() === ticker) ?? null;
       const sec = meta?.sector ?? cScan?.sector ?? null;
@@ -136,8 +140,12 @@ export function CompanyFicha() {
             </div>
           </div>
           <div className="text-right">
-            <div className="font-mono text-xl tabnum text-term-fg">{price !== null ? money(price) : <span className="text-term-warn">pendiente</span>}</div>
-            <div className="text-[10px] text-term-faint">{priceAsOf ? `precio al ${priceAsOf}` : "sin precio aún"}</div>
+            {quote
+              ? <QuoteView q={quote} />
+              : <>
+                  <div className="font-mono text-xl tabnum text-term-fg">{price !== null ? money(price) : <span className="text-term-warn">pendiente</span>}</div>
+                  <div className="text-[10px] text-term-faint">{priceAsOf ? `cierre al ${priceAsOf}` : "sin precio aún"}</div>
+                </>}
           </div>
         </div>
         {held && (

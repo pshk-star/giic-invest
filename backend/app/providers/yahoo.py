@@ -66,6 +66,83 @@ def parse_yahoo_meta(payload: dict) -> dict:
         return {}
 
 
+def _market_state(meta: dict, now_epoch: float) -> Optional[str]:
+    """Deriva el estado del mercado desde currentTradingPeriod (si existe)."""
+    ctp = meta.get("currentTradingPeriod") or {}
+    reg = ctp.get("regular") or {}
+    pre = ctp.get("pre") or {}
+    post = ctp.get("post") or {}
+    try:
+        if reg.get("start") is not None and reg.get("end") is not None:
+            if reg["start"] <= now_epoch <= reg["end"]:
+                return "REGULAR"
+            if pre.get("start") is not None and pre["start"] <= now_epoch < reg["start"]:
+                return "PRE"
+            if post.get("end") is not None and reg["end"] < now_epoch <= post["end"]:
+                return "POST"
+            return "CLOSED"
+    except (TypeError, KeyError):
+        return None
+    return None
+
+
+def parse_quote_snapshot(payload: dict, ticker: str, now_epoch: Optional[float] = None) -> Optional[dict]:
+    """Extrae un snapshot de cotización de la respuesta chart (range=1d, interval=2m).
+
+    Devuelve None si no hay datos. NO inventa valores: los campos ausentes quedan None.
+    """
+    import time
+    now_epoch = time.time() if now_epoch is None else now_epoch
+    res = (payload or {}).get("chart", {}).get("result")
+    if not res:
+        return None
+    r0 = res[0] or {}
+    meta = r0.get("meta", {}) or {}
+
+    ts = r0.get("timestamp") or []
+    q = ((r0.get("indicators", {}) or {}).get("quote") or [{}])[0] or {}
+    highs = [x for x in (q.get("high") or []) if x is not None]
+    lows = [x for x in (q.get("low") or []) if x is not None]
+    closes = [x for x in (q.get("close") or []) if x is not None]
+    vols = [x for x in (q.get("volume") or []) if x is not None]
+
+    price = meta.get("regularMarketPrice")
+    if price is None and closes:
+        price = closes[-1]
+    if price is None:
+        return None
+
+    prev = meta.get("chartPreviousClose")
+    if prev is None:
+        prev = meta.get("previousClose")
+
+    qt = meta.get("regularMarketTime")
+    if qt is None and ts:
+        qt = ts[-1]
+    quote_time = (datetime.fromtimestamp(float(qt), tz=timezone.utc).isoformat()
+                  if qt is not None else datetime.now(timezone.utc).isoformat())
+
+    change = (float(price) - float(prev)) if prev else None
+    change_pct = (change / float(prev)) if (change is not None and prev) else None
+
+    return {
+        "ticker": ticker.upper(),
+        "price": float(price),
+        "previous_close": float(prev) if prev is not None else None,
+        "change": change,
+        "change_pct": change_pct,
+        "day_high": float(max(highs)) if highs else meta.get("regularMarketDayHigh"),
+        "day_low": float(min(lows)) if lows else meta.get("regularMarketDayLow"),
+        "volume": float(sum(vols)) if vols else meta.get("regularMarketVolume"),
+        "currency": meta.get("currency") or "USD",
+        "exchange": meta.get("fullExchangeName") or meta.get("exchangeName"),
+        "market_state": _market_state(meta, now_epoch),
+        "quote_time": quote_time,
+        "source": "yahoo",
+        "delayed": True,   # fuente gratuita: se asume retrasada; nunca 'tiempo real'
+    }
+
+
 class YahooProvider(MarketDataProvider):
     name = "yahoo"
     is_sample = False
@@ -75,17 +152,30 @@ class YahooProvider(MarketDataProvider):
         self.retries = retries
         self._client = httpx.Client(timeout=timeout, headers={"User-Agent": _UA})
 
-    def _chart(self, ticker: str, rng: str = "2y") -> dict:
+    def _chart(self, ticker: str, rng: str = "2y", interval: str = "1d") -> dict:
         last = None
         for _ in range(max(1, self.retries)):
             try:
                 r = self._client.get(f"{BASE}{ticker}",
-                                     params={"range": rng, "interval": "1d"})
+                                     params={"range": rng, "interval": interval})
                 r.raise_for_status()
                 return r.json()
             except Exception as e:
                 last = e
         raise last
+
+    def get_quote_snapshots(self, tickers: List[str]) -> Dict[str, dict]:
+        """Snapshot de cotización (último precio, cierre previo, rango, volumen, estado).
+        Best-effort por ticker; omite los que fallan (nunca inventa precio)."""
+        out: Dict[str, dict] = {}
+        for t in tickers:
+            try:
+                snap = parse_quote_snapshot(self._chart(t, rng="1d", interval="2m"), t)
+            except Exception:
+                snap = None
+            if snap and snap.get("price") is not None:
+                out[t] = snap
+        return out
 
     def get_price_history(self, ticker, start: Optional[date] = None, end: Optional[date] = None) -> pd.Series:
         s = parse_yahoo_chart(self._chart(ticker), ticker)

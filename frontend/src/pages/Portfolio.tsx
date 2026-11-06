@@ -1,13 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Panel, Stat } from "../components/Panel";
 import {
-  addTransaction, deleteTransaction, getInstruments, getPrices, getTransactions,
-  searchInstruments, type InstrumentRow,
+  addTransaction, deleteTransaction, getInstruments, getPrices, getQuotes, getTransactions,
+  searchInstruments, type InstrumentRow, type QuoteRow,
 } from "../data";
+import type { PriceInfo } from "../core/analytics";
 import {
-  derivePositions, portfolioTotals, type DerivedPosition, type PortfolioTotals, type Side, type Txn,
+  derivePositions, portfolioTotals, type InstrumentMeta, type Side, type Txn,
 } from "../core/portfolio-tx";
+import { classifyQuote } from "../core/quotefmt";
 import { money, num, pct } from "../format";
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -19,8 +21,9 @@ const EMPTY = {
 
 export function Portfolio() {
   const [txns, setTxns] = useState<Txn[]>([]);
-  const [positions, setPositions] = useState<DerivedPosition[]>([]);
-  const [totals, setTotals] = useState<PortfolioTotals | null>(null);
+  const [instMap, setInstMap] = useState<Record<string, InstrumentMeta>>({});
+  const [eod, setEod] = useState<Record<string, PriceInfo>>({});
+  const [quotes, setQuotes] = useState<Record<string, QuoteRow>>({});
   const [form, setForm] = useState({ ...EMPTY });
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -31,17 +34,53 @@ export function Portfolio() {
   const [picked, setPicked] = useState<InstrumentRow | null>(null);
   const searchTimer = useRef<number | null>(null);
 
-  const refresh = async () => {
+  const load = async () => {
     const t = await getTransactions();
     setTxns(t);
     const tickers = Array.from(new Set(t.map((x) => x.ticker.toUpperCase())));
-    const [prices, instruments] = await Promise.all([getPrices(tickers), getInstruments(tickers)]);
-    const pos = derivePositions(t, prices, instruments);
-    setPositions(pos);
-    setTotals(portfolioTotals(pos));
+    const [pr, inst, qs] = await Promise.all([getPrices(tickers), getInstruments(tickers), getQuotes(tickers)]);
+    setEod(pr); setInstMap(inst); setQuotes(qs);
   };
 
-  useEffect(() => { refresh().catch((e) => setMsg(String(e))); }, []);
+  useEffect(() => { load().catch((e) => setMsg(String(e))); }, []);
+
+  // Auto-actualización: re-consulta cotizaciones cada 60 s (lee de Supabase, barato).
+  // Si falla, conserva las últimas (nunca pone cero ni inventa un precio).
+  useEffect(() => {
+    const tickers = Array.from(new Set(txns.map((x) => x.ticker.toUpperCase())));
+    if (!tickers.length) return;
+    const id = window.setInterval(() => {
+      getQuotes(tickers).then(setQuotes).catch(() => { /* conserva últimas */ });
+    }, 60000);
+    return () => window.clearInterval(id);
+  }, [txns]);
+
+  // Precio efectivo: prioriza la cotización reciente sobre el cierre EOD.
+  const mergedPrices = useMemo(() => {
+    const out: Record<string, PriceInfo> = { ...eod };
+    for (const [t, q] of Object.entries(quotes)) out[t] = { close: q.price, as_of: q.quote_time.slice(0, 10), currency: q.currency };
+    return out;
+  }, [eod, quotes]);
+
+  const positions = useMemo(() => derivePositions(txns, mergedPrices, instMap), [txns, mergedPrices, instMap]);
+  const totals = useMemo(() => portfolioTotals(positions), [positions]);
+
+  // P&L del día: suma de qty × (precio − cierre previo) para posiciones con cotización.
+  const dayPL = useMemo(() => {
+    let s = 0, any = false;
+    for (const p of positions) {
+      const q = quotes[p.ticker];
+      if (p.qty > 1e-9 && q && q.previous_close != null) { s += p.qty * (q.price - q.previous_close); any = true; }
+    }
+    return any ? s : null;
+  }, [positions, quotes]);
+
+  // Advertencia si se mezclan precios de fechas distintas.
+  const priceDates = useMemo(() => {
+    const ds = new Set<string>();
+    for (const p of positions) if (p.qty > 1e-9 && p.priceAsOf) ds.add(p.priceAsOf);
+    return Array.from(ds).sort();
+  }, [positions]);
 
   const onTicker = (v: string) => {
     setForm({ ...form, ticker: v.toUpperCase() });
@@ -79,7 +118,7 @@ export function Portfolio() {
       });
       setForm({ ...EMPTY });
       setPicked(null);
-      await refresh();
+      await load();
     } catch (e) {
       setMsg(String(e));
     } finally {
@@ -89,18 +128,20 @@ export function Portfolio() {
 
   const remove = async (id: string) => {
     await deleteTransaction(id);
-    await refresh();
+    await load();
   };
 
   const cash = form.side === "dividend";
 
   return (
     <div className="grid gap-4">
-      {totals && positions.length > 0 && (
+      {positions.length > 0 && (
         <Panel title="Resumen de mi cartera">
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
             <Stat label="Valor de mercado" value={money(totals.marketValue)} />
-            <Stat label="Costo (remanente)" value={money(totals.costBasis)} />
+            <Stat label="P&L del día"
+              value={dayPL !== null ? `${dayPL >= 0 ? "+" : ""}${money(dayPL)}` : "—"}
+              tone={dayPL === null ? "text-term-muted" : dayPL >= 0 ? "text-term-good" : "text-term-crit"} />
             <Stat label="P&L no realizado"
               value={`${money(totals.unrealized)} (${totals.unrealizedPct !== null ? pct(totals.unrealizedPct) : "—"})`}
               tone={totals.unrealized >= 0 ? "text-term-good" : "text-term-crit"} />
@@ -109,9 +150,14 @@ export function Portfolio() {
               tone={totals.realized + totals.dividends >= 0 ? "text-term-good" : "text-term-crit"} />
           </div>
           <p className="mt-2 text-xs text-term-muted">
-            P&L no realizado = valor de mercado − costo promedio del remanente. La rentabilidad
-            por tiempo (TWR) y por dinero (XIRR) vs. S&P 500 / Nasdaq llegan en la Fase B.
+            Las cotizaciones se actualizan solas cada 60 s mientras usas GIIC (fuente gratuita
+            <strong> retrasada</strong>, no tiempo real). P&L del día = Σ cantidad × (precio − cierre previo).
           </p>
+          {priceDates.length > 1 && (
+            <p className="mt-1 text-xs text-term-warn">
+              Aviso: tus posiciones usan precios de fechas distintas ({priceDates.join(", ")}); el valor total los mezcla.
+            </p>
+          )}
         </Panel>
       )}
 
@@ -206,30 +252,43 @@ export function Portfolio() {
                 <tr className="border-b border-term-border text-left text-xs uppercase text-term-muted">
                   <th className="py-2">Ticker</th><th>Nombre</th>
                   <th className="text-right">Cant.</th><th className="text-right">Costo prom.</th>
-                  <th className="text-right">Precio</th><th className="text-right">Valor</th>
+                  <th className="text-right">Precio</th><th className="text-right">P&L día</th>
+                  <th className="text-right">Valor</th>
                   <th className="text-right">P&L no real.</th><th className="text-right">Peso</th>
                 </tr>
               </thead>
               <tbody>
-                {positions.filter((p) => p.qty > 1e-9).map((p) => (
+                {positions.filter((p) => p.qty > 1e-9).map((p) => {
+                  const q = quotes[p.ticker];
+                  const fresh = q ? classifyQuote(q.quote_time, q.market_state, q.delayed) : null;
+                  const dot = !fresh ? "" : fresh.freshness === "live" ? "bg-term-good" : fresh.freshness === "stale" ? "bg-term-crit" : "bg-term-warn";
+                  const dp = q && q.previous_close != null ? p.qty * (q.price - q.previous_close) : null;
+                  return (
                   <tr key={p.ticker} className="border-b border-term-border last:border-0">
                     <td className="py-2"><Link to={`/research/${p.ticker}`} className="font-mono font-semibold text-term-accent hover:underline">{p.ticker}</Link></td>
                     <td className="max-w-[180px] truncate text-term-muted">{p.name ?? "—"}</td>
                     <td className="text-right tabnum">{num(p.qty, 4)}</td>
                     <td className="text-right tabnum">{money(p.avgCost)}</td>
                     <td className="text-right tabnum">
-                      {p.price !== null ? money(p.price) : <span className="text-term-warn">pendiente</span>}
+                      <span className="inline-flex items-center justify-end gap-1">
+                        {dot && <span className={`inline-block h-1.5 w-1.5 rounded-full ${dot}`} title={fresh?.label} />}
+                        {p.price !== null ? money(p.price) : <span className="text-term-warn">pendiente</span>}
+                      </span>
                       {p.priceAsOf && <div className="text-[10px] text-term-faint">{p.priceAsOf}</div>}
+                    </td>
+                    <td className={`text-right tabnum ${dp === null ? "text-term-muted" : dp >= 0 ? "text-term-good" : "text-term-crit"}`}>
+                      {dp !== null ? `${dp >= 0 ? "+" : ""}${money(dp)}` : "—"}
                     </td>
                     <td className="text-right tabnum">{p.marketValue !== null ? money(p.marketValue) : "—"}</td>
                     <td className={`text-right tabnum ${p.unrealized !== null && p.unrealized >= 0 ? "text-term-good" : p.unrealized !== null ? "text-term-crit" : ""}`}>
                       {p.unrealized !== null ? `${money(p.unrealized)} (${p.unrealizedPct !== null ? pct(p.unrealizedPct) : "—"})` : "—"}
                     </td>
                     <td className="text-right tabnum">
-                      {totals && totals.weights[p.ticker] !== undefined ? pct(totals.weights[p.ticker]) : "—"}
+                      {totals.weights[p.ticker] !== undefined ? pct(totals.weights[p.ticker]) : "—"}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
             {totals && totals.missingPrices.length > 0 && (

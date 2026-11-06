@@ -1,0 +1,50 @@
+name: GIIC quotes
+
+# Cotizaciones recientes (retrasadas) sin tu computadora.
+# - cron cada 15 min en horario de mercado US (13:00–21:00 UTC, L-V) cubre pre/regular/post.
+# - workflow_dispatch: manual, con dry-run para verificar sin escribir.
+on:
+  schedule:
+    - cron: "*/15 13-21 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Solo imprimir snapshots, sin escribir"
+        type: boolean
+        default: false
+      tickers:
+        description: "Tickers explícitos separados por espacio (opcional)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: giic-quotes
+  cancel-in-progress: true
+
+jobs:
+  quotes:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Instalar dependencias del job
+        run: pip install -r requirements-job.txt
+      - name: Tomar cotizaciones
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          ARGS=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+            if [ -n "${{ inputs.tickers }}" ]; then ARGS="$ARGS --tickers ${{ inputs.tickers }}"; fi
+          fi
+          python -m app.jobs.quotes $ARGS

@@ -83,6 +83,33 @@ export async function saveSettings(s: Partial<Settings>): Promise<void> {
   if (error) throw error;
 }
 
+export interface QuoteRow {
+  ticker: string;
+  price: number;
+  previous_close: number | null;
+  change: number | null;
+  change_pct: number | null;
+  day_high: number | null;
+  day_low: number | null;
+  volume: number | null;
+  currency: string;
+  exchange: string | null;
+  market_state: string | null;
+  quote_time: string;
+  source: string;
+  delayed: boolean;
+  updated_at: string;
+}
+
+export async function getQuotes(tickers: string[]): Promise<Record<string, QuoteRow>> {
+  if (tickers.length === 0) return {};
+  const { data, error } = await supabase.from("quotes").select("*").in("ticker", tickers);
+  if (error) throw error;
+  const out: Record<string, QuoteRow> = {};
+  for (const r of data ?? []) out[r.ticker] = r as QuoteRow;
+  return out;
+}
+
 export async function getFundamentals(tickers: string[]): Promise<Record<string, FundamentalsPayload>> {
   if (tickers.length === 0) return {};
   const { data, error } = await supabase.from("fundamentals").select("ticker,payload").in("ticker", tickers);
