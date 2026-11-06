@@ -48,6 +48,39 @@ export async function searchInstruments(query: string): Promise<InstrumentRow[]>
   return (data ?? []) as InstrumentRow[];
 }
 
+export interface InstrumentIdentity {
+  ticker: string;
+  country_issuer: string | null;
+  country_listing: string | null;
+  quote_currency: string | null;
+  report_currency: string | null;
+  instrument_type: string | null;
+  adr_ratio: number | null;
+  cik: string | null;
+  figi: string | null;
+  isin: string | null;
+  lei: string | null;
+  identity: Record<string, { value: unknown; source: string | null; as_of: string | null; status: string }> | null;
+  identity_as_of: string | null;
+}
+
+// Lee la identidad persistida (columnas de 0012). Seguro: si las columnas aún no
+// existen (migración no aplicada en ese entorno), devuelve {} y la UI usa su derivación.
+export async function getInstrumentIdentity(tickers: string[]): Promise<Record<string, InstrumentIdentity>> {
+  if (tickers.length === 0) return {};
+  try {
+    const { data, error } = await supabase.from("instruments")
+      .select("ticker,country_issuer,country_listing,quote_currency,report_currency,instrument_type,adr_ratio,cik,figi,isin,lei,identity,identity_as_of")
+      .in("ticker", tickers.map((t) => t.toUpperCase()));
+    if (error || !data) return {};
+    const out: Record<string, InstrumentIdentity> = {};
+    for (const r of data) out[r.ticker] = r as InstrumentIdentity;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 export async function getInstruments(tickers: string[]): Promise<Record<string, InstrumentMeta>> {
   if (tickers.length === 0) return {};
   const { data, error } = await supabase

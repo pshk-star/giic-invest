@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Panel } from "../components/Panel";
 import {
-  getCorporateActions, getFundamentals, getInstruments, getLatestRun, getLatestScan, getPrices,
-  getPriceHistory, getPredictionsByTicker, getQuotes, getTransactions,
-  type PredictionRow, type PriceBar, type QuoteRow, type ScanRow,
+  getCorporateActions, getFundamentals, getInstruments, getInstrumentIdentity, getLatestRun,
+  getLatestScan, getPrices, getPriceHistory, getPredictionsByTicker, getQuotes, getTransactions,
+  type InstrumentIdentity, type PredictionRow, type PriceBar, type QuoteRow, type ScanRow,
 } from "../data";
 import { QuoteView } from "../components/Quote";
 import { PriceChart } from "../components/PriceChart";
@@ -145,6 +145,7 @@ export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: st
   const [exchange, setExchange] = useState<string | null>(null);
   const [sector, setSector] = useState<string | null>(null);
   const [quoteCcy, setQuoteCcy] = useState<string | null>(null);
+  const [identity, setIdentity] = useState<InstrumentIdentity | null>(null);
   const [price, setPrice] = useState<number | null>(null);
   const [priceAsOf, setPriceAsOf] = useState<string | null>(null);
   const [quote, setQuote] = useState<QuoteRow | null>(null);
@@ -162,13 +163,14 @@ export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: st
   useEffect(() => {
     (async () => {
       setLoaded(false); setErr(null);
-      const [scanAll, instMap, priceMap, quoteMap, run, txns, h, hSpy, hQqq, pr] = await Promise.all([
+      const [scanAll, instMap, priceMap, quoteMap, run, txns, h, hSpy, hQqq, pr, identMap] = await Promise.all([
         getLatestScan(), getInstruments([ticker]), getPrices([ticker]), getQuotes([ticker]),
         getLatestRun(), getTransactions(),
         getPriceHistory(ticker), getPriceHistory("SPY"), getPriceHistory("QQQ"),
-        getPredictionsByTicker(ticker),
+        getPredictionsByTicker(ticker), getInstrumentIdentity([ticker]),
       ]);
       setPreds(pr);
+      setIdentity(identMap[ticker] ?? null);
       setQuote(quoteMap[ticker] ?? null);
       setHist(h); setSpy(hSpy); setQqq(hQqq);
       const meta = instMap[ticker];
@@ -263,11 +265,26 @@ export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: st
         )}
       </Panel>
 
-      <Panel title="Identificación del instrumento">
+      <Panel title="Identificación del instrumento"
+        right={identity ? <span className="text-xs text-term-faint">persistido · {identity.identity_as_of ?? "s/f"}</span> : <span className="text-xs text-term-warn">no persistido aún</span>}>
         {(() => {
-          const t = deriveInstrumentType(ticker, assetClass, quoteCcy, fund.currency);
-          const adr = ADR_SEED[ticker.toUpperCase()];
-          const isAdr = t.startsWith("ADR");
+          // Prefiere datos PERSISTIDOS (0012); si faltan, deriva (sin inventar).
+          const typeMap: Record<string, string> = {
+            stock: "Acción", adr: "ADR/GDR (emisor extranjero)", gdr: "GDR",
+            etf: "ETF", commodity_etf: "Materia prima (ETF)", reit: "REIT", cash: "Efectivo", unknown: "—",
+          };
+          const t = identity?.instrument_type ? (typeMap[identity.instrument_type] ?? identity.instrument_type)
+            : deriveInstrumentType(ticker, assetClass, quoteCcy, fund.currency);
+          const quote = identity?.quote_currency ?? quoteCcy;
+          const report = identity?.report_currency ?? fund.currency ?? null;
+          const adr = identity?.adr_ratio ?? ADR_SEED[ticker.toUpperCase()] ?? null;
+          const idj = identity?.identity ?? {};
+          const idStat = (k: string): string => {
+            const e = idj[k]; if (!e) return "—";
+            if (e.value) return `${String(e.value)}${e.source ? ` · ${e.source}` : ""}`;
+            return e.status === "unavailable" ? "no disponible" : (e.status ?? "—");
+          };
+          const issuerSrc = idj["country_issuer"]?.source;
           const row = (k: string, v: string | JSX.Element) => (
             <div className="flex justify-between gap-3 border-b border-term-border py-1 last:border-0">
               <span className="text-term-muted">{k}</span><span className="text-right text-term-fg">{v}</span>
@@ -277,23 +294,25 @@ export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: st
             <div className="grid gap-2 text-sm sm:grid-cols-2">
               <div>
                 {row("Nombre", name ?? "—")}
-                {row("Ticker", <span className="font-mono">{ticker}</span>)}
                 {row("Tipo", t)}
-                {row("Bolsa", exchange ?? "—")}
+                {row("País del emisor", identity?.country_issuer ? `${identity.country_issuer}${issuerSrc ? ` · ${issuerSrc}` : ""}` : "no disponible")}
+                {row("Mercado de cotización", `${identity?.country_listing ?? "—"}${exchange ? ` · ${exchange}` : ""}`)}
+                {row("Relación ADR", adr != null ? `1 ADR = ${adr} ordinaria(s)` : (t.startsWith("ADR") ? "no verificada" : "no aplica"))}
               </div>
               <div>
-                {row("Moneda de cotización", quoteCcy ?? "—")}
-                {row("Moneda de reporte", fund.currency ?? (assetClass === "equity" ? "—" : "n/a"))}
-                {row("Taxonomía contable", fund.taxonomy ?? "—")}
-                {row("Relación ADR", isAdr ? (adr != null ? `1 ADR = ${adr} ordinaria(s) · fuente: curado (semilla)` : "no verificada") : "no aplica")}
+                {row("Moneda de cotización", quote ?? "—")}
+                {row("Moneda de reporte", report ?? (assetClass === "equity" ? "—" : "n/a"))}
+                {row("CIK", idStat("cik"))}
+                {row("FIGI", idStat("figi"))}
+                {row("ISIN / LEI", `${idStat("isin")} / ${idStat("lei")}`)}
               </div>
             </div>
           );
         })()}
         <p className="mt-2 text-[11px] text-term-faint">
-          Identidad resuelta automáticamente (Yahoo meta + SEC EDGAR), sin listas fijas. Los identificadores
-          <b> CIK, FIGI, ISIN y LEI</b> con fuente/fecha/estado se persisten tras aplicar la migración 0012 y correr la
-          identificación; ISIN/LEI quedan "no disponible" cuando no hay fuente gratuita fiable (no se inventan).
+          Identidad resuelta automáticamente (Yahoo meta + SEC EDGAR + OpenFIGI), sin listas fijas, y persistida en
+          Supabase. País del <b>emisor</b> (domicilio) distinto del <b>mercado de cotización</b>. Lo no disponible
+          (p. ej. ISIN/LEI sin fuente gratuita fiable) se marca como tal; nunca se inventa.
         </p>
       </Panel>
 
