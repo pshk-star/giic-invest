@@ -5,6 +5,8 @@ import { effectiveExposure, type EtfWeight, type PortfolioHolding } from "../cor
 import { HoldingsImport } from "./HoldingsImport";
 import { money } from "../format";
 
+const COMMODITY_ETFS = ["GLD", "SLV", "IAU", "PPLT", "PALL", "SGOL", "SIVR"];
+
 // Portfolio X-Ray: exposición económica efectiva por empresa (directa + indirecta vía ETFs),
 // concentración, solapamiento y cobertura. No inventa: lo no identificado se marca.
 export function XRayPanel({ holdings, sectorByTicker }:
@@ -31,6 +33,10 @@ export function XRayPanel({ holdings, sectorByTicker }:
   }, [etfs.join(","), reloadKey]);
 
   const xray = useMemo(() => effectiveExposure(holdings, weights), [holdings, weights]);
+  const commodityUsd = useMemo(() => holdings
+    .filter((h) => h.isEtf && COMMODITY_ETFS.includes(h.ticker.toUpperCase()))
+    .reduce((s, h) => s + h.valueUsd, 0), [holdings]);
+  const otherUnknownUsd = Math.max(0, xray.unknownUsd - commodityUsd);
   const coveredEtfs = new Set(snapshots.map((s) => s.etf));
   const pending = etfs.filter((e) => !coveredEtfs.has(e));
   const updated = snapshots.length ? snapshots.map((s) => s.as_of).sort().slice(-1)[0] : null;
@@ -71,8 +77,9 @@ export function XRayPanel({ holdings, sectorByTicker }:
   return (
     <Panel title="Portfolio X-Ray · Exposición Real">
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-term-muted">
-        <span>Identificado: <b className="text-term-good">{(xray.identifiedPct * 100).toFixed(1)}%</b></span>
-        <span>Desconocido: <b className="text-term-warn">{money(xray.unknownUsd)}</b> ({((1 - xray.identifiedPct) * 100).toFixed(1)}%)</span>
+        <span>En empresas: <b className="text-term-good">{(xray.identifiedPct * 100).toFixed(1)}%</b></span>
+        {commodityUsd > 0 && <span>Materias primas: <b className="text-term-fg">{money(commodityUsd)}</b> ({((commodityUsd / xray.totalUsd) * 100).toFixed(1)}%)</span>}
+        <span>Efectivo/otros/no identif.: <b className="text-term-warn">{money(otherUnknownUsd)}</b></span>
         <span>Total: <b className="text-term-fg">{money(xray.totalUsd)}</b></span>
         {updated && <span>Actualizado: <b className="text-term-fg">{updated}</b></span>}
         {pending.length > 0 && <span className="text-term-warn">Pendientes de cobertura: {pending.join(", ")}</span>}
