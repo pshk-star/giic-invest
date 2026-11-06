@@ -1,0 +1,60 @@
+name: GIIC price history
+
+# Serie diaria de precios (ajustada) para Research y forecasting, sin tu computadora.
+# - workflow_dispatch: backfill histórico (manual, una vez) o dry-run.
+# - cron: días hábiles ~22:55 UTC (tras el cierre US) añade el cierre EOD del día.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "backfill | daily"
+        type: choice
+        options: ["backfill", "daily"]
+        default: "backfill"
+      range:
+        description: "rango de backfill"
+        type: string
+        default: "5y"
+      dry_run:
+        type: boolean
+        default: false
+      tickers:
+        description: "tickers explícitos (opcional)"
+        type: string
+        default: ""
+  schedule:
+    - cron: "55 22 * * 1-5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: giic-history
+  cancel-in-progress: false
+
+jobs:
+  history:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-job.txt
+      - name: Construir histórico
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            python -m app.jobs.history --daily
+          else
+            ARGS=""
+            if [ "${{ inputs.mode }}" = "daily" ]; then ARGS="--daily"; else ARGS="--backfill --range ${{ inputs.range }}"; fi
+            if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+            if [ -n "${{ inputs.tickers }}" ]; then ARGS="$ARGS --tickers ${{ inputs.tickers }}"; fi
+            python -m app.jobs.history $ARGS
+          fi

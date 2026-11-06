@@ -66,6 +66,34 @@ def parse_yahoo_meta(payload: dict) -> dict:
         return {}
 
 
+def parse_yahoo_history_bars(payload: dict) -> List[dict]:
+    """Barras diarias {as_of, close (AJUSTADO), volume} desde la respuesta chart."""
+    res = (payload or {}).get("chart", {}).get("result")
+    if not res:
+        return []
+    r0 = res[0] or {}
+    ts = r0.get("timestamp") or []
+    ind = r0.get("indicators", {}) or {}
+    adj = (ind.get("adjclose") or [{}])[0].get("adjclose")
+    close = (ind.get("quote") or [{}])[0].get("close")
+    vol = (ind.get("quote") or [{}])[0].get("volume")
+    series = adj if adj else close
+    if not ts or not series:
+        return []
+    out: List[dict] = []
+    for i, t in enumerate(ts):
+        c = series[i] if i < len(series) else None
+        if c is None:
+            continue
+        v = vol[i] if (vol and i < len(vol)) else None
+        out.append({
+            "as_of": datetime.fromtimestamp(float(t), tz=timezone.utc).date().isoformat(),
+            "close": float(c),
+            "volume": float(v) if v is not None else None,
+        })
+    return out
+
+
 def parse_yahoo_splits(payload: dict) -> List[dict]:
     """Extrae splits de chart.result[0].events.splits (fuente verificable de Yahoo).
 
@@ -235,6 +263,13 @@ class YahooProvider(MarketDataProvider):
             out[t] = Quote(ticker=t, price=float(s.iloc[-1]), as_of=as_of,
                            currency="USD", is_sample=False)
         return out
+
+    def get_history_bars(self, ticker: str, rng: str = "5y") -> List[dict]:
+        """Serie diaria ajustada (close+volume) para backfill histórico."""
+        try:
+            return parse_yahoo_history_bars(self._chart(ticker, rng=rng, interval="1d"))
+        except Exception:
+            return []
 
     def get_splits(self, tickers: List[str]) -> Dict[str, List[dict]]:
         """Splits por ticker desde Yahoo (range=max). Best-effort; omite los que fallan."""

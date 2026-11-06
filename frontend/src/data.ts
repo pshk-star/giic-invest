@@ -110,6 +110,21 @@ export async function getQuotes(tickers: string[]): Promise<Record<string, Quote
   return out;
 }
 
+export interface PriceBar { as_of: string; close: number; volume: number | null; }
+
+export async function getPriceHistory(ticker: string, fromISO?: string): Promise<PriceBar[]> {
+  // Orden DESC + límite para traer lo más RECIENTE (el servidor topa ~1000 filas);
+  // luego se invierte a orden ascendente para graficar.
+  let q = supabase.from("price_history").select("as_of,close,volume")
+    .eq("ticker", ticker.toUpperCase()).order("as_of", { ascending: false }).limit(1000);
+  if (fromISO) q = q.gte("as_of", fromISO);
+  const { data, error } = await q;
+  if (error) throw error;
+  return (data ?? [])
+    .map((r) => ({ as_of: r.as_of, close: Number(r.close), volume: r.volume != null ? Number(r.volume) : null }))
+    .reverse();
+}
+
 export async function getCorporateActions(tickers: string[]): Promise<Split[]> {
   if (tickers.length === 0) return [];
   const { data, error } = await supabase

@@ -3,9 +3,10 @@ import { Link, useParams } from "react-router-dom";
 import { Panel } from "../components/Panel";
 import {
   getCorporateActions, getFundamentals, getInstruments, getLatestRun, getLatestScan, getPrices,
-  getQuotes, getTransactions, type QuoteRow, type ScanRow,
+  getPriceHistory, getQuotes, getTransactions, type PriceBar, type QuoteRow, type ScanRow,
 } from "../data";
 import { QuoteView } from "../components/Quote";
+import { PriceChart } from "../components/PriceChart";
 import { derivePositions, portfolioTotals } from "../core/portfolio-tx";
 import {
   type FundamentalsPayload, type ScanFactors, factorExplanation, fairValueByFcfYield,
@@ -48,6 +49,9 @@ export function CompanyFicha() {
   const [price, setPrice] = useState<number | null>(null);
   const [priceAsOf, setPriceAsOf] = useState<string | null>(null);
   const [quote, setQuote] = useState<QuoteRow | null>(null);
+  const [hist, setHist] = useState<PriceBar[]>([]);
+  const [spy, setSpy] = useState<PriceBar[]>([]);
+  const [qqq, setQqq] = useState<PriceBar[]>([]);
   const [fund, setFund] = useState<FundamentalsPayload>(EMPTY_F);
   const [peers, setPeers] = useState<FundamentalsPayload[]>([]);
   const [peerCount, setPeerCount] = useState(0);
@@ -59,11 +63,13 @@ export function CompanyFicha() {
   useEffect(() => {
     (async () => {
       setLoaded(false); setErr(null);
-      const [scanAll, instMap, priceMap, quoteMap, run, txns] = await Promise.all([
+      const [scanAll, instMap, priceMap, quoteMap, run, txns, h, hSpy, hQqq] = await Promise.all([
         getLatestScan(), getInstruments([ticker]), getPrices([ticker]), getQuotes([ticker]),
         getLatestRun(), getTransactions(),
+        getPriceHistory(ticker), getPriceHistory("SPY"), getPriceHistory("QQQ"),
       ]);
       setQuote(quoteMap[ticker] ?? null);
+      setHist(h); setSpy(hSpy); setQqq(hQqq);
       const meta = instMap[ticker];
       const cScan = scanAll.find((r) => r.ticker.toUpperCase() === ticker) ?? null;
       const sec = meta?.sector ?? cScan?.sector ?? null;
@@ -153,6 +159,16 @@ export function CompanyFicha() {
             En tu cartera: {num(held.qty, 2)} unidades · peso {pct(held.weight)} del total.
           </p>
         )}
+      </Panel>
+
+      <Panel title="Precio histórico">
+        <PriceChart
+          primary={{ label: ticker, bars: hist, color: "#5eead4" }}
+          benchmarks={[
+            { label: "S&P 500 (SPY)", bars: spy, color: "#94a3b8" },
+            { label: "Nasdaq-100 (QQQ)", bars: qqq, color: "#fbbf24" },
+          ]}
+        />
       </Panel>
 
       {isEtf ? (
