@@ -83,6 +83,14 @@ end $$;
 create unique index if not exists predictions_uniq_origin_run
   on public.predictions (origin, model_name, model_version, run_id, ticker, as_of, horizon_sessions);
 
+-- (4b) REGLA DE PRODUCCIÓN OFICIAL: una sola predicción de producción por
+-- (modelo, versión, ticker, as_of, horizonte), SIN importar run_id. Evita emisiones
+-- duplicadas que distorsionen métricas: un segundo emit del mismo día/clave es rechazado.
+-- (El backtest sí admite múltiples run_id por el índice de arriba.)
+create unique index if not exists predictions_one_official_production
+  on public.predictions (model_name, model_version, ticker, as_of, horizon_sessions)
+  where origin = 'production';
+
 -- (5) Inmutabilidad real.
 create or replace function public.prevent_mutation()
 returns trigger language plpgsql as $$
@@ -102,7 +110,9 @@ drop trigger if exists prediction_outcomes_append_only on public.prediction_outc
 create trigger prediction_outcomes_append_only before update or delete on public.prediction_outcomes
   for each row execute function public.prevent_mutation();
 
--- Permisos (defensa en profundidad; RLS ya bloquea escritura de anon/authenticated).
-revoke update, delete on public.predictions        from anon, authenticated;
-revoke update, delete on public.pit_snapshots       from anon, authenticated;
-revoke update, delete on public.prediction_outcomes from anon, authenticated;
+-- Permisos (defensa en profundidad): además de RLS (sin policy de escritura), se revoca
+-- INSERT/UPDATE/DELETE a anon/authenticated. Solo el service role (jobs) inserta; nadie
+-- modifica ni borra (triggers). SELECT permanece vía la policy de 0006.
+revoke insert, update, delete on public.predictions        from anon, authenticated;
+revoke insert, update, delete on public.pit_snapshots       from anon, authenticated;
+revoke insert, update, delete on public.prediction_outcomes from anon, authenticated;

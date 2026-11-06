@@ -72,4 +72,13 @@ do $$ declare n int; begin
   if n=2 then raise notice 'CASO 8 múltiples corridas coexisten: PASS'; else raise exception 'CASO 8: FAIL (n=%)', n; end if;
 end $$;
 
+-- 9) segunda predicción de PRODUCCIÓN con misma clave y distinto run_id -> DEBE fallar
+do $$ begin
+  insert into public.predictions
+    (model_name,model_version,run_id,origin,ticker,as_of,horizon_sessions,evaluate_on,prediction,emitted_at,data_ref,calendar)
+  values ('mf','v1','prod-OTRO','production','MU','2026-11-05',20,'2026-12-03','{"rel_return":0.02}',
+          now(),'{"price_asof":"2026-11-05"}','XNYS');
+  raise exception 'CASO 9: FAIL (se permitió una segunda producción oficial con otro run_id)';
+exception when unique_violation then raise notice 'CASO 9 producción oficial única: PASS'; end $$;
+
 rollback;
