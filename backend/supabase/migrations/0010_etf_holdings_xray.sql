@@ -11,7 +11,7 @@ begin
   for r in
     select con.conname from pg_constraint con
     where con.conrelid='public.etf_holdings'::regclass and con.contype in ('p','u')
-      and (select array_agg(a.attname order by a.attname) from unnest(con.conkey) k
+      and (select array_agg(a.attname::text order by a.attname::text) from unnest(con.conkey) k
            join pg_attribute a on a.attrelid=con.conrelid and a.attnum=k) = array['etf','ticker']
   loop execute format('alter table public.etf_holdings drop constraint %I', r.conname); end loop;
 
@@ -19,7 +19,7 @@ begin
     select i.indexrelid::regclass::text as idx from pg_index i
     where i.indrelid='public.etf_holdings'::regclass and i.indisunique
       and not exists (select 1 from pg_constraint c where c.conindid=i.indexrelid)
-      and (select array_agg(a.attname order by a.attname) from unnest(i.indkey) k
+      and (select array_agg(a.attname::text order by a.attname::text) from unnest(i.indkey) k
            join pg_attribute a on a.attrelid=i.indrelid and a.attnum=k) = array['etf','ticker']
   loop execute format('drop index if exists %s', r.idx); end loop;
 end $$;
