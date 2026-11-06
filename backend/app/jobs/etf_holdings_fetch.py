@@ -26,7 +26,10 @@ UA = {"User-Agent": "Mozilla/5.0 (compatible; GIIC/1.0; research)"}
 
 # ETFs cubiertos por adaptador oficial (emisor + slug). Lo demás => pendiente de cobertura.
 SSGA = ["SPY", "DIA", "XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLB", "XLU", "XLRE", "XLC"]
-ISSUER: Dict[str, str] = {**{t: "ssga" for t in SSGA}, "QQQ": "invesco"}
+COMMODITY = {"GLD": "Oro (bullion)", "SLV": "Plata (bullion)", "IAU": "Oro (bullion)"}
+VANGUARD_ID = {"VOO": "0968", "VTI": "0970", "VOOG": "0968", "VGT": "0958"}
+ISSUER: Dict[str, str] = {**{t: "ssga" for t in SSGA}, "QQQ": "invesco",
+                          **{t: "vanguard" for t in VANGUARD_ID}, **{t: "commodity" for t in COMMODITY}}
 
 
 KNOWN_ETFS = set(SSGA) | {"QQQ", "VOO", "VTI", "SMH", "SCHD", "IWM", "DIA", "GLD", "SLV", "VOOG", "SOXX", "VGT"}
@@ -40,9 +43,14 @@ def detect_etfs(writer, diag: Optional[dict] = None) -> List[str]:
             diag["tx_tickers"] = tickers
         if not tickers:
             return []
-        inst = writer.select_rows("instruments", select="ticker,asset_class",
-                                  params={"ticker": "in.(" + ",".join(tickers) + ")"})
-        classes = {r["ticker"].upper(): (r.get("asset_class") or "").lower() for r in inst}
+        classes = {}
+        try:
+            inst = writer.select_rows("instruments", select="ticker,asset_class",
+                                      params={"ticker": "in.(" + ",".join(tickers) + ")"})
+            classes = {r["ticker"].upper(): (r.get("asset_class") or "").lower() for r in inst}
+        except Exception as e:
+            if diag is not None:
+                diag["instruments_query_error"] = f"{type(e).__name__}: {str(e)[:80]}"
         if diag is not None:
             diag["instrument_classes"] = classes
         # ETF por clasificación en instruments O por lista conocida (robusto si falta asset_class)
@@ -171,7 +179,61 @@ def fetch_invesco(ticker: str) -> Tuple[Optional[str], List[dict]]:
     return as_of, lines
 
 
-ADAPTERS = {"ssga": fetch_ssga, "invesco": fetch_invesco}
+def fetch_vanguard(ticker: str) -> Tuple[Optional[str], List[dict]]:
+    fid = VANGUARD_ID.get(ticker.upper())
+    lines: List[dict] = []
+    as_of = date.today().isoformat()
+    urls = [
+        f"https://api.vanguard.com/rs/ire/01/pe/fund/{fid}/portfolio-holding/stock.json",
+        f"https://investor.vanguard.com/investment-products/etfs/profile/api/{ticker.upper()}/portfolio-holding/stock",
+    ]
+    data = None
+    for u in urls:
+        try:
+            r = httpx.get(u, headers={**UA, "Accept": "application/json",
+                                      "Referer": "https://investor.vanguard.com/"},
+                          timeout=60, follow_redirects=True)
+            if r.status_code == 200:
+                data = r.json(); break
+        except Exception:
+            continue
+    if data is None:
+        raise RuntimeError("vanguard: sin respuesta JSON (403/estructura)")
+    # estructura variable: buscar lista de holdings con ticker/nombre/porcentaje
+    def walk(o):
+        found = []
+        if isinstance(o, dict):
+            keys = {k.lower() for k in o.keys()}
+            if ("ticker" in keys or "symbol" in keys) and any("percent" in k or "weight" in k for k in keys):
+                found.append(o)
+            for v in o.values():
+                found += walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                found += walk(v)
+        return found
+    for h in walk(data):
+        low = {k.lower(): v for k, v in h.items()}
+        tk = str(low.get("ticker") or low.get("symbol") or "").strip()
+        nm = str(low.get("longname") or low.get("name") or low.get("shortname") or "").strip()
+        wk = next((low[k] for k in low if "percent" in k or "weight" in k), None)
+        w = _num(wk)
+        if w is None:
+            continue
+        sec = str(low.get("sector") or "").strip()
+        lines.append({"name": nm or tk, "ticker": (tk or None), "cusip": None,
+                      "weight": w / 100.0, "asset_class": "equity", "sector": sec or None})
+    return as_of, lines
+
+
+def fetch_commodity(ticker: str) -> Tuple[Optional[str], List[dict]]:
+    name = COMMODITY.get(ticker.upper(), "Materia prima")
+    return date.today().isoformat(), [{"name": name, "ticker": None, "cusip": None,
+                                       "weight": 1.0, "asset_class": "commodity", "sector": "Materias primas"}]
+
+
+ADAPTERS = {"ssga": fetch_ssga, "invesco": fetch_invesco,
+            "vanguard": fetch_vanguard, "commodity": fetch_commodity}
 
 
 def normalize(etf: str, provider: str, as_of: str, lines: List[dict]) -> Tuple[List[dict], dict]:
@@ -190,7 +252,7 @@ def normalize(etf: str, provider: str, as_of: str, lines: List[dict]) -> Tuple[L
         })
     wsum = sum(r["weight"] for r in out if r["weight"] is not None)
     eqsum = sum(r["weight"] for r in out if r["weight"] is not None and r["asset_class"] == "equity")
-    status = "complete" if (0.97 <= wsum <= 1.03 and len(out) >= 5) else ("partial" if out else "failed")
+    status = "complete" if (0.97 <= wsum <= 1.03 and len(out) >= 1) else ("partial" if out else "failed")
     meta = {"etf": etf, "provider": provider, "as_of": as_of, "status": status,
             "n_lines": len(out), "weight_sum": round(wsum, 4),
             "equity_pct": round(eqsum, 4)}
