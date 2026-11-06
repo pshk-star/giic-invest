@@ -27,9 +27,17 @@ export interface ForecastResult {
   horizons: HorizonResult[];
   riskContrib: RiskContribution[];
   hhi: number;                    // índice de concentración (0-1)
+  effectiveN: number;             // número efectivo de posiciones (1/HHI)
   top5WeightPct: number;
   band: { day: number; p5: number; p50: number; p95: number }[]; // para el gráfico
+  drift: "historical" | "neutral";
   warnings: string[];
+}
+
+export interface ForecastOpts {
+  sims?: number; block?: number; seed?: number;
+  drift?: "historical" | "neutral";  // neutral = sin deriva estimada (retornos centrados en 0)
+  windowDays?: number;               // ventana histórica (últimos N retornos)
 }
 
 function mulberry32(seed: number) {
@@ -62,15 +70,18 @@ function pctile(sorted: number[], q: number): number {
 
 const HORIZONS: [number, string][] = [[21, "1 mes"], [63, "3 meses"], [126, "6 meses"], [252, "12 meses"]];
 
-export function forecast(assetsIn: AssetHistory[], opts?: { sims?: number; block?: number; seed?: number }): ForecastResult {
+export function forecast(assetsIn: AssetHistory[], opts?: ForecastOpts): ForecastResult {
   const sims = opts?.sims ?? 1200, block = opts?.block ?? 10, seed = opts?.seed ?? 42;
+  const drift = opts?.drift ?? "historical";
+  const win = opts?.windowDays ?? 0;
   const warnings: string[] = [];
-  const assets = assetsIn.filter((a) => a.valueUsd > 0 && a.returns.length >= 60);
+  let assets = assetsIn.filter((a) => a.valueUsd > 0 && a.returns.length >= 60);
+  if (win > 0) assets = assets.map((a) => ({ ...a, returns: a.returns.slice(-win) }));
   const dropped = assetsIn.length - assets.length;
   if (dropped > 0) warnings.push(`${dropped} posición(es) sin historial suficiente (≥60 días) excluidas del riesgo.`);
   const currentValue = assetsIn.reduce((s, a) => s + a.valueUsd, 0);
   const k = assets.length;
-  if (k === 0) return { currentValue, annVol: 0, nObs: 0, horizons: [], riskContrib: [], hhi: 0, top5WeightPct: 0, band: [], warnings: ["Sin historial suficiente para proyectar."] };
+  if (k === 0) return { currentValue, annVol: 0, nObs: 0, horizons: [], riskContrib: [], hhi: 0, effectiveN: 0, top5WeightPct: 0, band: [], drift, warnings: ["Sin historial suficiente para proyectar."] };
 
   const n = Math.min(...assets.map((a) => a.returns.length));
   const simValue = assets.reduce((s, a) => s + a.valueUsd, 0); // valor cubierto por la simulación
@@ -88,7 +99,13 @@ export function forecast(assetsIn: AssetHistory[], opts?: { sims?: number; block
 
   const sortedW = [...w].sort((a, b) => b - a);
   const hhi = w.reduce((s, x) => s + x * x, 0);
+  const effectiveN = hhi > 0 ? 1 / hhi : 0;
   const top5WeightPct = sortedW.slice(0, 5).reduce((s, x) => s + x, 0) * (simValue / currentValue);
+
+  // Retornos para la simulación: 'neutral' los centra en 0 (quita la deriva estimada),
+  // conservando volatilidad y correlaciones; 'historical' usa los retornos tal cual.
+  const means = assets.map((a) => a.returns.slice(0, n).reduce((s, x) => s + x, 0) / n);
+  const simRets = assets.map((a, i) => a.returns.map((r) => drift === "neutral" ? r - means[i] : r));
 
   // Bootstrap por bloques multivariante
   const maxDays = 252;
@@ -103,7 +120,7 @@ export function forecast(assetsIn: AssetHistory[], opts?: { sims?: number; block
     while (day < maxDays) {
       const start = Math.floor(rnd() * Math.max(1, n - block));
       for (let b = 0; b < block && day < maxDays; b++, day++) {
-        for (let i = 0; i < k; i++) cum[i] *= (1 + assets[i].returns[start + b]);
+        for (let i = 0; i < k; i++) cum[i] *= (1 + simRets[i][start + b]);
         let v = cash;
         for (let i = 0; i < k; i++) v += assets[i].valueUsd * cum[i];
         path[day] = v;
@@ -132,5 +149,5 @@ export function forecast(assetsIn: AssetHistory[], opts?: { sims?: number; block
   });
 
   if (cash > 1) warnings.push(`${((cash / currentValue) * 100).toFixed(0)}% de la cartera sin historial (tratado como constante, 0% retorno).`);
-  return { currentValue, annVol, nObs: n, horizons, riskContrib, hhi, top5WeightPct, band, warnings };
+  return { currentValue, annVol, nObs: n, horizons, riskContrib, hhi, effectiveN, top5WeightPct, band, drift, warnings };
 }
