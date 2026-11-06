@@ -8,13 +8,11 @@ import { mergeValuation } from "../core/price-source";
 import { forecast, type AssetHistory, type ForecastResult } from "../core/forecast";
 import { money } from "../format";
 
-const ETF_CLASSES = ["etf", "fund", "etn", "mutualfund"];
-
 // alinea historiales a fechas comunes y calcula retornos diarios por activo
 function alignReturns(hist: Record<string, { as_of: string; close: number }[]>, tickers: string[]): Record<string, number[]> {
   const maps = tickers.map((t) => new Map((hist[t] ?? []).map((b) => [b.as_of, b.close])));
   let common: string[] | null = null;
-  tickers.forEach((t, i) => {
+  tickers.forEach((_t, i) => {
     const dates = [...maps[i].keys()];
     common = common === null ? dates : common.filter((d) => maps[i].has(d));
   });
