@@ -649,6 +649,46 @@ def edgar_audit(tickers: list) -> dict:
         # ordenar por fecha fin desc para leer rápido
         income_latest = dict(sorted(income_latest.items(), key=lambda kv: kv[1]["end"], reverse=True)[:18])
 
+        # Ingresos y plausibilidad (NI/ingresos) — detecta magnitudes imposibles (p. ej. MU).
+        rev_names = (["RevenueFromContractsWithCustomers", "Revenue"] if is_ifrs
+                     else ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"])
+        rev_val, rev_end, _ru = None, None, None
+        for c in rev_names:
+            v, e, u = _last_annual_val(_rows(node, c))
+            if v is not None:
+                rev_val, rev_end = v, e
+                break
+        plausibility = {"revenue_annual": rev_val, "revenue_end": rev_end,
+                        "ni_over_revenue": (round(ni_val / rev_val, 3) if (ni_val and rev_val) else None)}
+
+        # TODOS los conceptos per-share y de acciones (para V: ¿hay EPS/acciones bajo otra etiqueta?).
+        per_share_all = {}
+        share_all = {}
+        for cn in node.keys():
+            cl = cn.lower()
+            if "pershare" in cl or "earningsloss" in cl or "earningspershare" in cl:
+                for un in (_rows(node, cn) or {}):
+                    v, e, _ = _last_annual_val({un: _rows(node, cn)[un]})
+                    if v is not None:
+                        per_share_all[f"{cn}[{un}]"] = {"val": v, "end": e}
+            if ("weightedaverage" in cl and "shares" in cl) or "sharesoutstanding" in cl:
+                li = _last_instant(node, cn)
+                v2, e2, _ = _last_annual_val(_rows(node, cn))
+                per = {"instant": li, "annual_end": e2, "annual_val": v2}
+                if li or v2 is not None:
+                    share_all[cn] = per
+        # Interinos (YTD/trimestre, 85–300 días) recientes para EPS y NI → ¿TTM recuperable?
+        def _interim_n(names):
+            n = 0
+            for c in names:
+                for un, rows in (_rows(node, c) or {}).items():
+                    for r in rows or []:
+                        s, e = _d(r.get("start")), _d(r.get("end"))
+                        if r.get("val") is not None and s and e and 85 <= (e - s).days <= 300 and e >= today - _dt.timedelta(days=800):
+                            n += 1
+            return n
+        interim_counts = {"eps_interim": _interim_n(eps_names), "ni_interim": _interim_n(ni_names)}
+
         entity_sh = _last_instant(dei, "EntityCommonStockSharesOutstanding")
         wdil_val, wdil_end, _ = _last_annual_val(_rows(node, SH_DIL[0]))
         wbas_val, wbas_end, _ = _last_annual_val(_rows(node, SH_BAS[0]))
@@ -679,6 +719,10 @@ def edgar_audit(tickers: list) -> dict:
             "stale_gt_400d": (age is not None and age > 400),
             "splits_6y_yahoo": yahoo_splits(t),
             "income_concepts_latest_annual": income_latest,
+            "plausibility": plausibility,
+            "per_share_all_concepts": per_share_all,
+            "share_count_all_concepts": share_all,
+            "interim_counts": interim_counts,
         }
     return out
 
