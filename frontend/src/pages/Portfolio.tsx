@@ -14,7 +14,11 @@ import { mergeValuation } from "../core/price-source";
 import { investmentCashFlows, xirr } from "../core/returns";
 import { ValuationStamp } from "../components/ValuationStamp";
 // import { FintualPanel } from "../components/FintualPanel"; // oculto por ahora (código conservado)
+import { XRayPanel } from "../components/XRayPanel";
+import type { PortfolioHolding } from "../core/xray";
 import { money, num, pct } from "../format";
+
+const ETF_CLASSES = ["etf", "fund", "etn", "mutualfund"];
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
@@ -93,6 +97,17 @@ export function Portfolio() {
     const b = investmentCashFlows(secTxns, totals.marketValue, todayISO(), "USD");
     return { value: b.mixedCurrency ? null : xirr(b.flows), mixed: b.mixedCurrency };
   }, [secTxns, totals.marketValue]);
+
+  const xrayHoldings = useMemo<PortfolioHolding[]>(() => positions
+    .filter((p) => p.qty > 1e-9 && p.marketValue != null)
+    .map((p) => ({
+      ticker: p.ticker,
+      isEtf: ETF_CLASSES.includes((instMap[p.ticker]?.asset_class ?? "").toLowerCase()),
+      valueUsd: p.marketValue ?? 0,
+    })), [positions, instMap]);
+  const sectorByTicker = useMemo(
+    () => Object.fromEntries(Object.entries(instMap).map(([t, m]) => [t, m.sector ?? undefined])),
+    [instMap]);
 
   const appliedSplits = useMemo(
     () => splits.filter((s) => positions.some((p) => p.qty > 1e-9 && p.ticker === s.ticker.toUpperCase())),
@@ -204,6 +219,10 @@ export function Portfolio() {
             </p>
           )}
         </Panel>
+      )}
+
+      {xrayHoldings.some((h) => h.isEtf) && (
+        <XRayPanel holdings={xrayHoldings} sectorByTicker={sectorByTicker} />
       )}
 
       {/* Fondos (Fintual) oculto por ahora — código conservado en components/FintualPanel.tsx */}

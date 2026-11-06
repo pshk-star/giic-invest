@@ -15,6 +15,7 @@ alter table public.etf_holdings
   add column if not exists figi         text,
   add column if not exists share_class  text,
   add column if not exists company_key  text,
+  add column if not exists sector       text,
   add column if not exists asset_class  text not null default 'equity',
   add column if not exists market_value numeric,
   add column if not exists notional     numeric,

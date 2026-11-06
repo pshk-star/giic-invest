@@ -267,6 +267,40 @@ export async function getPredictionOutcomes(): Promise<OutcomeRow[]> {
   return (data ?? []) as OutcomeRow[];
 }
 
+// ---- Portfolio X-Ray: último snapshot 'complete' por ETF + sus líneas ----
+export interface XraySnapshot { etf: string; provider: string; as_of: string; equity_pct: number | null; }
+export interface XrayWeightRow {
+  etf: string; ticker: string | null; name: string | null; weight: number | null;
+  asset_class: string; company_key: string | null; sector?: string | null;
+}
+export async function getXrayData(etfs: string[]): Promise<{ snapshots: XraySnapshot[]; weights: XrayWeightRow[] }> {
+  if (etfs.length === 0) return { snapshots: [], weights: [] };
+  const snapQ = await supabase.from("etf_snapshots")
+    .select("etf,provider,as_of,status,equity_pct").eq("status", "complete")
+    .order("as_of", { ascending: false });
+  if (snapQ.error) return { snapshots: [], weights: [] };
+  // último complete por etf (entre los que tiene el usuario)
+  const latest = new Map<string, XraySnapshot>();
+  for (const s of snapQ.data ?? []) {
+    const e = (s.etf as string).toUpperCase();
+    if (!etfs.map((x) => x.toUpperCase()).includes(e)) continue;
+    if (!latest.has(e)) latest.set(e, { etf: e, provider: s.provider, as_of: s.as_of, equity_pct: s.equity_pct });
+  }
+  const snapshots = [...latest.values()];
+  const weights: XrayWeightRow[] = [];
+  for (const s of snapshots) {
+    const { data, error } = await supabase.from("etf_holdings")
+      .select("etf,ticker,name,weight,asset_class,company_key,sector")
+      .eq("etf", s.etf).eq("provider", s.provider).eq("as_of", s.as_of);
+    if (error) continue;
+    for (const r of data ?? []) weights.push({
+      etf: r.etf, ticker: r.ticker, name: r.name, weight: r.weight != null ? Number(r.weight) : null,
+      asset_class: r.asset_class, company_key: r.company_key, sector: r.sector,
+    });
+  }
+  return { snapshots, weights };
+}
+
 export async function getEtfHoldings(etfs: string[]): Promise<Record<string, ETFHolding[]>> {
   if (etfs.length === 0) return {};
   const { data, error } = await supabase.from("etf_holdings").select("*").in("etf", etfs);

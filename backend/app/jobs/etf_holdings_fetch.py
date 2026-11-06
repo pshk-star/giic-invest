@@ -111,7 +111,10 @@ def fetch_invesco(ticker: str) -> Tuple[Optional[str], List[dict]]:
     import pandas as pd
     url = (f"https://www.invesco.com/us/financial-products/etfs/holdings/main/holdings/0"
            f"?audienceType=Investor&action=download&ticker={ticker.upper()}")
-    r = httpx.get(url, headers=UA, timeout=60, follow_redirects=True)
+    h = {**UA, "Accept": "text/csv,application/octet-stream,*/*",
+         "Accept-Language": "en-US,en;q=0.9",
+         "Referer": "https://www.invesco.com/us/financial-products/etfs/holdings"}
+    r = httpx.get(url, headers=h, timeout=60, follow_redirects=True)
     r.raise_for_status()
     df = pd.read_csv(io.BytesIO(r.content))
     cols = {c.strip().lower(): c for c in df.columns}
@@ -170,7 +173,8 @@ def normalize(etf: str, provider: str, as_of: str, lines: List[dict]) -> Tuple[L
         out.append({
             "etf": etf, "provider": provider, "as_of": as_of,
             "name": ln.get("name"), "ticker": tk, "cusip": cusip,
-            "company_key": company_key, "asset_class": ln.get("asset_class") or "equity",
+            "company_key": company_key, "sector": ln.get("sector"),
+            "asset_class": ln.get("asset_class") or "equity",
             "weight": ln.get("weight"), "line_key": line_key,
         })
     wsum = sum(r["weight"] for r in out if r["weight"] is not None)
