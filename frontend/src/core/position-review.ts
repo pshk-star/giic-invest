@@ -53,11 +53,9 @@ export interface PositionReview {
   severity: number;
 }
 
-const CHEAP = 0.15;     // upside central ≥ +15%
-const RICH = -0.10;     // upside central ≤ −10%
 const HIGH_RISK = 0.45; // contribución al riesgo dominante
 const pctS = (x: number) => `${(x * 100).toFixed(1)}%`;
-const PRELIM = "El modelo de valoración (EPS×P/E) es preliminar: múltiplo actual y bandas ±20% son supuestos, no un valor justo validado; no es base única para decisiones fuertes.";
+const PRELIM = "La proyección de precio a 12m (EPS×P/E manteniendo el múltiplo) es CIRCULAR respecto al precio: NO es un valor razonable ni un descuento. La decisión se apoya en el rendimiento de beneficios/FCF reportado frente a un retorno exigido explícito (criba, no valoración), nunca en esa proyección.";
 
 function reviewEquity(it: PositionReviewInput): PositionReview {
   const v = it.valuation;
@@ -90,18 +88,23 @@ function reviewEquity(it: PositionReviewInput): PositionReview {
     };
   }
 
-  const central = v.scenarios.find((s) => s.key === "central")!;
-  const cons = v.scenarios.find((s) => s.key === "conservador")!;
-  const fav = v.scenarios.find((s) => s.key === "favorable")!;
-  const cheap = central.upside >= CHEAP && cons.upside > -0.05;
-  const rich = central.upside <= RICH && fav.upside < 0.05;
+  const central = v.scenarios.find((s) => s.key === "central");
+  const yld = v.earningsYield ?? v.fcfYield;
+  const yldStr = v.earningsYield != null ? `rend. beneficios ${pctS(v.earningsYield)}`
+    : v.fcfYield != null ? `rend. FCF ${pctS(v.fcfYield)}` : "rend. n/d";
+  // Señal NO circular (del núcleo): rendimiento reportado vs retorno exigido.
+  const cheap = v.yieldVerdict === "atractivo" && !v.cyclical;
+  const rich = v.yieldVerdict === "caro";
   const overW = it.weight > it.maxWeightAsset;
   const overEff = it.effectiveWeight != null && it.effectiveWeight > it.maxWeightAsset;
   const highRisk = it.riskPct != null && it.riskPct > HIGH_RISK;
   const concentrated = overW || overEff || highRisk;
   const q = v.quality;
 
-  base.valuationLine = `Valor razonable central ${central.fairValue.toFixed(2)} USD (${central.upside >= 0 ? "+" : ""}${pctS(central.upside)} vs precio). Calidad de datos: ${q}.`;
+  base.valuationLine =
+    `Señal de valor (no circular): ${yldStr} vs exigido ${pctS(v.requiredReturn)} → ${v.yieldVerdict}. ` +
+    `Calidad ${q}${v.cyclical ? "; beneficio potencialmente cíclico/extraordinario" : ""}. ` +
+    `(Proyección 12m circular: ${central && central.upside >= 0 ? "+" : ""}${central ? pctS(central.upside) : "n/d"} — sólo contexto.)`;
   const commonRisks = [PRELIM];
   const commonInval = ["Cambia si se actualizan los fundamentales o el precio se mueve materialmente."];
 
@@ -122,12 +125,12 @@ function reviewEquity(it: PositionReviewInput): PositionReview {
       ...base, action: "VENDER", evidenceQuality: "alta",
       targetWeight: 0, amountUsd: Math.round(amount),
       rationale: [
-        `Valoración exigente: central ${pctS(central.upside)} y aún el favorable (${pctS(fav.upside)}) ofrece poco.`,
+        `Caro sobre beneficios actuales: ${yldStr} por debajo del retorno exigido ${pctS(v.requiredReturn)} (${v.yieldVerdict}).`,
         `Corroborado por ${overW || overEff ? "concentración" : "riesgo"}: ${effStr} ${riskStr}`,
         "Evidencia convergente (valoración + riesgo), no una sola señal.",
       ],
-      risks: [...commonRisks, "Vender genera impuestos/costos y renuncia al upside si ejecuta mejor de lo supuesto."],
-      whatInvalidates: [...commonInval, "No aplica si el crecimiento futuro supera el supuesto conservador."],
+      risks: [...commonRisks, "Vender genera impuestos/costos y renuncia al recorrido si ejecuta mejor de lo supuesto."],
+      whatInvalidates: [...commonInval, "No aplica si el rendimiento reportado sube por encima del exigido o mejora la calidad de datos."],
       beforeAfter: `Liberaría ${pctS(it.weight)} de peso directo${it.riskPct != null ? ` y ${pctS(it.riskPct)} del riesgo` : ""}.`,
       severity: 100 + it.weight * 60,
     };
@@ -143,7 +146,7 @@ function reviewEquity(it: PositionReviewInput): PositionReview {
       targetWeight: cap, amountUsd: Math.round(amount),
       rationale: [
         overW ? `Peso directo ${pctS(it.weight)} > límite ${pctS(cap)}.` : overEff ? `Exposición efectiva ${pctS(it.effectiveWeight!)} > límite ${pctS(cap)} (${effStr}).` : `${riskStr} supera el umbral de concentración de riesgo.`,
-        `La valoración NO es barata (central ${pctS(central.upside)}), así que recortar no sacrifica un descuento claro.`,
+        `El rendimiento reportado no es atractivo (${yldStr} vs ${pctS(v.requiredReturn)} → ${v.yieldVerdict}), así que recortar no sacrifica una señal de valor clara.`,
         "Es gestión de riesgo, reversible; no es un juicio de que la empresa sea mala.",
       ],
       risks: [...commonRisks, "Recortar un ganador reduce el upside si sigue subiendo; considera impuestos/costos."],
@@ -161,14 +164,14 @@ function reviewEquity(it: PositionReviewInput): PositionReview {
       ...base, action: "AUMENTAR", evidenceQuality: "media",
       targetWeight: target, amountUsd: Math.round(amount),
       rationale: [
-        `Descuento en el escenario central (${pctS(central.upside)}) y el conservador no es muy negativo (${pctS(cons.upside)}).`,
+        `Rendimiento reportado atractivo (${yldStr} supera el exigido ${pctS(v.requiredReturn)} con margen) — señal independiente del precio, no el múltiplo.`,
         `Hay espacio bajo tu límite por activo (${effStr}).`,
-        "Aumento modesto (hasta +5pp); NO se dimensiona por un score.",
+        "Aumento modesto (hasta +5pp); NO se dimensiona por score ni por la proyección circular.",
       ],
-      risks: [...commonRisks, "Un solo modelo preliminar no justifica una apuesta grande; escalona la entrada."],
-      whatInvalidates: [...commonInval, "No aplica si el descuento desaparece o rompe tu límite por activo/sector."],
+      risks: [...commonRisks, "Una criba de rendimiento preliminar no justifica una apuesta grande; escalona la entrada."],
+      whatInvalidates: [...commonInval, "No aplica si el rendimiento cae por debajo del exigido, aparece señal cíclica, o rompe tu límite por activo/sector."],
       beforeAfter: `Subiría el peso directo de ${pctS(it.weight)} a ${pctS(target)}.`,
-      severity: 60 + central.upside * 40 + it.weight * 20,
+      severity: 60 + (yld != null ? (yld - v.requiredReturn) * 300 : 0) + it.weight * 20,
     };
   }
 
@@ -176,9 +179,9 @@ function reviewEquity(it: PositionReviewInput): PositionReview {
   return {
     ...base, action: "MANTENER", evidenceQuality: q,
     rationale: [
-      `Dentro de límites y sin señal convergente para actuar (central ${pctS(central.upside)}).`,
+      `Dentro de límites y sin señal convergente para actuar (${yldStr} → ${v.yieldVerdict}).`,
       `${effStr} ${riskStr}`,
-      cheap ? "Parece barata pero ya tiene peso adecuado o faltan condiciones para aumentar con convicción." : "Valoración y riesgo no piden cambios hoy.",
+      cheap ? "Señal de valor atractiva, pero ya tiene peso adecuado o faltan condiciones para aumentar con convicción." : "Valoración y riesgo no piden cambios hoy.",
     ],
     risks: commonRisks, whatInvalidates: commonInval,
     beforeAfter: "Sin cambios propuestos.",

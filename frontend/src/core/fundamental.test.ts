@@ -105,6 +105,46 @@ describe("agregación fundamental a cartera (coherente por escenario)", () => {
   });
 });
 
+describe("señal de valor NO circular (auditoría de circularidad)", () => {
+  it("rendimiento de beneficios usa el EPS REPORTADO del payload (no el recuperado del múltiplo)", () => {
+    // pe_ttm implicaría eps=5 (circular); el eps reportado (10) manda → rend. 10% independiente del múltiplo.
+    const r = valuateCompany(input({ price: 100, f: payload({ pe_ttm: 20, eps: 10, eps_growth_yoy: 0.1 }) }));
+    expect(r.epsReported).toBeCloseTo(10, 6);
+    expect(r.earningsYield).toBeCloseTo(0.10, 6);
+    expect(r.requiredReturn).toBeCloseTo(0.07, 6);
+    expect(r.yieldVerdict).toBe("atractivo");     // 0.10 ≥ 0.07·1.15
+  });
+
+  it("sin eps en el payload, recupera un rendimiento aproximado desde precio/PE (flag circularidad en límites)", () => {
+    const r = valuateCompany(input({ price: 100, f: payload({ pe_ttm: 25, eps_growth_yoy: 0.1 }) }));
+    expect(r.earningsYield).toBeCloseTo(0.04, 6); // eps=100/25=4 → 4%
+    expect(r.yieldVerdict).toBe("caro");          // 0.04 < 0.07
+    expect(r.limitations.join(" ").toLowerCase()).toContain("circular");
+  });
+
+  it("verdict 'razonable' cuando el rendimiento iguala pero no supera el exigido con margen", () => {
+    const r = valuateCompany(input({ price: 100, f: payload({ pe_ttm: 20, eps: 7.5, eps_growth_yoy: 0.1 }) }));
+    expect(r.yieldVerdict).toBe("razonable");     // 0.075 ≥ 0.07 pero < 0.0805
+  });
+
+  it("marca beneficio cíclico/extraordinario cuando |crecimiento EPS| ≥ 75%", () => {
+    const r = valuateCompany(input({ price: 100, f: payload({ pe_ttm: 10, eps: 10, eps_growth_yoy: 8.8 }) }));
+    expect(r.cyclical).toBe(true);
+    expect(r.cyclicalNote!.toLowerCase()).toMatch(/cíclico|extraordinario|pico/);
+  });
+
+  it("no marca cíclico con crecimiento moderado", () => {
+    const r = valuateCompany(input({ price: 100, f: payload({ pe_ttm: 20, eps: 6, eps_growth_yoy: 0.2 }) }));
+    expect(r.cyclical).toBe(false);
+  });
+
+  it("distingue decisión del motor de recomendación validada (decisionBasis)", () => {
+    const r = valuateCompany(input({ price: 100, f: payload({ pe_ttm: 20, eps: 6, eps_growth_yoy: 0.1 }) }));
+    expect(r.decisionBasis.toLowerCase()).toContain("no es una recomendación");
+    expect(r.priceAnchored).toBe(true);
+  });
+});
+
 describe("antigüedad de fundamentales", () => {
   it("fundamentales viejos (>18m) degradan la calidad a baja", () => {
     const r = valuateCompany(input({ price: 100, priceAsOf: "2026-11-01", f: payload({ pe_ttm: 20, eps_growth_yoy: 0.1, as_of: "2024-01-01" }) }));

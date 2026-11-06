@@ -5,6 +5,8 @@
 
 export interface FundamentalsPayload {
   pe_ttm: number | null;
+  eps?: number | null;            // EPS reportado (USD/ADR) → rendimiento de beneficios no circular
+
   pe_forward: number | null;      // no disponible gratis (EDGAR) -> null
   ev_ebitda: number | null;       // no disponible gratis -> null
   fcf_yield: number | null;       // FCF / market cap

@@ -224,6 +224,7 @@ def parse_companyfacts(facts: dict, ticker: str,
     return Fundamentals(
         ticker=ticker,
         pe_ttm=pe_ttm,
+        eps=eps_usd,                # EPS reportado (USD por ADR) → rendimiento de beneficios NO circular
         pe_forward=None,            # no disponible gratis en EDGAR
         ev_ebitda=None,             # requiere deuda/caja + EBITDA fiables
         fcf_yield=fcf_yield,

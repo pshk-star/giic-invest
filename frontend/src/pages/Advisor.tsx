@@ -395,9 +395,13 @@ export function Advisor() {
               </div>
             )}
             <p className="mt-3 text-xs text-term-faint">
-              Limitación: valoración preliminar EPS×P/E (sin múltiplos históricos ni estimaciones forward).
-              No es un precio objetivo ni un margen de seguridad garantizado; distingue buena empresa de
-              oportunidad real al precio actual, pero no sustituye un análisis profundo.
+              <b>Base de la decisión:</b> rendimiento de beneficios/FCF reportado (EDGAR, último ejercicio)
+              frente a un retorno exigido de referencia del {Math.round(0.07 * 100)}% (supuesto explícito).
+              La proyección de precio a 12m (EPS×P/E con múltiplo constante) es <b>circular</b> respecto al
+              precio y se muestra sólo como contexto — no es valor razonable ni descuento. Sin múltiplos
+              históricos, estimaciones forward ni beneficios normalizados/through-cycle. <b>La clasificación
+              del motor NO es una recomendación financiera validada</b>; INVESTIGAR indica brecha de datos,
+              no falta de atractivo.
             </p>
           </Panel>
 
@@ -562,7 +566,7 @@ function OpportunityCard({ d }: { d: OpportunityDecision }) {
       </button>
       <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 pl-7 text-xs text-term-muted">
         <span>Calidad del negocio <b className="text-term-fg">{d.businessQuality}</b></span>
-        {d.centralUpside != null && <span>Descuento central <b className={upTone}>{d.centralUpside >= 0 ? "+" : ""}{pct(d.centralUpside)}</b></span>}
+        {d.centralUpside != null && <span title="Proyección de precio a 12m manteniendo el múltiplo actual: circular, sólo contexto — NO es un descuento">Proy. 12m (circular) <b className={upTone}>{d.centralUpside >= 0 ? "+" : ""}{pct(d.centralUpside)}</b></span>}
         {d.action === "COMPRAR" && d.suggestedAmountUsd != null && (
           <span>Monto sugerido <b className="text-term-good">{money(d.suggestedAmountUsd)}</b>{d.suggestedTargetWeight != null && <> → {pct(d.suggestedTargetWeight)}</>}</span>
         )}

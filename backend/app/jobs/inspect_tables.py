@@ -26,9 +26,10 @@ OPP_TICKERS = ["V", "MU", "LLY", "MA", "PG"]
 # mostrar la DECISIÓN resultante con datos reales. La app desplegada usa el TS real;
 # este espejo es solo evidencia (mismos números y umbrales).
 _GROWTH_FLOOR, _GROWTH_CAP, _GROWTH_STEP = -0.15, 0.35, 0.05
-_PE_COMPRESS, _PE_EXPAND = 0.80, 1.15
 _STALE_SOFT, _STALE_HARD = 400, 550
-_BUY_UPSIDE = 0.15
+_REQUIRED_RETURN = 0.07          # retorno exigido de referencia (supuesto, = fundamental.ts)
+_YIELD_ATTRACTIVE = 1.15
+_CYCLICAL_GROWTH_ABS = 0.75
 
 
 def _clamp(x, lo, hi):
@@ -50,57 +51,61 @@ def _is_fin(x):
 
 
 def opp_decision(payload, price, price_as_of):
-    """Devuelve la decisión COMPRAR/ESPERAR/INVESTIGAR y los números que la sostienen."""
+    """Espejo del motor corregido: decisión por RENDIMIENTO reportado (no circular) vs
+    retorno exigido, no por el crecimiento proyectado. Incluye la proyección circular
+    sólo como contexto, flag cíclico y distinción brecha-de-datos vs poco atractivo."""
     f = payload or {}
     if not _is_fin(price) or price <= 0:
-        return {"action": "INVESTIGAR", "available": False, "reason": "sin precio actual"}
+        return {"action": "INVESTIGAR", "available": False, "reason": "brecha de datos: sin precio actual"}
     egy, rgy = f.get("eps_growth_yoy"), f.get("rev_growth_yoy")
-    if _is_fin(egy):
-        g, gsrc = _clamp(egy, _GROWTH_FLOOR, _GROWTH_CAP), "eps_yoy"
-    elif _is_fin(rgy):
-        g, gsrc = _clamp(rgy, _GROWTH_FLOOR, _GROWTH_CAP), "rev_yoy(proxy)"
-    else:
-        g, gsrc = 0.0, "flat0"
+    g = _clamp(egy, _GROWTH_FLOOR, _GROWTH_CAP) if _is_fin(egy) \
+        else _clamp(rgy, _GROWTH_FLOOR, _GROWTH_CAP) if _is_fin(rgy) else 0.0
     pe = f.get("pe_ttm")
+    fcf_yield = f.get("fcf_yield") if _is_fin(f.get("fcf_yield")) else None
     age = _age_days(f.get("as_of"), price_as_of)
+    # EPS reportado → rendimiento de beneficios NO circular (si el payload trae eps).
+    eps_rep = f.get("eps") if _is_fin(f.get("eps")) else (price / pe if (_is_fin(pe) and pe > 0) else None)
+    earnings_yield = (eps_rep / price) if (eps_rep is not None and price > 0) else None
+    central_up = g   # proyección 12m circular (= crecimiento acotado); SÓLO contexto
+
     if _is_fin(pe) and pe > 0:
-        method = "pe_eps"
-        g_cons = _clamp(g - _GROWTH_STEP, _GROWTH_FLOOR, _GROWTH_CAP)
-        g_fav = _clamp(g + _GROWTH_STEP, _GROWTH_FLOOR, _GROWTH_CAP)
-        central_up = (1 + g) - 1                      # múltiplo se mantiene ⇒ upside = g acotado
-        cons_up = (1 + g_cons) * _PE_COMPRESS - 1
-        fav_up = (1 + g_fav) * _PE_EXPAND - 1
-        quality = "alta" if (egy is not None and _is_fin(egy) and abs(egy) < 0.5) \
+        method, available = "pe_eps", True
+        quality = "alta" if (_is_fin(egy) and abs(egy) < 0.5) \
             else "media" if (_is_fin(egy) or _is_fin(rgy)) else "baja"
         if age is not None and age > _STALE_HARD:
             quality = "baja"
         elif age is not None and age > _STALE_SOFT and quality == "alta":
             quality = "media"
-        available = True
-    elif _is_fin(f.get("fcf_yield")) and f["fcf_yield"] > 0:
+    elif fcf_yield is not None and fcf_yield > 0:
         method, available, quality = "fcf_fallback", True, "baja"
-        central_up, cons_up, fav_up = 0.0, _PE_COMPRESS - 1, None  # yield fallback, calidad baja
     else:
         return {"action": "INVESTIGAR", "available": False, "method": None,
-                "reason": "sin P/E TTM positivo ni FCF yield (pérdidas o sin cobertura)",
-                "growth_source": gsrc, "fund_as_of": f.get("as_of"), "fund_age_days": age}
-    if (not available) or quality == "baja" or central_up is None:
-        action = "INVESTIGAR"
+                "reason": "brecha de datos: sin P/E positivo ni FCF yield (no es veredicto de inversión)",
+                "fund_as_of": f.get("as_of"), "fund_age_days": age}
+
+    yld = earnings_yield if earnings_yield is not None else fcf_yield
+    yield_verdict = "n/d" if yld is None \
+        else "atractivo" if yld >= _REQUIRED_RETURN * _YIELD_ATTRACTIVE \
+        else "razonable" if yld >= _REQUIRED_RETURN else "caro"
+    cyclical = _is_fin(egy) and abs(egy) >= _CYCLICAL_GROWTH_ABS
+
+    if quality == "baja":
+        action = "INVESTIGAR"   # brecha/calidad, no veredicto
     else:
-        favorable = central_up >= _BUY_UPSIDE and cons_up > 0 and quality == "alta"
+        favorable = yield_verdict == "atractivo" and quality == "alta" and not cyclical
         action = "COMPRAR" if favorable else "ESPERAR"   # room=True (no es tenencia)
     return {
         "action": action, "available": available, "method": method, "quality": quality,
         "price": price, "price_as_of": price_as_of,
-        "pe_ttm": pe, "eps_growth_yoy_raw": egy, "rev_growth_yoy_raw": rgy,
-        "growth_used_clamped": round(g, 4), "growth_source": gsrc,
-        "central_upside": round(central_up, 4) if central_up is not None else None,
-        "conservador_upside": round(cons_up, 4) if cons_up is not None else None,
-        "favorable_upside": round(fav_up, 4) if fav_up is not None else None,
+        "eps_reported": eps_rep, "earnings_yield": round(earnings_yield, 4) if earnings_yield is not None else None,
+        "fcf_yield": round(fcf_yield, 4) if fcf_yield is not None else None,
+        "required_return": _REQUIRED_RETURN, "yield_verdict": yield_verdict,
+        "cyclical_flag": cyclical, "eps_growth_yoy_raw": egy, "rev_growth_yoy_raw": rgy,
+        "pe_ttm": pe, "projection_12m_circular": round(central_up, 4),
         "roe": f.get("roe"), "net_margin": f.get("net_margin"),
         "fund_as_of": f.get("as_of"), "fund_age_days": age,
         "taxonomy": f.get("taxonomy"), "currency": f.get("currency"),
-        "concentration_held": "0% (no es tenencia; hay espacio hasta el límite por activo)",
+        "note": "La decisión se apoya en el rendimiento reportado vs exigido; la proyección 12m es circular (sólo contexto).",
     }
 
 RLS_SQL = (

@@ -56,6 +56,7 @@ class Fundamentals:
     """Fundamentales de una empresa. Campos opcionales: un proveedor puede no darlos."""
     ticker: str
     pe_ttm: Optional[float] = None
+    eps: Optional[float] = None           # EPS reportado (último ejercicio anual, USD por ADR)
     pe_forward: Optional[float] = None
     ev_ebitda: Optional[float] = None
     fcf_yield: Optional[float] = None     # free cash flow / market cap
