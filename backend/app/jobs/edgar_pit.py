@@ -29,18 +29,29 @@ CONCEPTS = [
     "StockholdersEquity", "Assets", "Liabilities", "LongTermDebtNoncurrent",
 ]
 
+# Conceptos equivalentes en IFRS (tags ifrs-full). Emisores extranjeros que presentan
+# 20-F reportan bajo IFRS y NO aparecen en us-gaap (p. ej. ASML, TSM). Esto deja preparada
+# la ingesta cruda de su point-in-time; el mapeo IFRS->payload de ratios (run_scan) es el
+# paso siguiente (ver RESEARCH_BACKLOG).
+IFRS_CONCEPTS = [
+    "Revenue", "RevenueFromContractsWithCustomers",
+    "ProfitLoss", "GrossProfit", "ProfitLossFromOperatingActivities",
+    "DilutedEarningsLossPerShare", "BasicEarningsLossPerShare",
+    "CashFlowsFromUsedInOperatingActivities",
+    "PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",
+    "Equity", "Assets", "Liabilities", "Borrowings",
+]
 
-def extract_pit_rows(facts: dict, ticker: str, cik: Optional[int],
-                     concepts: List[str] = None) -> List[dict]:
-    """Extrae filas fundamentals_pit (puro, testeable) desde companyfacts JSON."""
-    concepts = concepts or CONCEPTS
+
+def _extract_taxonomy(node: dict, concepts: List[str], taxonomy: str,
+                      ticker: str, cik: Optional[int]) -> List[dict]:
     out: List[dict] = []
-    gaap = ((facts or {}).get("facts", {}) or {}).get("us-gaap", {}) or {}
+    tax = node or {}
     for concept in concepts:
-        node = gaap.get(concept)
-        if not node:
+        cnode = tax.get(concept)
+        if not cnode:
             continue
-        for unit, rows in (node.get("units", {}) or {}).items():
+        for unit, rows in (cnode.get("units", {}) or {}).items():
             for f in rows:
                 filed = f.get("filed")
                 end = f.get("end")
@@ -63,7 +74,7 @@ def extract_pit_rows(facts: dict, ticker: str, cik: Optional[int],
                     "concept": concept,
                     "context_ref": context,
                     "unit": unit,
-                    "taxonomy": "us-gaap",
+                    "taxonomy": taxonomy,
                     "period_start": f.get("start"),
                     "period_end": end,
                     "fiscal_period": (f"{fp}-{fy}" if (fp or fy) else None),
@@ -72,6 +83,21 @@ def extract_pit_rows(facts: dict, ticker: str, cik: Optional[int],
                     "amended": form.endswith("/A"),
                     "source_doc": accn,
                 })
+    return out
+
+
+def extract_pit_rows(facts: dict, ticker: str, cik: Optional[int],
+                     concepts: List[str] = None,
+                     ifrs_concepts: List[str] = None) -> List[dict]:
+    """Extrae filas fundamentals_pit (puro, testeable) desde companyfacts JSON.
+
+    Cubre us-gaap (emisores domésticos) e ifrs-full (emisores extranjeros 20-F).
+    """
+    concepts = concepts or CONCEPTS
+    ifrs_concepts = ifrs_concepts or IFRS_CONCEPTS
+    root = ((facts or {}).get("facts", {}) or {})
+    out = _extract_taxonomy(root.get("us-gaap", {}) or {}, concepts, "us-gaap", ticker, cik)
+    out += _extract_taxonomy(root.get("ifrs-full", {}) or {}, ifrs_concepts, "ifrs-full", ticker, cik)
     return out
 
 

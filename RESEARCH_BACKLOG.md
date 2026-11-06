@@ -27,3 +27,15 @@ Registrados a petición de Pablo (2026-11-05). Abordar después de cerrar el Hit
 - **D. Antigüedad N-PORT:** las composiciones SEC N-PORT tienen rezago (VOO/QQQ al 30/06/2026).
   La UI muestra un badge de días de antigüedad (>35d). El cron diario ya reintenta y tomará
   automáticamente declaraciones más recientes cuando la SEC las publique; verificar periódicamente.
+
+## Valoración fundamental — cobertura de emisores extranjeros (registrado 2026-11-06)
+- **E. IFRS/20-F (ASML, TSM) — mapeo a payload de ratios.** `edgar_pit.py` YA ingiere los
+  conceptos crudos ifrs-full (Revenue, ProfitLoss, EPS, Equity, etc.) a `fundamentals_pit`
+  además de us-gaap (soporte preparado y testeado). PENDIENTE: que `run_scan.py` mapee los
+  conceptos IFRS → el `payload` de ratios (pe_ttm, eps_growth_yoy, fcf_yield, etc.) para que
+  ASML/TSM tengan valoración fundamental. Hoy aparecen SIEMPRE en proyección y Advisor con
+  acción REVISAR y causa concreta ("emisor extranjero 20-F / IFRS, fuera de us-gaap"). No se
+  inventan sus fundamentales.
+- **F. Enriquecer el payload** con historial (ingresos/EPS/FCF), acciones diluidas, deuda neta,
+  P/E histórico y procedencia por campo (period_end + filing_date) para mejorar el motor
+  fundamental (hoy usa pe_ttm/eps_growth_yoy/fcf_yield; múltiplo histórico y DCF pendientes).

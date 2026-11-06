@@ -122,7 +122,11 @@ export function valuateCompany(input: FundamentalInput): CompanyValuation {
     return { ...base, unavailableReason: "Sin precio actual para anclar la valoración." };
   }
   if (!f) {
-    return { ...base, unavailableReason: "Sin fundamentales (fuera de la cobertura EDGAR companyfacts; p. ej. emisor extranjero 20-F)." };
+    return {
+      ...base,
+      unavailableReason: "Sin fundamentales en la cobertura actual (EDGAR us-gaap). Causa típica: emisor extranjero que presenta 20-F bajo IFRS (p. ej. ASML, TSM), fuera del taxonomy us-gaap. Soporte de ingesta IFRS/20-F en preparación; la posición NO se excluye del análisis.",
+      limitations: ["La ausencia de valoración fundamental no implica ausencia de posición: sigue contando en riesgo, exposición y cartera."],
+    };
   }
 
   const isFinancial = sector != null && FINANCIAL_SECTORS.some((k) => sector.toLowerCase().includes(k));

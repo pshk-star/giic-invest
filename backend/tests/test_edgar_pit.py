@@ -39,3 +39,35 @@ def test_eps_unit_and_cik():
 
 def test_empty_facts():
     assert extract_pit_rows({}, "X", None) == []
+
+
+IFRS_FACTS = {
+    "cik": 937966,
+    "facts": {"ifrs-full": {
+        "Revenue": {"units": {"EUR": [
+            {"start": "2025-01-01", "end": "2025-03-31", "val": 7000, "accn": "0002-20F",
+             "fy": 2025, "fp": "Q1", "form": "20-F", "filed": "2025-04-15"},
+        ]}},
+        "DilutedEarningsLossPerShare": {"units": {"EUR/shares": [
+            {"end": "2025-03-31", "val": 4.5, "accn": "0002-20F", "fy": 2025, "fp": "Q1",
+             "form": "20-F", "filed": "2025-04-15"},
+        ]}},
+    }},
+}
+
+
+def test_extracts_ifrs_for_foreign_issuers():
+    # Emisor extranjero (p. ej. ASML/TSM): debe capturar ifrs-full con taxonomy correcta.
+    rows = extract_pit_rows(IFRS_FACTS, "ASML", 937966)
+    rev = next(r for r in rows if r["concept"] == "Revenue")
+    assert rev["taxonomy"] == "ifrs-full"
+    assert rev["unit"] == "EUR" and rev["value"] == 7000
+    assert rev["filing_date"] == "2025-04-15" and rev["form_type"] == "20-F"
+    eps = next(r for r in rows if r["concept"] == "DilutedEarningsLossPerShare")
+    assert eps["unit"] == "EUR/shares"
+
+
+def test_usgaap_unaffected_when_no_ifrs():
+    # Sin nodo ifrs-full, la salida us-gaap no cambia.
+    rows = extract_pit_rows(FACTS, "MU", 723125)
+    assert all(r["taxonomy"] == "us-gaap" for r in rows)
