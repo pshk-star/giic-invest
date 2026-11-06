@@ -62,6 +62,20 @@ def test_bootstrap_ci_detects_positive_and_zero():
     assert lo2 is not None and lo2 < 0 < hi2
 
 
+def test_ci90_pvalue_coherence():
+    """Verifica (no asume) que el IC90 bootstrap y el p-valor salen del MISMO remuestreo
+    y son coherentes en el umbral: IC90 excluye 0  <=>  p < 0.10. Sin equivalencia exacta
+    de valor, solo coherencia de decisión (ambos del mismo array de medias)."""
+    import random as _r
+    for seed in range(30):
+        _r.seed(seed)
+        mu = (_r.random() - 0.4) * 0.02            # media variable (a veces >0, a veces <0)
+        series = [mu + (_r.random() - 0.5) * 0.04 for _ in range(80)]
+        m, lo, hi, p = perf.block_bootstrap_ci(series, seed=seed)
+        excludes_zero = (lo > 0) or (hi < 0)
+        assert excludes_zero == (p < 0.10), (lo, hi, p)
+
+
 def test_holm_monotonic_and_order():
     adj = perf.holm_adjust({"a": 0.006, "b": 0.007, "c": 0.059, "d": 0.074, "e": 0.347})
     # 5 pruebas: a -> 0.006*5=0.030 ; b -> 0.007*4=0.028 pero monotónico => >=0.030
