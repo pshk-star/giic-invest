@@ -580,6 +580,20 @@ def edgar_audit(tickers: list) -> dict:
             if v is not None:
                 eps_val, eps_end = v, e
                 break
+        # Dónde vive el dato reciente: TODOS los conceptos con net income / EPS / revenue
+        # y su último ANUAL (revela si MA usa otra etiqueta para NI reciente, o V para EPS).
+        income_latest = {}
+        for cn, cnode in node.items():
+            cl = cn.lower()
+            if not any(k in cl for k in ("netincome", "profitloss", "earningspershare",
+                                         "revenue", "incomeloss", "earningsloss")):
+                continue
+            v, e, u = _last_annual_val(_rows(node, cn))
+            if v is not None:
+                income_latest[cn] = {"end": e, "val": v, "unit": u}
+        # ordenar por fecha fin desc para leer rápido
+        income_latest = dict(sorted(income_latest.items(), key=lambda kv: kv[1]["end"], reverse=True)[:18])
+
         entity_sh = _last_instant(dei, "EntityCommonStockSharesOutstanding")
         wdil_val, wdil_end, _ = _last_annual_val(_rows(node, SH_DIL[0]))
         wbas_val, wbas_end, _ = _last_annual_val(_rows(node, SH_BAS[0]))
@@ -609,6 +623,7 @@ def edgar_audit(tickers: list) -> dict:
             "last_annual_age_days": age,
             "stale_gt_400d": (age is not None and age > 400),
             "splits_6y_yahoo": yahoo_splits(t),
+            "income_concepts_latest_annual": income_latest,
         }
     return out
 
