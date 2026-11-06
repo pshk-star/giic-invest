@@ -280,6 +280,7 @@ def run() -> dict:
         "asml_price_history_latest": asml_hist,
         "price_history_counts": hist_counts,
         "price_history_validation": hist_validation,
+        "edgar_audit_3a": edgar_audit(["V", "MA", "ASML", "TSM", "NFLX", "NVDA", "PG", "LLY", "MU"]),
         "edgar_diagnostic": edgar_diag(["ASML", "TSM"]),
         "identity_resolution": identity_diag(["NVDA", "TSM", "ASML", "VOO", "MELI"]),
         "rls_sql_for_pablo": RLS_SQL,
@@ -438,6 +439,177 @@ def edgar_diag(tickers: list) -> dict:
             summ[tax] = {"n_concepts": len(node), "concepts": interesting,
                          "detail": detail, "per_share_units": per_share, "eps_latest": eps_values}
         out[t] = summ
+    return out
+
+
+def edgar_audit(tickers: list) -> dict:
+    """AUDITORÍA 3A: por ticker, evidencia de las brechas concretas — EPS (anual y
+    trimestral), utilidad neta, acciones (portada vs promedio ponderado diluido),
+    consistencia EPS×acciones≈NI por AMBOS métodos (portada vs ponderado), divisa,
+    antigüedad y splits (Yahoo). Solo lectura; no decide nada."""
+    import datetime as _dt
+    ua = os.getenv("EDGAR_USER_AGENT", "")
+    if not ua or "@" not in ua:
+        return {"error": "sin EDGAR_USER_AGENT"}
+    import httpx
+    cli = httpx.Client(timeout=30.0, headers={"User-Agent": ua})
+    yc = httpx.Client(timeout=30.0, headers={"User-Agent": "GIIC research admin@giic.app"})
+    try:
+        tk = cli.get("https://www.sec.gov/files/company_tickers.json").json()
+    except Exception as e:
+        return {"error": f"company_tickers: {type(e).__name__}"}
+    cikmap = {row["ticker"].upper(): int(row["cik_str"]) for row in tk.values()}
+    ANNUAL = ("10-K", "20-F", "40-F")
+    today = _dt.date.today()
+
+    def _d(s):
+        try:
+            return _dt.date.fromisoformat(str(s)[:10])
+        except Exception:
+            return None
+
+    def _rows(node, concept):
+        units = (node.get(concept, {}) or {}).get("units", {}) or {}
+        return units
+
+    def _annual(units):
+        """(end,val,form,fy,fp,filed) para duración anual ~365d, por unidad."""
+        out = {}
+        for un, rows in units.items():
+            pts = []
+            for r in rows or []:
+                s, e, form = _d(r.get("start")), _d(r.get("end")), str(r.get("form", ""))
+                if r.get("val") is None or not s or not e or not any(form.startswith(p) for p in ANNUAL):
+                    continue
+                if 330 <= (e - s).days <= 400:
+                    pts.append({"end": e.isoformat(), "val": r.get("val"), "form": form,
+                                "fy": r.get("fy"), "fp": r.get("fp"), "filed": r.get("filed")})
+            if pts:
+                out[un] = sorted(pts, key=lambda x: x["end"])[-3:]
+        return out
+
+    def _quarterly_count(units):
+        """nº de puntos trimestrales (3 meses) recientes — viabilidad de EPS TTM."""
+        out = {}
+        for un, rows in units.items():
+            n = 0
+            for r in rows or []:
+                s, e = _d(r.get("start")), _d(r.get("end"))
+                if r.get("val") is None or not s or not e:
+                    continue
+                if 80 <= (e - s).days <= 100 and e >= today - _dt.timedelta(days=550):
+                    n += 1
+            if n:
+                out[un] = n
+        return out
+
+    def _last_instant(node, concept):
+        best = None
+        for un, rows in _rows(node, concept).items():
+            for r in rows or []:
+                e = _d(r.get("end"))
+                if r.get("val") is None or not e:
+                    continue
+                if best is None or e > best["_e"]:
+                    best = {"_e": e, "unit": un, "end": e.isoformat(), "val": r.get("val"), "filed": r.get("filed")}
+        if best:
+            best.pop("_e")
+        return best
+
+    def _last_annual_val(units):
+        flat = []
+        for un, pts in _annual(units).items():
+            for p in pts:
+                flat.append((p["end"], p["val"], un))
+        if not flat:
+            return None, None, None
+        flat.sort()
+        return flat[-1][1], flat[-1][0], flat[-1][2]
+
+    def yahoo_splits(t):
+        try:
+            p = yc.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{t}",
+                       params={"range": "6y", "interval": "1d", "events": "split"}).json()
+            res = (((p or {}).get("chart", {}) or {}).get("result") or [{}])[0]
+            ev = ((res.get("events", {}) or {}).get("splits", {}) or {})
+            return [{"date": _dt.date.fromtimestamp(int(s["date"])).isoformat(),
+                     "ratio": f'{s.get("numerator")}/{s.get("denominator")}'} for s in ev.values()]
+        except Exception as e:
+            return [{"_error": type(e).__name__}]
+
+    EPS_US = ["EarningsPerShareDiluted", "EarningsPerShareBasic"]
+    EPS_IFRS = ["DilutedEarningsLossPerShare", "BasicEarningsLossPerShare", "DilutedEarningsPerShare", "BasicEarningsPerShare"]
+    NI_US, NI_IFRS = ["NetIncomeLoss"], ["ProfitLoss"]
+    SH_DIL = ["WeightedAverageNumberOfDilutedSharesOutstanding", "WeightedAverageNumberOfDilutedSharesOutstandingAdjustment"]
+    SH_BAS = ["WeightedAverageNumberOfSharesOutstandingBasic", "WeightedAverageNumberOfShareOutstandingBasicAndDiluted"]
+
+    out = {}
+    for t in tickers:
+        cik = cikmap.get(t.upper())
+        if not cik:
+            out[t] = {"cik": None, "note": "no está en company_tickers.json"}
+            continue
+        try:
+            r = cli.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json")
+            if r.status_code != 200:
+                out[t] = {"cik": cik, "http_status": r.status_code}
+                continue
+            data = r.json()
+        except Exception as e:
+            out[t] = {"cik": cik, "error": f"{type(e).__name__}"}
+            continue
+        f = data.get("facts", {}) or {}
+        gaap, ifrs, dei = f.get("us-gaap", {}) or {}, f.get("ifrs-full", {}) or {}, f.get("dei", {}) or {}
+        is_ifrs = bool(ifrs) and not any(c in gaap for c in NI_US)
+        node = ifrs if is_ifrs else gaap
+        eps_names = EPS_IFRS if is_ifrs else EPS_US
+        ni_names = NI_IFRS if is_ifrs else NI_US
+
+        eps_detail = {c: {"annual": _annual(_rows(node, c)), "quarterly_3m_recent": _quarterly_count(_rows(node, c))}
+                      for c in eps_names if _rows(node, c)}
+        ni_val, ni_end, ni_unit = None, None, None
+        for c in ni_names:
+            v, e, u = _last_annual_val(_rows(node, c))
+            if v is not None:
+                ni_val, ni_end, ni_unit = v, e, u
+                break
+        # EPS diluido anual (preferir el primer concepto diluido con datos)
+        eps_val, eps_end = None, None
+        for c in eps_names:
+            v, e, _ = _last_annual_val(_rows(node, c))
+            if v is not None:
+                eps_val, eps_end = v, e
+                break
+        entity_sh = _last_instant(dei, "EntityCommonStockSharesOutstanding")
+        wdil_val, wdil_end, _ = _last_annual_val(_rows(node, SH_DIL[0]))
+        wbas_val, wbas_end, _ = _last_annual_val(_rows(node, SH_BAS[0]))
+
+        def ratio(sh):
+            if eps_val and sh and ni_val:
+                return round(eps_val * sh / ni_val, 4)
+            return None
+
+        last_annual_date = _d(eps_end) or _d(ni_end)
+        age = (today - last_annual_date).days if last_annual_date else None
+        out[t] = {
+            "cik": cik, "entity": data.get("entityName"),
+            "taxonomy": "ifrs-full" if is_ifrs else "us-gaap",
+            "ni_unit_currency": ni_unit,
+            "eps_concepts": eps_detail,
+            "eps_diluted_annual_latest": {"val": eps_val, "end": eps_end},
+            "net_income_annual_latest": {"val": ni_val, "end": ni_end, "unit": ni_unit},
+            "shares_entity_coverpage": entity_sh,
+            "shares_weighted_diluted_annual": {"val": wdil_val, "end": wdil_end},
+            "shares_weighted_basic_annual": {"val": wbas_val, "end": wbas_end},
+            "consistency_eps_x_shares_over_ni": {
+                "using_coverpage_shares (actual/bug)": ratio(entity_sh["val"] if entity_sh else None),
+                "using_weighted_diluted (correcto)": ratio(wdil_val),
+                "ok_if_near_1.0": True,
+            },
+            "last_annual_age_days": age,
+            "stale_gt_400d": (age is not None and age > 400),
+            "splits_6y_yahoo": yahoo_splits(t),
+        }
     return out
 
 
