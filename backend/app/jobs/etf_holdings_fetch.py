@@ -16,6 +16,7 @@ import argparse
 import io
 import json
 import os
+import re
 import sys
 from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
@@ -233,8 +234,102 @@ def fetch_commodity(ticker: str) -> Tuple[Optional[str], List[dict]]:
                                        "weight": 1.0, "asset_class": "other", "sector": "Materias primas"}]
 
 
+SEC_UA = {"User-Agent": "GIIC research admin@giic.app"}
+_MF_CACHE: Dict[str, dict] = {}
+
+
+def _mf_lookup(ticker: str) -> Optional[dict]:
+    """ticker de fondo/ETF -> {cik, seriesId} vía company_tickers_mf.json (SEC)."""
+    if not _MF_CACHE:
+        r = httpx.get("https://www.sec.gov/files/company_tickers_mf.json", headers=SEC_UA, timeout=60)
+        r.raise_for_status()
+        j = r.json()
+        fields = j.get("fields", ["cik", "seriesId", "classId", "symbol"])
+        si, ti, ci = fields.index("seriesId"), fields.index("symbol"), fields.index("cik")
+        for row in j.get("data", []):
+            _MF_CACHE[str(row[ti]).upper()] = {"cik": row[ci], "seriesId": row[si]}
+    return _MF_CACHE.get(ticker.upper())
+
+
+def _nport_asset_class(cat: str, has_ticker: bool) -> str:
+    c = (cat or "").upper()
+    if c in ("EC", "EP"):
+        return "equity"
+    if c in ("DBT",):
+        return "bond"
+    if c in ("STIV",):
+        return "cash"
+    return "equity" if has_ticker else "other"
+
+
+def fetch_nport(ticker: str) -> Tuple[Optional[str], List[dict]]:
+    """Holdings COMPLETOS desde el último NPORT-P del ETF en EDGAR (oficial, gratuito, genérico).
+    Nota: datos con rezago (mensual, publicados ~30-60 días después). Respaldo diario = importación."""
+    import time
+    import xml.etree.ElementTree as ET
+    mf = _mf_lookup(ticker)
+    if not mf:
+        raise RuntimeError(f"nport: ticker {ticker} no está en company_tickers_mf.json")
+    sid = mf["seriesId"]
+    atom = httpx.get("https://www.sec.gov/cgi-bin/browse-edgar", headers=SEC_UA, timeout=60,
+                     params={"action": "getcompany", "CIK": sid, "type": "NPORT-P",
+                             "dateb": "", "owner": "include", "count": "3", "output": "atom"})
+    atom.raise_for_status()
+    root = ET.fromstring(atom.text)
+    acc, cik = None, None
+    for e in root.iter():
+        tag = e.tag.split("}")[-1]
+        if tag == "accession-number" and acc is None:
+            acc = e.text.strip()
+        if tag == "filing-href" and cik is None and e.text:
+            m = re.search(r"/data/(\d+)/", e.text)
+            if m:
+                cik = m.group(1)
+    if not acc:
+        raise RuntimeError("nport: sin filings NPORT-P para la serie")
+    if not cik:
+        cik = str(mf["cik"])
+    time.sleep(0.3)
+    accn = acc.replace("-", "")
+    url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accn}/primary_doc.xml"
+    r = httpx.get(url, headers=SEC_UA, timeout=90)
+    r.raise_for_status()
+    xroot = ET.fromstring(r.content)
+
+    def local(e):
+        return e.tag.split("}")[-1]
+    as_of = None
+    lines: List[dict] = []
+    for e in xroot.iter():
+        if local(e) == "repPdDate" and as_of is None:
+            as_of = (e.text or "").strip()[:10]
+    for sec in xroot.iter():
+        if local(sec) != "invstOrSec":
+            continue
+        d = {local(c): c for c in sec}
+        name = (d.get("name").text if d.get("name") is not None else "") or ""
+        cusip = (d.get("cusip").text if d.get("cusip") is not None else None)
+        pct = d.get("pctVal")
+        w = _num(pct.text) if pct is not None else None
+        cat = (d.get("assetCat").text if d.get("assetCat") is not None else "")
+        tk = None
+        ident = d.get("identifiers")
+        if ident is not None:
+            for ch in ident.iter():
+                if local(ch) == "ticker":
+                    tk = (ch.get("value") or ch.text or "").strip() or None
+        ac = _nport_asset_class(cat, bool(tk))
+        if "cash" in name.lower() or "money market" in name.lower():
+            ac = "cash"
+        lines.append({"name": name.strip() or None, "ticker": tk,
+                      "cusip": (cusip.strip() if cusip else None),
+                      "weight": (w / 100.0 if w is not None else None),
+                      "asset_class": ac, "sector": None})
+    return (as_of or date.today().isoformat()), lines
+
+
 ADAPTERS = {"ssga": fetch_ssga, "invesco": fetch_invesco,
-            "vanguard": fetch_vanguard, "commodity": fetch_commodity}
+            "vanguard": fetch_vanguard, "commodity": fetch_commodity, "nport": fetch_nport}
 
 
 def normalize(etf: str, provider: str, as_of: str, lines: List[dict]) -> Tuple[List[dict], dict]:
@@ -265,18 +360,27 @@ def run(writer, etfs: Optional[List[str]], dry: bool) -> dict:
     targets = [t.upper() for t in etfs] if etfs else detect_etfs(writer, diag)
     report = {"detected": targets, "diag": diag, "covered": [], "pending_coverage": [], "results": []}
     for etf in targets:
-        issuer = ISSUER.get(etf)
-        if not issuer:
-            report["pending_coverage"].append(etf); continue
+        # cadena: adaptador del emisor (si existe) y luego N-PORT (genérico, oficial, gratuito).
+        chain = ([ISSUER[etf]] if etf in ISSUER else []) + (["nport"] if ISSUER.get(etf) != "commodity" else [])
         report["covered"].append(etf)
-        try:
-            as_of, lines = ADAPTERS[issuer](etf)
-            if not as_of:
-                as_of = date.today().isoformat()
-            rows, meta = normalize(etf, issuer, as_of, lines)
-        except Exception as e:
-            report["results"].append({"etf": etf, "provider": issuer, "status": "failed", "error": f"{type(e).__name__}: {str(e)[:120]}"})
+        rows, meta, provider, errors = None, None, None, []
+        for prov in chain:
+            try:
+                as_of, lines = ADAPTERS[prov](etf)
+                if not as_of:
+                    as_of = date.today().isoformat()
+                r, m = normalize(etf, prov, as_of, lines)
+                if m["status"] == "complete" or rows is None:
+                    rows, meta, provider = r, m, prov
+                if m["status"] == "complete":
+                    break
+            except Exception as e:
+                errors.append(f"{prov}: {type(e).__name__}: {str(e)[:90]}")
+        if meta is None:
+            report["covered"].remove(etf); report["pending_coverage"].append(etf)
+            report["results"].append({"etf": etf, "status": "failed", "errors": errors})
             continue
+        issuer = provider
         sample = sorted([r for r in rows if r["weight"]], key=lambda r: -(r["weight"] or 0))[:5]
         meta["top5"] = [{"ticker": r["ticker"], "name": (r["name"] or "")[:28], "weight": r["weight"]} for r in sample]
         if not dry and meta["status"] == "complete":
