@@ -151,24 +151,27 @@ def parse_companyfacts(facts: dict, ticker: str,
       (no se fabrican).
     """
     fx_map = fx_map or {}
-    root = (facts or {}).get("facts", {}) or {}
 
-    # Taxonomía + divisa de reporte. DATA-DRIVEN: se elige us-gaap solo si produce
-    # datos ANUALES reales (no por mera presencia de algún tag suelto); si no, se
-    # intenta ifrs-full (emisores 20-F). Evita que un emisor extranjero con un tag
-    # us-gaap residual quede sin datos.
-    _us_rev = _annual_points(_first_concept(facts, "us-gaap", US_GAAP_MAP["rev"], "USD"))
-    _us_ni = _annual_points(_first_concept(facts, "us-gaap", US_GAAP_MAP["ni"], "USD"))
-    _ifrs_ccy = _currency_for(facts, "ifrs-full", IFRS_MAP["rev"] + IFRS_MAP["ni"] + IFRS_MAP["equity"])
-    if _us_rev or _us_ni:
-        tax, ccy, M = "us-gaap", "USD", US_GAAP_MAP
-    elif root.get("ifrs-full") and _ifrs_ccy:
-        tax, ccy, M = "ifrs-full", _ifrs_ccy, IFRS_MAP
+    # Taxonomía + DIVISA DE REPORTE, data-driven. Muchos emisores extranjeros usan
+    # etiquetas us-gaap pero en su divisa (ASML: us-gaap en EUR, formulario 20-F);
+    # otros usan ifrs-full (TSM: TWD). Se detecta la divisa DENTRO de cada taxonomía
+    # (no se asume USD) y se elige la que produzca datos anuales reales.
+    def _pick(tax_name, cmap):
+        c = _currency_for(facts, tax_name, cmap["rev"] + cmap["ni"] + cmap["equity"])
+        if not c:
+            return None
+        r = _best_annual(facts, tax_name, cmap["rev"], c)
+        n = _best_annual(facts, tax_name, cmap["ni"], c)
+        if not (r or n):
+            return None
+        return (tax_name, c, cmap, r, n)
+
+    picked = _pick("us-gaap", US_GAAP_MAP) or _pick("ifrs-full", IFRS_MAP)
+    if picked:
+        tax, ccy, M, rev, ni = picked
     else:
-        tax, ccy, M = "us-gaap", "USD", US_GAAP_MAP
+        tax, ccy, M, rev, ni = "us-gaap", "USD", US_GAAP_MAP, [], []
 
-    rev = _best_annual(facts, tax, M["rev"], ccy)
-    ni = _best_annual(facts, tax, M["ni"], ccy)
     eps = _best_annual(facts, tax, M["eps"], f"{ccy}/shares")
     equity = _best_instant(facts, tax, M["equity"], ccy)
     ocf = _best_annual(facts, tax, M["ocf"], ccy)
