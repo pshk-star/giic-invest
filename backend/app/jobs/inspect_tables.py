@@ -294,7 +294,14 @@ def run() -> dict:
             if p.get("shares_source") and "proxy" in (p.get("shares_source") or ""):
                 derived.append("acciones(proxy)")
             dq = p.get("data_quality") or "ok"
-            status = ("inconsistente/bloqueado" if dq != "ok" else ("verificado" if not derived else "parcial(derivado)"))
+            if dq != "ok":
+                status = "inconsistente/bloqueado"
+            elif p.get("eps_annual") is None and p.get("eps_ttm") is None:
+                status = "faltante/incompleto"
+            elif derived:
+                status = "parcial(derivado)"
+            else:
+                status = "verificado"
             quality_matrix[t] = {
                 "status": status, "data_quality": dq, "quality_reason": p.get("quality_reason"),
                 "eps_annual": p.get("eps_annual"), "eps_ttm": p.get("eps_ttm"),
