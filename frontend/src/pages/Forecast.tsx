@@ -8,8 +8,18 @@ import { derivePositions } from "../core/portfolio-tx";
 import { mergeValuation } from "../core/price-source";
 import { forecast, buildAssets, type ForecastResult, type PriceBarLite } from "../core/forecast";
 import { FundamentalView, type FundRow } from "../components/FundamentalView";
+import { valuateCompany } from "../core/fundamental";
+import { computeCoverage, type CovItem } from "../core/coverage";
 import type { FundamentalsPayload } from "../core/valuation";
-import { money } from "../format";
+import { money, pct } from "../format";
+
+const COMMODITY_T = ["GLD", "SLV", "IAU", "PPLT", "PALL", "SGOL", "SIVR"];
+function kindOf(ticker: string, assetClass: string | null): "equity" | "etf" | "commodity" {
+  const ac = (assetClass ?? "").toLowerCase();
+  if (COMMODITY_T.includes(ticker.toUpperCase()) || ac === "commodity") return "commodity";
+  if (ac === "etf" || ac === "fund" || ac === "etn" || ac === "mutualfund") return "etf";
+  return "equity";
+}
 
 type Bars = PriceBarLite[];
 
@@ -101,6 +111,23 @@ export function Forecast() {
     return a.length ? forecast(a, { drift }) : null;
   }, [simValueMap, hist, drift]);
 
+  const coverage = useMemo(() => {
+    if (!fundRows.length) return null;
+    const items: CovItem[] = fundRows.map((r) => {
+      const bars = (hist[r.ticker] ?? hist[r.ticker.toUpperCase()])?.length ?? 0;
+      const kind = kindOf(r.ticker, r.assetClass);
+      const fundOk = kind === "equity" && valuateCompany({
+        ticker: r.ticker, name: r.name, sector: r.sector, price: r.price, priceAsOf: r.priceAsOf,
+        f: fundamentals[r.ticker.toUpperCase()] ?? fundamentals[r.ticker],
+      }).available;
+      return {
+        ticker: r.ticker, marketValue: r.marketValue ?? 0,
+        hasPrice: r.price != null, statOk: bars >= 61, fundOk, asOf: r.priceAsOf,
+      };
+    });
+    return computeCoverage(items);
+  }, [fundRows, hist, fundamentals]);
+
   if (loading) return <div className="grid gap-3">{[0, 1, 2].map((i) => <div key={i} className="h-24 animate-pulse rounded-xl bg-term-panel2" />)}</div>;
   if (err) return <p className="text-sm text-term-crit">Error: {err}</p>;
 
@@ -122,11 +149,38 @@ export function Forecast() {
     </p>
   );
 
+  const coveragePanel = coverage && coverage.total > 0 && (
+    <div className="rounded-lg border border-term-border bg-term-panel2 p-3">
+      <div className="mb-2 text-sm font-semibold text-term-fg">Cobertura de tu cartera (ponderada por patrimonio)</div>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <CovTile label="Con precio" value={coverage.pricePct} tone="text-term-fg" />
+        <CovTile label="Con simulación estadística" value={coverage.statPct} tone={coverage.statSufficient ? "text-term-good" : "text-term-warn"} />
+        <CovTile label="Con valoración fundamental" value={coverage.fundPct} tone={coverage.fundSufficient ? "text-term-good" : "text-term-muted"} />
+        <CovTile label="Sin cobertura (riesgo)" value={coverage.uncoveredPct} tone={coverage.uncoveredPct > 0.2 ? "text-term-crit" : "text-term-muted"} />
+      </div>
+      <p className="mt-2 text-[11px] text-term-faint">
+        {coverage.oldestAsOf && <>Dato más antiguo relevante: {coverage.oldestAsOf}. </>}
+        {coverage.topStatGap.length > 0 && <>Más pesan en el hueco estadístico: {coverage.topStatGap.map((g) => `${g.ticker} (${pct(g.weight)})`).join(", ")}. </>}
+        Porcentajes sobre {money(coverage.total)} de patrimonio con precio.
+      </p>
+    </div>
+  );
+
+  const partialBanner = coverage && !coverage.statSufficient && (
+    <div className="rounded-lg border border-term-warn/40 bg-term-warn/10 px-3 py-2 text-xs text-term-warn">
+      <b>Proyección PARCIAL.</b> Solo el {pct(coverage.statPct)} del patrimonio tiene simulación estadística;
+      el {pct(coverage.uncoveredPct)} restante se mantiene a <b>valor fijo</b> (supuesto técnico, no una proyección
+      y <b>no</b> implica volatilidad cero). Las bandas reflejan el riesgo solo de la parte cubierta y
+      <b> no representan toda la cartera</b> (umbral {pct(coverage.statThreshold)}).
+    </div>
+  );
+
   if (view === "fundamental") {
     return (
       <div className="grid gap-4">
         {perspective}
         {twoEngines}
+        {coveragePanel}
         <FundamentalView rows={fundRows} fundamentals={fundamentals} />
       </div>
     );
@@ -143,6 +197,8 @@ export function Forecast() {
     <div className="grid gap-4">
       {perspective}
       {twoEngines}
+      {coveragePanel}
+      {partialBanner}
       <div className="rounded-lg border border-term-border bg-term-panel2 px-3 py-2 text-xs text-term-muted">
         <b className="text-term-fg">Proyección por simulación histórica</b> (bootstrap por bloques multivariante, {base.nObs} días reales, con correlaciones).
         <b> No es predicción calibrada</b> ni usa A/B/C. Precios ajustados por splits y dividendos (cierre ajustado de Yahoo). Sin look-ahead.
@@ -255,6 +311,16 @@ export function Forecast() {
 }
 
 const inp = "rounded-md border border-term-border bg-term-panel2 px-2 py-1.5 text-sm text-term-fg";
+
+function CovTile({ label, value, tone }: { label: string; value: number; tone: string }) {
+  return (
+    <div className="rounded-lg border border-term-border bg-term-panel px-2 py-2">
+      <div className="text-[10px] uppercase text-term-muted">{label}</div>
+      <div className={`text-lg font-semibold tabnum ${tone}`}>{pct(value)}</div>
+      <div className="mt-1 h-1.5 w-full rounded bg-term-panel2"><div className={`h-full rounded ${tone.replace("text-", "bg-")}`} style={{ width: `${Math.min(100, value * 100)}%` }} /></div>
+    </div>
+  );
+}
 
 function Scenario({ label, val, ret, cur, tone }: { label: string; val: number; ret: number; cur: number; tone: string }) {
   return (
