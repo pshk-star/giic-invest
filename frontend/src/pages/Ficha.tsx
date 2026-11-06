@@ -23,6 +23,17 @@ const EMPTY_F: FundamentalsPayload = {
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
+// Identidad del instrumento (vista; se enriquece con CIK/FIGI tras aplicar 0012 + job).
+const COMMODITY_TK = ["GLD", "SLV", "IAU", "PPLT", "PALL", "SGOL", "SIVR"];
+const ADR_SEED: Record<string, number> = { TSM: 5, ASML: 1, NVO: 1, TM: 5, BABA: 8, SONY: 1 };
+function deriveInstrumentType(ticker: string, assetClass: string | null, quoteCcy: string | null, reportCcy: string | null | undefined): string {
+  const t = ticker.toUpperCase(), ac = (assetClass ?? "").toLowerCase();
+  if (COMMODITY_TK.includes(t) || ac === "commodity") return "Materia prima (ETF)";
+  if (ac === "etf" || ac === "fund" || ac === "etn" || ac === "mutualfund") return "ETF";
+  if (ac === "equity") return (reportCcy && quoteCcy && reportCcy !== quoteCcy) ? "ADR/GDR (emisor extranjero)" : "Acción";
+  return "—";
+}
+
 function Bar({ v, tone = "bg-term-accent" }: { v: number; tone?: string }) {
   return (
     <div className="h-1.5 w-full rounded bg-term-panel2">
@@ -131,6 +142,7 @@ export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: st
   const [assetClass, setAssetClass] = useState<string | null>(null);
   const [exchange, setExchange] = useState<string | null>(null);
   const [sector, setSector] = useState<string | null>(null);
+  const [quoteCcy, setQuoteCcy] = useState<string | null>(null);
   const [price, setPrice] = useState<number | null>(null);
   const [priceAsOf, setPriceAsOf] = useState<string | null>(null);
   const [quote, setQuote] = useState<QuoteRow | null>(null);
@@ -163,6 +175,7 @@ export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: st
       setName(meta?.name ?? null);
       setAssetClass(meta?.asset_class ?? null);
       setExchange(meta?.exchange ?? null);
+      setQuoteCcy(meta?.currency ?? null);
       setSector(sec);
       setPrice(priceMap[ticker]?.close ?? null);
       setPriceAsOf(priceMap[ticker]?.as_of ?? null);
@@ -246,6 +259,40 @@ export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: st
             En tu cartera: {num(held.qty, 2)} unidades · peso {pct(held.weight)} del total.
           </p>
         )}
+      </Panel>
+
+      <Panel title="Identificación del instrumento">
+        {(() => {
+          const t = deriveInstrumentType(ticker, assetClass, quoteCcy, fund.currency);
+          const adr = ADR_SEED[ticker.toUpperCase()];
+          const isAdr = t.startsWith("ADR");
+          const row = (k: string, v: string | JSX.Element) => (
+            <div className="flex justify-between gap-3 border-b border-term-border py-1 last:border-0">
+              <span className="text-term-muted">{k}</span><span className="text-right text-term-fg">{v}</span>
+            </div>
+          );
+          return (
+            <div className="grid gap-2 text-sm sm:grid-cols-2">
+              <div>
+                {row("Nombre", name ?? "—")}
+                {row("Ticker", <span className="font-mono">{ticker}</span>)}
+                {row("Tipo", t)}
+                {row("Bolsa", exchange ?? "—")}
+              </div>
+              <div>
+                {row("Moneda de cotización", quoteCcy ?? "—")}
+                {row("Moneda de reporte", fund.currency ?? (assetClass === "equity" ? "—" : "n/a"))}
+                {row("Taxonomía contable", fund.taxonomy ?? "—")}
+                {row("Relación ADR", isAdr ? (adr != null ? `1 ADR = ${adr} ordinaria(s) · fuente: curado (semilla)` : "no verificada") : "no aplica")}
+              </div>
+            </div>
+          );
+        })()}
+        <p className="mt-2 text-[11px] text-term-faint">
+          Identidad resuelta automáticamente (Yahoo meta + SEC EDGAR), sin listas fijas. Los identificadores
+          <b> CIK, FIGI, ISIN y LEI</b> con fuente/fecha/estado se persisten tras aplicar la migración 0012 y correr la
+          identificación; ISIN/LEI quedan "no disponible" cuando no hay fuente gratuita fiable (no se inventan).
+        </p>
       </Panel>
 
       <Panel title="Precio histórico">
