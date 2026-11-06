@@ -429,10 +429,16 @@ def parse_companyfacts(facts: dict, ticker: str,
     # GUARD DE PLAUSIBILIDAD (Control 2): detecta magnitudes imposibles (p. ej. MU FY2026 con NI
     # mayor que los ingresos). Marca el dato y evita que se use a ciegas en valoración.
     eg_raw = yoy(eps)
+    rg_raw = yoy(rev)
     data_quality, quality_reason = "ok", None
     if ni_l is not None and rev_l and ni_l > rev_l:
         data_quality = "bloqueado"
         quality_reason = f"utilidad neta ({ni_l:.4g}) > ingresos ({rev_l:.4g}) — magnitud imposible; verificar documento original"
+    elif eg_raw is not None and abs(eg_raw) > 3.0:
+        data_quality = "bloqueado"
+        quality_reason = (f"salto de EPS interanual {eg_raw*100:.0f}% implausible"
+                          + (f" (ingresos {rg_raw*100:.0f}% con multiplicador distinto → probable error de origen)" if rg_raw is not None else "")
+                          + "; verificar 10-K original antes de usar")
     elif net_margin is not None and net_margin > 0.6:
         data_quality = "sospechoso"
         quality_reason = f"margen neto {net_margin*100:.0f}% inusualmente alto; posible dato extraordinario o erróneo (verificar sector)"

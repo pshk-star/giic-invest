@@ -306,7 +306,10 @@ def run() -> dict:
                 "status": status, "data_quality": dq, "quality_reason": p.get("quality_reason"),
                 "eps_annual": p.get("eps_annual"), "eps_ttm": p.get("eps_ttm"),
                 "eps_ttm_method": p.get("eps_ttm_method"), "eps_ttm_denominator": p.get("eps_ttm_denominator"),
-                "eps_ttm_pershare_check": p.get("eps_ttm_pershare_check"), "ttm_vs_annual_ratio": p.get("ttm_vs_annual_ratio"),
+                # cross-check ALGEBRAICO de misma fuente (NI/acciones vs identidad por-acción); ≈1 NO
+                # es validación independiente — sólo confirma coherencia de bases, no corrección externa.
+                "eps_ttm_algebraic_crosscheck_same_source": p.get("eps_ttm_pershare_check"),
+                "ttm_vs_annual_ratio": p.get("ttm_vs_annual_ratio"),
                 "eps_primary": p.get("eps"), "eps_basis": p.get("eps_basis"), "eps_source": p.get("eps_source"),
                 "fcf_annual": p.get("fcf_annual"), "fcf_ttm": p.get("fcf_ttm"),
                 "net_debt": p.get("net_debt"), "gross_debt": p.get("gross_debt"), "cash": p.get("cash_and_sti"),
