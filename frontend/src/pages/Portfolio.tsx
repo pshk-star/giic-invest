@@ -2,12 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Panel, Stat } from "../components/Panel";
 import {
-  addTransaction, deleteTransaction, getInstruments, getPrices, getQuotes, getTransactions,
-  searchInstruments, type InstrumentRow, type QuoteRow,
+  addTransaction, deleteTransaction, getCorporateActions, getInstruments, getPrices, getQuotes,
+  getTransactions, searchInstruments, type InstrumentRow, type QuoteRow,
 } from "../data";
 import type { PriceInfo } from "../core/analytics";
 import {
-  derivePositions, portfolioTotals, type InstrumentMeta, type Side, type Txn,
+  derivePositions, portfolioTotals, type InstrumentMeta, type Side, type Split, type Txn,
 } from "../core/portfolio-tx";
 import { classifyQuote } from "../core/quotefmt";
 import { money, num, pct } from "../format";
@@ -24,6 +24,7 @@ export function Portfolio() {
   const [instMap, setInstMap] = useState<Record<string, InstrumentMeta>>({});
   const [eod, setEod] = useState<Record<string, PriceInfo>>({});
   const [quotes, setQuotes] = useState<Record<string, QuoteRow>>({});
+  const [splits, setSplits] = useState<Split[]>([]);
   const [form, setForm] = useState({ ...EMPTY });
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -38,8 +39,10 @@ export function Portfolio() {
     const t = await getTransactions();
     setTxns(t);
     const tickers = Array.from(new Set(t.map((x) => x.ticker.toUpperCase())));
-    const [pr, inst, qs] = await Promise.all([getPrices(tickers), getInstruments(tickers), getQuotes(tickers)]);
-    setEod(pr); setInstMap(inst); setQuotes(qs);
+    const [pr, inst, qs, ca] = await Promise.all([
+      getPrices(tickers), getInstruments(tickers), getQuotes(tickers), getCorporateActions(tickers),
+    ]);
+    setEod(pr); setInstMap(inst); setQuotes(qs); setSplits(ca);
   };
 
   useEffect(() => { load().catch((e) => setMsg(String(e))); }, []);
@@ -62,7 +65,7 @@ export function Portfolio() {
     return out;
   }, [eod, quotes]);
 
-  const positions = useMemo(() => derivePositions(txns, mergedPrices, instMap), [txns, mergedPrices, instMap]);
+  const positions = useMemo(() => derivePositions(txns, mergedPrices, instMap, splits), [txns, mergedPrices, instMap, splits]);
   const totals = useMemo(() => portfolioTotals(positions), [positions]);
 
   // P&L del día: suma de qty × (precio − cierre previo) para posiciones con cotización.
@@ -74,6 +77,11 @@ export function Portfolio() {
     }
     return any ? s : null;
   }, [positions, quotes]);
+
+  const appliedSplits = useMemo(
+    () => splits.filter((s) => positions.some((p) => p.qty > 1e-9 && p.ticker === s.ticker.toUpperCase())),
+    [splits, positions]
+  );
 
   // Advertencia si se mezclan precios de fechas distintas.
   const priceDates = useMemo(() => {
@@ -156,6 +164,12 @@ export function Portfolio() {
           {priceDates.length > 1 && (
             <p className="mt-1 text-xs text-term-warn">
               Aviso: tus posiciones usan precios de fechas distintas ({priceDates.join(", ")}); el valor total los mezcla.
+            </p>
+          )}
+          {appliedSplits.length > 0 && (
+            <p className="mt-1 text-xs text-term-muted">
+              Ajustes por split aplicados automáticamente (costo total intacto):{" "}
+              {appliedSplits.map((s) => `${s.ticker} ${s.ratio >= 1 ? `${s.ratio}:1` : `1:${Math.round(1 / s.ratio)}`} (ex ${s.ex_date})`).join(" · ")}.
             </p>
           )}
         </Panel>

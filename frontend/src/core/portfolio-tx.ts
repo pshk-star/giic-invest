@@ -29,6 +29,25 @@ export interface PriceInfo {
   currency: string;
 }
 
+// Evento corporativo (split). ratio = multiplicador de acciones (10-for-1 => 10;
+// reverse 1-for-10 => 0.1). ex_date = primer día en base ajustada (YYYY-MM-DD).
+export interface Split {
+  ticker: string;
+  ratio: number;
+  ex_date: string;
+}
+
+// Factor acumulado a aplicar a una operación: producto de los ratios de los splits
+// cuyo ex_date es POSTERIOR a la fecha de la operación (una compra previa al split se
+// ajusta; una compra en o después del ex_date no). Idempotente: se recalcula siempre
+// desde las transacciones inmutables, nunca se aplica dos veces.
+export function splitFactor(splits: Split[], ticker: string, dateStr: string): number {
+  const tk = ticker.toUpperCase();
+  let f = 1;
+  for (const s of splits) if (s.ticker.toUpperCase() === tk && s.ex_date > dateStr) f *= s.ratio;
+  return f;
+}
+
 export interface InstrumentMeta {
   name: string | null;
   asset_class: string | null;
@@ -65,7 +84,8 @@ function chrono(a: Txn, b: Txn): number {
 export function derivePositions(
   txns: Txn[],
   prices: Record<string, PriceInfo> = {},
-  instruments: Record<string, InstrumentMeta> = {}
+  instruments: Record<string, InstrumentMeta> = {},
+  splits: Split[] = []
 ): DerivedPosition[] {
   const byTicker = new Map<string, Txn[]>();
   for (const t of txns) {
@@ -81,8 +101,12 @@ export function derivePositions(
     let currency = "USD";
     for (const t of list) {
       currency = t.currency || currency;
-      const q = t.quantity ?? 0;
-      const p = t.price ?? 0;
+      // Ajuste automático por split: la compra/venta previa al ex_date se expresa en
+      // acciones POST-split (cantidad ×factor, precio ÷factor). El costo total (q×p) no
+      // cambia. Los dividendos (efectivo) NO se escalan.
+      const fac = splitFactor(splits, ticker, t.executed_at);
+      const q = (t.quantity ?? 0) * fac;
+      const p = fac !== 0 ? (t.price ?? 0) / fac : (t.price ?? 0);
       const f = t.fees ?? 0;
       if (t.side === "buy") {
         qty += q;
@@ -96,10 +120,9 @@ export function derivePositions(
         qty -= sellQty;
         fees += f;
       } else if (t.side === "dividend") {
-        dividends += t.amount ?? q * p;
-      } else if (t.side === "split" && q > 0) {
-        qty *= q;            // ratio (p.ej. 2 = 2:1)
-        // invested no cambia; avgCost se ajusta solo (invested/qty)
+        dividends += t.amount ?? (t.quantity ?? 0) * (t.price ?? 0);  // efectivo, sin escalar
+      } else if (t.side === "split" && (t.quantity ?? 0) > 0) {
+        qty *= (t.quantity ?? 1);   // split MANUAL (ratio); el automático va por `splits`
       }
       // deposit/withdrawal: efectivo de cuenta, no afecta posiciones individuales
     }

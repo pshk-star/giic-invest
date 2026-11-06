@@ -66,6 +66,40 @@ def parse_yahoo_meta(payload: dict) -> dict:
         return {}
 
 
+def parse_yahoo_splits(payload: dict) -> List[dict]:
+    """Extrae splits de chart.result[0].events.splits (fuente verificable de Yahoo).
+
+    Cada evento: {date epoch, numerator, denominator, splitRatio "10:1"}.
+    ratio = numerator/denominator (forward 10-for-1 => 10; reverse 1-for-10 => 0.1).
+    """
+    res = (payload or {}).get("chart", {}).get("result")
+    if not res:
+        return []
+    events = (res[0] or {}).get("events", {}) or {}
+    splits = events.get("splits", {}) or {}
+    out: List[dict] = []
+    for ev in splits.values():
+        try:
+            num = int(ev.get("numerator"))
+            den = int(ev.get("denominator"))
+            if num <= 0 or den <= 0:
+                continue
+            ex_date = datetime.fromtimestamp(float(ev["date"]), tz=timezone.utc).date().isoformat()
+            ratio = num / den
+            out.append({
+                "ex_date": ex_date,
+                "ratio": ratio,
+                "numerator": num,
+                "denominator": den,
+                "action_type": "split" if ratio >= 1 else "reverse_split",
+                "split_ratio": ev.get("splitRatio"),
+            })
+        except (KeyError, TypeError, ValueError):
+            continue
+    out.sort(key=lambda x: x["ex_date"])
+    return out
+
+
 def _market_state(meta: dict, now_epoch: float) -> Optional[str]:
     """Deriva el estado del mercado desde currentTradingPeriod (si existe)."""
     ctp = meta.get("currentTradingPeriod") or {}
@@ -197,6 +231,18 @@ class YahooProvider(MarketDataProvider):
             as_of = s.index[-1].date() if hasattr(s.index[-1], "date") else date.today()
             out[t] = Quote(ticker=t, price=float(s.iloc[-1]), as_of=as_of,
                            currency="USD", is_sample=False)
+        return out
+
+    def get_splits(self, tickers: List[str]) -> Dict[str, List[dict]]:
+        """Splits por ticker desde Yahoo (range=max). Best-effort; omite los que fallan."""
+        out: Dict[str, List[dict]] = {}
+        for t in tickers:
+            try:
+                sp = parse_yahoo_splits(self._chart(t, rng="max", interval="1d"))
+            except Exception:
+                sp = []
+            if sp:
+                out[t] = sp
         return out
 
     def get_instrument_meta(self, ticker: str) -> dict:

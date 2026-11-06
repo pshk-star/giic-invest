@@ -2,7 +2,7 @@
 // mercado y scanner son de solo lectura para autenticados.
 import { supabase } from "./lib/supabase";
 import type { ETFHolding, Position, PriceInfo } from "./core/analytics";
-import type { InstrumentMeta, Txn } from "./core/portfolio-tx";
+import type { InstrumentMeta, Split, Txn } from "./core/portfolio-tx";
 import type { FundamentalsPayload } from "./core/valuation";
 
 export interface InstrumentRow {
@@ -108,6 +108,14 @@ export async function getQuotes(tickers: string[]): Promise<Record<string, Quote
   const out: Record<string, QuoteRow> = {};
   for (const r of data ?? []) out[r.ticker] = r as QuoteRow;
   return out;
+}
+
+export async function getCorporateActions(tickers: string[]): Promise<Split[]> {
+  if (tickers.length === 0) return [];
+  const { data, error } = await supabase
+    .from("corporate_actions").select("ticker,ratio,ex_date").in("ticker", tickers);
+  if (error) throw error;
+  return (data ?? []).map((r) => ({ ticker: r.ticker, ratio: Number(r.ratio), ex_date: r.ex_date }));
 }
 
 export async function getFundamentals(tickers: string[]): Promise<Record<string, FundamentalsPayload>> {

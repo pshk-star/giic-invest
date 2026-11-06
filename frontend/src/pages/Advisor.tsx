@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Panel } from "../components/Panel";
 import {
-  getInstruments, getLatestRun, getLatestScan, getPrices, getSettings, getTransactions,
-  saveSettings, type ScanRow,
+  getCorporateActions, getInstruments, getLatestRun, getLatestScan, getPrices, getSettings,
+  getTransactions, saveSettings, type ScanRow,
 } from "../data";
 import { derivePositions, portfolioTotals } from "../core/portfolio-tx";
 import {
@@ -25,10 +25,11 @@ export function Advisor() {
     (async () => {
       const txns = await getTransactions();
       const tickers = Array.from(new Set(txns.map((t) => t.ticker.toUpperCase())));
-      const [prices, instruments, rows, run, settings] = await Promise.all([
+      const [prices, instruments, rows, run, settings, ca] = await Promise.all([
         getPrices(tickers), getInstruments(tickers), getLatestScan(), getLatestRun(), getSettings(),
+        getCorporateActions(tickers),
       ]);
-      const pos = derivePositions(txns, prices, instruments);
+      const pos = derivePositions(txns, prices, instruments, ca);
       const totals = portfolioTotals(pos);
       const hs: Holding[] = pos
         .filter((p) => p.qty > 1e-9)

@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Panel } from "../components/Panel";
 import {
-  getFundamentals, getInstruments, getLatestRun, getLatestScan, getPrices, getQuotes, getTransactions,
-  type QuoteRow, type ScanRow,
+  getCorporateActions, getFundamentals, getInstruments, getLatestRun, getLatestScan, getPrices,
+  getQuotes, getTransactions, type QuoteRow, type ScanRow,
 } from "../data";
 import { QuoteView } from "../components/Quote";
 import { derivePositions, portfolioTotals } from "../core/portfolio-tx";
@@ -85,8 +85,8 @@ export function CompanyFicha() {
       // ¿Está en tu cartera? Peso real.
       if (txns.some((t) => t.ticker.toUpperCase() === ticker)) {
         const all = Array.from(new Set(txns.map((t) => t.ticker.toUpperCase())));
-        const [pr, inst] = await Promise.all([getPrices(all), getInstruments(all)]);
-        const pos = derivePositions(txns, pr, inst);
+        const [pr, inst, ca] = await Promise.all([getPrices(all), getInstruments(all), getCorporateActions(all)]);
+        const pos = derivePositions(txns, pr, inst, ca);
         const totals = portfolioTotals(pos);
         const mine = pos.find((p) => p.ticker === ticker && p.qty > 1e-9);
         if (mine) setHeld({ weight: totals.weights[ticker] ?? 0, qty: mine.qty });

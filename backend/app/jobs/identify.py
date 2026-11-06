@@ -31,6 +31,21 @@ from datetime import datetime
 from .catalog import load_catalog
 from .instruments import resolve_extra_tickers
 from .supabase_writer import SupabaseWriter
+from .universe import get_universe
+
+
+def fetch_corporate_actions(yahoo, tickers) -> list[dict]:
+    """Filas de corporate_actions (splits) desde Yahoo para una lista de tickers."""
+    sp = yahoo.get_splits(tickers)
+    rows = []
+    for t, evs in sp.items():
+        for e in evs:
+            rows.append({
+                "ticker": t.upper(), "action_type": e["action_type"], "ratio": e["ratio"],
+                "ex_date": e["ex_date"], "numerator": e["numerator"], "denominator": e["denominator"],
+                "source": "yahoo", "note": e.get("split_ratio"),
+            })
+    return rows
 
 
 def identify_portfolio(writer, yahoo, tickers) -> dict:
@@ -83,11 +98,29 @@ def execute(with_catalog: bool = False, dry_run: bool = False, extra_tickers=Non
 
     tickers = list(extra_tickers) if extra_tickers else writer.get_transaction_tickers()
     summary["portfolio_tickers"] = tickers
+
+    # Eventos corporativos (splits) para cartera + universo. Verificable vía Yahoo events.
+    ca_tickers = sorted(set([t.upper() for t in tickers]) |
+                        {i.ticker.upper() for i in get_universe(include_etfs=True)})
     if dry_run:
+        # En prueba, mostramos los splits detectados (sin escribir) para auditar.
+        ca_dry = fetch_corporate_actions(yahoo, tickers or ca_tickers[:10])
+        summary["corporate_actions_detected"] = ca_dry
         summary["written"] = False
         return summary
+
     if tickers:
         summary.update(identify_portfolio(writer, yahoo, tickers))
+
+    # Escritura best-effort: si la tabla aún no existe (migración pendiente), no rompe.
+    try:
+        ca_rows = fetch_corporate_actions(yahoo, ca_tickers)
+        if ca_rows:
+            writer.upsert("corporate_actions", ca_rows, on_conflict="ticker,ex_date")
+            summary["corporate_actions_written"] = len(ca_rows)
+    except Exception as e:
+        summary["corporate_actions_error"] = f"{type(e).__name__}: {str(e)[:120]}"
+
     summary["written"] = True
     return summary
 

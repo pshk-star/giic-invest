@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Panel, Stat } from "../components/Panel";
 import {
-  getInstruments, getLatestRun, getLatestScan, getPrices, getTransactions, type ScanRow,
+  getCorporateActions, getInstruments, getLatestRun, getLatestScan, getPrices, getTransactions,
+  type ScanRow,
 } from "../data";
 import {
   derivePositions, portfolioTotals, type DerivedPosition, type PortfolioTotals,
@@ -22,8 +23,10 @@ export function CommandCenter() {
       const txns = await getTransactions();
       if (txns.length) {
         const tickers = Array.from(new Set(txns.map((t) => t.ticker.toUpperCase())));
-        const [prices, instruments] = await Promise.all([getPrices(tickers), getInstruments(tickers)]);
-        const pos = derivePositions(txns, prices, instruments);
+        const [prices, instruments, ca] = await Promise.all([
+          getPrices(tickers), getInstruments(tickers), getCorporateActions(tickers),
+        ]);
+        const pos = derivePositions(txns, prices, instruments, ca);
         setPositions(pos);
         setTotals(portfolioTotals(pos));
       }
