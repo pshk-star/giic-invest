@@ -14,7 +14,6 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
 
-import pandas as pd
 
 from ..core.types import ETFHolding, Fundamentals, Instrument, Quote
 from .base import MarketDataProvider
@@ -673,7 +672,8 @@ class EDGARProvider(MarketDataProvider):
     def get_quotes(self, tickers: List[str]) -> Dict[str, Quote]:
         return {}
 
-    def get_price_history(self, ticker, start=None, end=None) -> pd.Series:
+    def get_price_history(self, ticker, start=None, end=None):
+        import pandas as pd        # perezoso: el parser puro (parse_companyfacts) no requiere pandas
         return pd.Series(dtype=float)
 
     def get_etf_holdings(self, etf_ticker: str) -> List[ETFHolding]:
