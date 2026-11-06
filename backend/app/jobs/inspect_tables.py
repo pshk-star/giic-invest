@@ -131,8 +131,21 @@ def run() -> dict:
         except Exception as e:
             hist_validation[t] = {"error": f"{type(e).__name__}: {str(e)[:80]}"}
 
+    # Conteo de predicciones A/B/C (deben permanecer en 309, intactas).
+    pred_count = None
+    try:
+        pr = cli.get(f"{base}/predictions", params={"select": "ticker", "limit": "0"},
+                     headers={"Prefer": "count=exact"})
+        pred_count = pr.headers.get("content-range", "").split("/")[-1]
+    except Exception as e:
+        pred_count = f"error: {type(e).__name__}"
+    # ¿Columnas de identidad presentes? (indica si 0012 ya fue aplicada)
+    instr_cols = sorted(((defs.get("instruments") or {}).get("properties", {}) or {}).keys())
+
     return {
         "tables": out, "fx_rates_rows": fx,
+        "predictions_count": pred_count,
+        "instruments_columns": instr_cols,
         "fundamentals_target": fundamentals,
         "prices_target": prices_now,
         "asml_price_history_latest": asml_hist,
@@ -200,12 +213,30 @@ def identity_diag(tickers: list) -> dict:
         except Exception:
             return None
 
+    def issuer_country(cik):
+        """País del EMISOR desde EDGAR submissions (no la zona horaria de la bolsa)."""
+        if not cik:
+            return {}
+        try:
+            s = cli.get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json").json()
+            addr = ((s.get("addresses", {}) or {}).get("business", {}) or {})
+            return {
+                "stateOfIncorporation": s.get("stateOfIncorporation"),
+                "stateOfIncorporationDescription": s.get("stateOfIncorporationDescription"),
+                "business_stateOrCountry": addr.get("stateOrCountry"),
+                "ein_country_hint": s.get("entityType"),
+            }
+        except Exception as e:
+            return {"error": f"{type(e).__name__}"}
+
     out = {}
     for t in tickers:
         cik = cikmap.get(t.upper())
         rc, tax = report_ccy(cik)
-        out[t] = resolve_identity(t, ymeta=yahoo_meta(t), cik=cik, report_currency=rc,
-                                  taxonomy=tax, figi=figi(t), today=today)
+        r = resolve_identity(t, ymeta=yahoo_meta(t), cik=cik, report_currency=rc,
+                             taxonomy=tax, figi=figi(t), today=today)
+        r["_submissions_country_raw"] = issuer_country(cik)
+        out[t] = r
     return out
 
 
