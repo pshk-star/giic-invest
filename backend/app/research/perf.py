@@ -134,6 +134,20 @@ def block_bootstrap_ci(series: Sequence[float], nb: int = 2000, block: int = 3,
     return (m, lo, hi, round(p, 4))
 
 
+def holm_adjust(pvalues: Dict[str, float]) -> Dict[str, Dict]:
+    """Corrección de Holm-Bonferroni (step-down) con monotonicidad impuesta.
+    Devuelve, por hipótesis, {p_raw, p_holm, rank}. p_holm es no decreciente en el rango."""
+    items = sorted(pvalues.items(), key=lambda kv: kv[1])
+    m = len(items)
+    out: Dict[str, Dict] = {}
+    running = 0.0
+    for rank, (k, p) in enumerate(items):
+        adj = min(1.0, p * (m - rank))
+        running = max(running, adj)          # monotonicidad: no puede decrecer
+        out[k] = {"p_raw": round(p, 4), "p_holm": round(running, 4), "rank": rank + 1}
+    return out
+
+
 def summarize(returns: Sequence[float], ppy: float, turnover: Optional[float] = None,
               cost_bps: Optional[float] = None) -> Dict[str, Optional[float]]:
     return {
@@ -159,7 +173,9 @@ def vs_benchmark(strategy: Sequence[float], benchmark: Sequence[float], ppy: flo
         "tracking_error": (round(te, 4) if te is not None else None),
         "information_ratio": (round(ir, 3) if ir is not None else None),
         "excess_mean_per_period": (round(m, 5) if m is not None else None),
-        "excess_ci90": ([round(lo, 5), round(hi, 5)] if lo is not None else None),
+        "excess_ci90_per_period": ([round(lo, 5), round(hi, 5)] if lo is not None else None),
+        # Anualización LINEAL del IC (mean*ppy); aproximación, no recompone.
+        "excess_ci90_annualized": ([round(lo * ppy, 4), round(hi * ppy, 4)] if lo is not None else None),
         "excess_p_value": p,
-        "defendable_at_90": bool(lo is not None and lo > 0),
+        "defendable_at_90_unadjusted": bool(lo is not None and lo > 0),
     }

@@ -62,9 +62,20 @@ def test_bootstrap_ci_detects_positive_and_zero():
     assert lo2 is not None and lo2 < 0 < hi2
 
 
+def test_holm_monotonic_and_order():
+    adj = perf.holm_adjust({"a": 0.006, "b": 0.007, "c": 0.059, "d": 0.074, "e": 0.347})
+    # 5 pruebas: a -> 0.006*5=0.030 ; b -> 0.007*4=0.028 pero monotónico => >=0.030
+    assert adj["a"]["p_holm"] == 0.03
+    assert adj["b"]["p_holm"] >= adj["a"]["p_holm"]      # no decrece
+    assert adj["c"]["p_holm"] >= adj["b"]["p_holm"]
+    assert adj["e"]["p_holm"] >= adj["d"]["p_holm"]
+    assert adj["a"]["rank"] == 1 and adj["e"]["rank"] == 5
+
+
 def test_summarize_and_vs_benchmark_shapes():
     r = [0.01, 0.02, -0.01, 0.03, 0.00, 0.01, 0.02, -0.02]
     s = perf.summarize(r, 12.6, turnover=0.4, cost_bps=10)
     assert set(["cagr", "sharpe", "sortino", "max_drawdown", "ann_vol"]).issubset(s)
     vb = perf.vs_benchmark(r, [0.005] * len(r), 12.6)
-    assert "information_ratio" in vb and "excess_ci90" in vb and "defendable_at_90" in vb
+    assert "information_ratio" in vb and "excess_ci90_per_period" in vb
+    assert "excess_ci90_annualized" in vb and "defendable_at_90_unadjusted" in vb

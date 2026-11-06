@@ -155,7 +155,11 @@ def run(provider, writer, tickers):
         sp = _spy_ret(spy, d, realize_d)
         ewr = sum(r["fwd_abs"] for r in test) / len(test)
         ew_names = set(r["ticker"] for r in test)
-        ew_to = 1.0 if prev["EW"] is None else len(ew_names ^ prev["EW"]) / max(1, len(ew_names | prev["EW"]))
+        # turnover EW HONESTO: re-igualación de pesos por deriva del periodo + churn de nombres.
+        n = len(test); S = sum(1.0 + r["fwd_abs"] for r in test)
+        drift_to = 0.5 * sum(abs((1.0 + r["fwd_abs"]) / S - 1.0 / n) for r in test) if S > 0 else 0.0
+        churn = 0.0 if prev["EW"] is None else len(ew_names ^ prev["EW"]) / max(1, len(ew_names | prev["EW"]))
+        ew_to = drift_to + 0.5 * churn
         prev["EW"] = ew_names; turn["EW"].append(ew_to)
         # modelos
         baskets = {}
@@ -206,14 +210,11 @@ def run(provider, writer, tickers):
         "B_vs_SPY": perf.vs_benchmark(head["B"], head["SPY"], PPY),
         "A_vs_B": perf.vs_benchmark(head["A"], head["B"], PPY),
     }
-    # corrección por comparaciones múltiples (Holm) sobre los p-valores de exceso
-    pvals = [(k, v["excess_p_value"]) for k, v in comps.items() if v["excess_p_value"] is not None]
-    pvals.sort(key=lambda x: x[1])
-    mtest = len(pvals)
-    holm = {}
-    for rank, (k, p) in enumerate(pvals):
-        adj = min(1.0, p * (mtest - rank))
-        holm[k] = {"p_raw": p, "p_holm": round(adj, 4), "sig_holm_0.10": bool(adj < 0.10)}
+    # corrección por comparaciones múltiples (Holm, monotónico) sobre los p-valores de exceso
+    pvals = {k: v["excess_p_value"] for k, v in comps.items() if v["excess_p_value"] is not None}
+    holm = perf.holm_adjust(pvals)
+    for k in holm:
+        holm[k]["sig_holm_0.10"] = bool(holm[k]["p_holm"] < 0.10)
 
     return {
         "experimental": True, "status": "EVALUACIÓN ECONÓMICA — SIN VALIDAR",
