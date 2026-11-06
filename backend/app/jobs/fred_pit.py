@@ -65,18 +65,24 @@ def parse_fred_observations(payload: dict, series_id: str) -> List[dict]:
     return out
 
 
+class FredError(Exception):
+    pass
+
+
 def fetch_series(client, series_id: str, api_key: str) -> List[dict]:
     params = {
         "series_id": series_id, "api_key": api_key, "file_type": "json",
         "realtime_start": "1776-07-04", "realtime_end": "9999-12-31",
     }
     r = client.get(ALFRED_URL, params=params)
-    r.raise_for_status()
+    if r.status_code != 200:
+        # Diagnóstico SIN filtrar la clave (FRED no la repite en el cuerpo de error).
+        raise FredError(f"HTTP {r.status_code}: {r.text[:180]}")
     return parse_fred_observations(r.json(), series_id)
 
 
 def execute(dry_run: bool = False) -> dict:
-    api_key = os.getenv("FRED_API_KEY", "")
+    api_key = os.getenv("FRED_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("Falta FRED_API_KEY.")
     import httpx
@@ -93,7 +99,7 @@ def execute(dry_run: bool = False) -> dict:
         try:
             rows = fetch_series(client, s["id"], api_key)
         except Exception as e:
-            per[s["id"]] = f"error: {type(e).__name__}"
+            per[s["id"]] = f"error: {str(e)[:200]}"
             continue
         # ¿tiene vintages? (más filas que fechas distintas => hay revisiones)
         dates = {r["obs_date"] for r in rows}
