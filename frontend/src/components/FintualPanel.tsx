@@ -6,6 +6,7 @@ import {
 } from "../data";
 import type { Txn } from "../core/portfolio-tx";
 import { valueFund, type FundMove } from "../core/funds";
+import { FINTUAL_MX_FUNDS } from "../core/fintual-catalog";
 import { money, num } from "../format";
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -142,15 +143,33 @@ export function FintualPanel({ txns, stocksUsd, onChange }:
           ))}
         </div>
         {tab === "fondo" && (
-          <div className="flex flex-wrap items-end gap-2">
-            <input placeholder="Símbolo (ej. FINTUAL-RISK)" value={fForm.symbol}
-              onChange={(e) => setFForm({ ...fForm, symbol: e.target.value })} className={inp} />
-            <input placeholder="Nombre" value={fForm.name}
-              onChange={(e) => setFForm({ ...fForm, name: e.target.value })} className={inp} />
-            <select value={fForm.currency} onChange={(e) => setFForm({ ...fForm, currency: e.target.value })} className={inp}>
-              <option>MXN</option><option>USD</option>
+          <div className="grid gap-2">
+            <select
+              className={inp}
+              value={FINTUAL_MX_FUNDS.find((f) => f.symbol === fForm.symbol) ? fForm.symbol : ""}
+              onChange={(e) => {
+                const f = FINTUAL_MX_FUNDS.find((x) => x.symbol === e.target.value);
+                if (f) setFForm({ symbol: f.symbol, name: f.name, currency: f.currency });
+                else setFForm({ symbol: "", name: "", currency: "MXN" });
+              }}>
+              <option value="">— Elige un fondo Fintual México —</option>
+              {FINTUAL_MX_FUNDS.map((f) => <option key={f.symbol} value={f.symbol}>{f.name} ({f.currency})</option>)}
+              <option value="__custom">Otro (manual)…</option>
             </select>
-            <button onClick={submitFund} className={btn}>Agregar</button>
+            {(() => {
+              const sel = FINTUAL_MX_FUNDS.find((f) => f.symbol === fForm.symbol);
+              return sel?.note ? <p className="text-[11px] text-term-faint">{sel.note}</p> : null;
+            })()}
+            <div className="flex flex-wrap items-end gap-2">
+              <input placeholder="Símbolo" value={fForm.symbol}
+                onChange={(e) => setFForm({ ...fForm, symbol: e.target.value })} className={inp} />
+              <input placeholder="Nombre" value={fForm.name}
+                onChange={(e) => setFForm({ ...fForm, name: e.target.value })} className={inp} />
+              <select value={fForm.currency} onChange={(e) => setFForm({ ...fForm, currency: e.target.value })} className={inp}>
+                <option>MXN</option><option>USD</option>
+              </select>
+              <button onClick={submitFund} className={btn}>Agregar</button>
+            </div>
           </div>
         )}
         {tab === "mov" && (
