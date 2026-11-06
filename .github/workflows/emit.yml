@@ -1,0 +1,47 @@
+name: GIIC emisión prospectiva (A, B)
+
+# Emite predicciones EXPERIMENTALES (origin='production') de los modelos congelados.
+# Idempotente (run_id determinista por fecha). No es recomendación de inversión.
+on:
+  workflow_dispatch:
+    inputs:
+      range:
+        type: string
+        default: "15y"
+      tickers:
+        type: string
+        default: ""
+      dry_run:
+        type: boolean
+        default: false
+  schedule:
+    - cron: "45 22 * * 1-5"   # ~tras el cierre US (lun-vie)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: emit-predictions
+  cancel-in-progress: false
+
+jobs:
+  emit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-job.txt
+      - name: Emitir predicciones
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          ARGS="--range ${{ inputs.range }}"
+          if [ -n "${{ inputs.tickers }}" ]; then ARGS="$ARGS --tickers ${{ inputs.tickers }}"; fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          python -m app.jobs.emit_predictions $ARGS

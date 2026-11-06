@@ -1,0 +1,40 @@
+name: GIIC evaluación posterior
+
+# Evalúa predicciones ya maduradas (evaluate_on <= hoy) -> prediction_outcomes (append-only).
+# No modifica predicciones emitidas.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        type: boolean
+        default: false
+  schedule:
+    - cron: "30 23 * * 1-5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eval-predictions
+  cancel-in-progress: false
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-job.txt
+      - name: Evaluar predicciones maduradas
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          ARGS=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="--dry-run"; fi
+          python -m app.jobs.eval_predictions $ARGS
