@@ -57,6 +57,9 @@ class Fundamentals:
     ticker: str
     pe_ttm: Optional[float] = None
     eps: Optional[float] = None           # EPS reportado (último ejercicio anual, USD por ADR)
+    eps_basis: Optional[str] = None       # base del EPS: reported_annual | ttm | normalized | forward
+    eps_consistent: Optional[bool] = None  # identidad EPS×acciones≈utilidad neta (coherencia moneda/ADR)
+    eps_check_ratio: Optional[float] = None  # EPS×acciones / utilidad neta (≈1 si coherente)
     pe_forward: Optional[float] = None
     ev_ebitda: Optional[float] = None
     fcf_yield: Optional[float] = None     # free cash flow / market cap

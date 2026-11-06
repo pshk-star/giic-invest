@@ -105,42 +105,59 @@ describe("agregación fundamental a cartera (coherente por escenario)", () => {
   });
 });
 
-describe("señal de valor NO circular (auditoría de circularidad)", () => {
+describe("señal DESCRIPTIVA no circular (auditoría)", () => {
   it("rendimiento de beneficios usa el EPS REPORTADO del payload (no el recuperado del múltiplo)", () => {
     // pe_ttm implicaría eps=5 (circular); el eps reportado (10) manda → rend. 10% independiente del múltiplo.
     const r = valuateCompany(input({ price: 100, f: payload({ pe_ttm: 20, eps: 10, eps_growth_yoy: 0.1 }) }));
     expect(r.epsReported).toBeCloseTo(10, 6);
     expect(r.earningsYield).toBeCloseTo(0.10, 6);
-    expect(r.requiredReturn).toBeCloseTo(0.07, 6);
-    expect(r.yieldVerdict).toBe("atractivo");     // 0.10 ≥ 0.07·1.15
+    expect(r.earningsBasis).toBe("reported_annual");
+    expect(r.referenceYield).toBeCloseTo(0.07, 6);
+    expect(r.yieldVsReference).toBe("encima");     // 0.10 > 0.07·1.15 (sólo posición, no cara/barata)
   });
 
-  it("sin eps en el payload, recupera un rendimiento aproximado desde precio/PE (flag circularidad en límites)", () => {
+  it("no hay decisión de valoración lista (decisionReady=false) y se diferencian las bases de EPS", () => {
+    const r = valuateCompany(input({ price: 100, f: payload({ pe_ttm: 20, eps: 10, eps_growth_yoy: 0.1 }) }));
+    expect(r.decisionReady).toBe(false);
+    expect(r.decisionBlock!.toLowerCase()).toMatch(/ttm|forward|normaliz/);
+    expect(r.ttmEps).toBeNull();
+    expect(r.forwardEps).toBeNull();
+    expect(r.normalizedEps).toBeNull();
+  });
+
+  it("sin eps en el payload, recupera un rendimiento aproximado desde precio/PE y marca circularidad", () => {
     const r = valuateCompany(input({ price: 100, f: payload({ pe_ttm: 25, eps_growth_yoy: 0.1 }) }));
     expect(r.earningsYield).toBeCloseTo(0.04, 6); // eps=100/25=4 → 4%
-    expect(r.yieldVerdict).toBe("caro");          // 0.04 < 0.07
+    expect(r.yieldVsReference).toBe("debajo");
     expect(r.limitations.join(" ").toLowerCase()).toContain("circular");
   });
 
-  it("verdict 'razonable' cuando el rendimiento iguala pero no supera el exigido con margen", () => {
-    const r = valuateCompany(input({ price: 100, f: payload({ pe_ttm: 20, eps: 7.5, eps_growth_yoy: 0.1 }) }));
-    expect(r.yieldVerdict).toBe("razonable");     // 0.075 ≥ 0.07 pero < 0.0805
+  it("posición 'cerca' cuando el rendimiento está dentro de la banda de la referencia", () => {
+    const r = valuateCompany(input({ price: 100, f: payload({ pe_ttm: 20, eps: 7, eps_growth_yoy: 0.1 }) }));
+    expect(r.yieldVsReference).toBe("cerca");     // 0.07 dentro de ±15% de 0.07
   });
 
-  it("marca beneficio cíclico/extraordinario cuando |crecimiento EPS| ≥ 75%", () => {
+  it("ALERTA de ciclicidad cuando |crecimiento EPS| ≥ 75% (no afirma pico)", () => {
     const r = valuateCompany(input({ price: 100, f: payload({ pe_ttm: 10, eps: 10, eps_growth_yoy: 8.8 }) }));
-    expect(r.cyclical).toBe(true);
-    expect(r.cyclicalNote!.toLowerCase()).toMatch(/cíclico|extraordinario|pico/);
+    expect(r.cyclicalAlert).toBe(true);
+    expect(r.cyclicalNote!.toLowerCase()).toMatch(/ciclicidad|extraordinario|alerta/);
+    expect(r.cyclicalNote!.toLowerCase()).toContain("no se afirma");  // disclaima el pico explícitamente
   });
 
-  it("no marca cíclico con crecimiento moderado", () => {
+  it("no marca alerta con crecimiento moderado", () => {
     const r = valuateCompany(input({ price: 100, f: payload({ pe_ttm: 20, eps: 6, eps_growth_yoy: 0.2 }) }));
-    expect(r.cyclical).toBe(false);
+    expect(r.cyclicalAlert).toBe(false);
   });
 
-  it("distingue decisión del motor de recomendación validada (decisionBasis)", () => {
+  it("refleja inconsistencia EPS del backend en consistencyNotes", () => {
+    const r = valuateCompany(input({ price: 100, f: payload({ pe_ttm: 20, eps: 6, eps_growth_yoy: 0.1, eps_consistent: false, eps_check_ratio: 2.3 }) }));
+    expect(r.epsConsistent).toBe(false);
+    expect(r.consistencyNotes.join(" ").toLowerCase()).toContain("no cuadra");
+  });
+
+  it("marco: señal preliminar ≠ recomendación validada (decisionBasis)", () => {
     const r = valuateCompany(input({ price: 100, f: payload({ pe_ttm: 20, eps: 6, eps_growth_yoy: 0.1 }) }));
-    expect(r.decisionBasis.toLowerCase()).toContain("no es una recomendación");
+    expect(r.decisionBasis.toLowerCase()).toMatch(/no es valoración|no es.*recomendaci|preliminar/);
     expect(r.priceAnchored).toBe(true);
   });
 });

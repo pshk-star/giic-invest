@@ -27,8 +27,8 @@ OPP_TICKERS = ["V", "MU", "LLY", "MA", "PG"]
 # este espejo es solo evidencia (mismos números y umbrales).
 _GROWTH_FLOOR, _GROWTH_CAP, _GROWTH_STEP = -0.15, 0.35, 0.05
 _STALE_SOFT, _STALE_HARD = 400, 550
-_REQUIRED_RETURN = 0.07          # retorno exigido de referencia (supuesto, = fundamental.ts)
-_YIELD_ATTRACTIVE = 1.15
+_REFERENCE_YIELD = 0.07          # rendimiento de referencia DESCRIPTIVO (= fundamental.ts)
+_REFERENCE_BAND = 0.15           # ±15% alrededor de la referencia = "cerca"
 _CYCLICAL_GROWTH_ABS = 0.75
 
 
@@ -51,9 +51,10 @@ def _is_fin(x):
 
 
 def opp_decision(payload, price, price_as_of):
-    """Espejo del motor corregido: decisión por RENDIMIENTO reportado (no circular) vs
-    retorno exigido, no por el crecimiento proyectado. Incluye la proyección circular
-    sólo como contexto, flag cíclico y distinción brecha-de-datos vs poco atractivo."""
+    """Espejo del motor DEGRADADO: NO emite COMPRAR/VENDER (sin valoración fundada).
+    Muestra señales descriptivas (rendimiento de beneficios/FCF, posición vs una
+    referencia que NO implica cara/barata), alerta de ciclicidad, consistencia de EPS,
+    y distingue brecha-de-datos (INVESTIGAR) de en-observación (ESPERAR)."""
     f = payload or {}
     if not _is_fin(price) or price <= 0:
         return {"action": "INVESTIGAR", "available": False, "reason": "brecha de datos: sin precio actual"}
@@ -84,28 +85,30 @@ def opp_decision(payload, price, price_as_of):
                 "fund_as_of": f.get("as_of"), "fund_age_days": age}
 
     yld = earnings_yield if earnings_yield is not None else fcf_yield
-    yield_verdict = "n/d" if yld is None \
-        else "atractivo" if yld >= _REQUIRED_RETURN * _YIELD_ATTRACTIVE \
-        else "razonable" if yld >= _REQUIRED_RETURN else "caro"
-    cyclical = _is_fin(egy) and abs(egy) >= _CYCLICAL_GROWTH_ABS
+    yield_vs_reference = "n/d" if yld is None \
+        else "encima" if yld >= _REFERENCE_YIELD * (1 + _REFERENCE_BAND) \
+        else "debajo" if yld <= _REFERENCE_YIELD * (1 - _REFERENCE_BAND) else "cerca"
+    cyclical_alert = _is_fin(egy) and abs(egy) >= _CYCLICAL_GROWTH_ABS
 
-    if quality == "baja":
-        action = "INVESTIGAR"   # brecha/calidad, no veredicto
-    else:
-        favorable = yield_verdict == "atractivo" and quality == "alta" and not cyclical
-        action = "COMPRAR" if favorable else "ESPERAR"   # room=True (no es tenencia)
+    # NO se emite COMPRAR: no hay valoración fundada. Con datos → ESPERAR (señal en observación);
+    # brecha/calidad baja → INVESTIGAR. El rendimiento vs referencia NO implica cara/barata.
+    action = "INVESTIGAR" if quality == "baja" else "ESPERAR"
     return {
-        "action": action, "available": available, "method": method, "quality": quality,
+        "action": action, "decision_ready": False,
+        "decision_block": "sin valoración fundada (faltan TTM/forward/múltiplos históricos/normalizada)",
+        "available": available, "method": method, "quality": quality,
         "price": price, "price_as_of": price_as_of,
-        "eps_reported": eps_rep, "earnings_yield": round(earnings_yield, 4) if earnings_yield is not None else None,
+        "eps_reported": eps_rep, "earnings_basis": f.get("eps_basis"),
+        "eps_consistent": f.get("eps_consistent"), "eps_check_ratio": f.get("eps_check_ratio"),
+        "earnings_yield": round(earnings_yield, 4) if earnings_yield is not None else None,
         "fcf_yield": round(fcf_yield, 4) if fcf_yield is not None else None,
-        "required_return": _REQUIRED_RETURN, "yield_verdict": yield_verdict,
-        "cyclical_flag": cyclical, "eps_growth_yoy_raw": egy, "rev_growth_yoy_raw": rgy,
+        "reference_yield": _REFERENCE_YIELD, "yield_vs_reference": yield_vs_reference,
+        "cyclical_alert": cyclical_alert, "eps_growth_yoy_raw": egy, "rev_growth_yoy_raw": rgy,
         "pe_ttm": pe, "projection_12m_circular": round(central_up, 4),
         "roe": f.get("roe"), "net_margin": f.get("net_margin"),
         "fund_as_of": f.get("as_of"), "fund_age_days": age,
         "taxonomy": f.get("taxonomy"), "currency": f.get("currency"),
-        "note": "La decisión se apoya en el rendimiento reportado vs exigido; la proyección 12m es circular (sólo contexto).",
+        "note": "Señal DESCRIPTIVA, no decisión. El rendimiento vs referencia no implica cara/barata; la proyección 12m es circular (contexto).",
     }
 
 RLS_SQL = (

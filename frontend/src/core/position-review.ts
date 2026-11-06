@@ -55,7 +55,7 @@ export interface PositionReview {
 
 const HIGH_RISK = 0.45; // contribución al riesgo dominante
 const pctS = (x: number) => `${(x * 100).toFixed(1)}%`;
-const PRELIM = "La proyección de precio a 12m (EPS×P/E manteniendo el múltiplo) es CIRCULAR respecto al precio: NO es un valor razonable ni un descuento. La decisión se apoya en el rendimiento de beneficios/FCF reportado frente a un retorno exigido explícito (criba, no valoración), nunca en esa proyección.";
+const PRELIM = "La proyección de precio a 12m (EPS×P/E con múltiplo constante) es CIRCULAR y no es valoración. El rendimiento de beneficios/FCF es una señal DESCRIPTIVA (no implica cara/barata). Sin valoración fundada (TTM/forward/múltiplos históricos/normalizada) NO se emiten compras ni ventas por valoración; sólo gestión de riesgo por concentración.";
 
 function reviewEquity(it: PositionReviewInput): PositionReview {
   const v = it.valuation;
@@ -89,12 +89,8 @@ function reviewEquity(it: PositionReviewInput): PositionReview {
   }
 
   const central = v.scenarios.find((s) => s.key === "central");
-  const yld = v.earningsYield ?? v.fcfYield;
-  const yldStr = v.earningsYield != null ? `rend. beneficios ${pctS(v.earningsYield)}`
+  const yldStr = v.earningsYield != null ? `rend. beneficios ${pctS(v.earningsYield)} (EPS anual)`
     : v.fcfYield != null ? `rend. FCF ${pctS(v.fcfYield)}` : "rend. n/d";
-  // Señal NO circular (del núcleo): rendimiento reportado vs retorno exigido.
-  const cheap = v.yieldVerdict === "atractivo" && !v.cyclical;
-  const rich = v.yieldVerdict === "caro";
   const overW = it.weight > it.maxWeightAsset;
   const overEff = it.effectiveWeight != null && it.effectiveWeight > it.maxWeightAsset;
   const highRisk = it.riskPct != null && it.riskPct > HIGH_RISK;
@@ -102,86 +98,54 @@ function reviewEquity(it: PositionReviewInput): PositionReview {
   const q = v.quality;
 
   base.valuationLine =
-    `Señal de valor (no circular): ${yldStr} vs exigido ${pctS(v.requiredReturn)} → ${v.yieldVerdict}. ` +
-    `Calidad ${q}${v.cyclical ? "; beneficio potencialmente cíclico/extraordinario" : ""}. ` +
+    `Señal DESCRIPTIVA (no decisión): ${yldStr}, ${v.yieldVsReference} de la referencia ${pctS(v.referenceYield)} — NO implica cara/barata. ` +
+    `Calidad ${q}${v.cyclicalAlert ? "; ALERTA de ciclicidad/efecto extraordinario" : ""}. ` +
     `(Proyección 12m circular: ${central && central.upside >= 0 ? "+" : ""}${central ? pctS(central.upside) : "n/d"} — sólo contexto.)`;
   const commonRisks = [PRELIM];
-  const commonInval = ["Cambia si se actualizan los fundamentales o el precio se mueve materialmente."];
+  const commonInval = ["Cambia cuando exista valoración fundada (TTM/forward/múltiplos históricos/normalizada) o se actualicen los fundamentales."];
 
-  // Calidad baja -> REVISAR (no decisiones fuertes con datos débiles, punto 1).
-  if (q === "baja") {
+  // REVISAR: datos débiles, ALERTA de ciclicidad, o inconsistencia EPS → requiere revisión humana,
+  // nunca una acción de compra/venta por valoración (no la hay).
+  if (q === "baja" || v.cyclicalAlert || v.epsConsistent === false) {
+    const why = q === "baja" ? "calidad de datos baja"
+      : v.cyclicalAlert ? "alerta de ciclicidad/efecto extraordinario (revisar beneficios normalizados)"
+      : "posible inconsistencia EPS/acciones/ADR";
     return {
       ...base, action: "REVISAR", evidenceQuality: "baja",
-      rationale: [`${effStr} ${riskStr}`, "Calidad de datos baja: no se emite acción fuerte.", PRELIM],
+      rationale: [`${effStr} ${riskStr}`, `Requiere revisión (${why}): no se emite acción por valoración.`, PRELIM],
       risks: commonRisks, whatInvalidates: commonInval, beforeAfter: "Sin cambios propuestos.",
-      severity: 40 + it.weight * 30,
+      severity: 45 + it.weight * 30,
     };
   }
 
-  // VENDER: sobrevaloración clara + corroboración de riesgo/concentración + datos de alta calidad.
-  if (rich && concentrated && q === "alta") {
-    const amount = -it.marketValue;
-    return {
-      ...base, action: "VENDER", evidenceQuality: "alta",
-      targetWeight: 0, amountUsd: Math.round(amount),
-      rationale: [
-        `Caro sobre beneficios actuales: ${yldStr} por debajo del retorno exigido ${pctS(v.requiredReturn)} (${v.yieldVerdict}).`,
-        `Corroborado por ${overW || overEff ? "concentración" : "riesgo"}: ${effStr} ${riskStr}`,
-        "Evidencia convergente (valoración + riesgo), no una sola señal.",
-      ],
-      risks: [...commonRisks, "Vender genera impuestos/costos y renuncia al recorrido si ejecuta mejor de lo supuesto."],
-      whatInvalidates: [...commonInval, "No aplica si el rendimiento reportado sube por encima del exigido o mejora la calidad de datos."],
-      beforeAfter: `Liberaría ${pctS(it.weight)} de peso directo${it.riskPct != null ? ` y ${pctS(it.riskPct)} del riesgo` : ""}.`,
-      severity: 100 + it.weight * 60,
-    };
-  }
-
-  // REDUCIR: concentración/riesgo + valoración NO barata (gestión de riesgo, nunca solo concentración).
-  if (concentrated && !cheap) {
+  // REDUCIR: SÓLO gestión de riesgo por concentración/riesgo (reversible), INDEPENDIENTE de valoración.
+  // No se vende por valoración: no existe una valoración fundada para esa decisión.
+  if (concentrated) {
     const cap = it.maxWeightAsset;
-    const targetVal = cap * it.totalValue;
-    const amount = Math.min(0, targetVal - it.marketValue);
+    const amount = Math.min(0, cap * it.totalValue - it.marketValue);
     return {
       ...base, action: "REDUCIR", evidenceQuality: q,
       targetWeight: cap, amountUsd: Math.round(amount),
       rationale: [
         overW ? `Peso directo ${pctS(it.weight)} > límite ${pctS(cap)}.` : overEff ? `Exposición efectiva ${pctS(it.effectiveWeight!)} > límite ${pctS(cap)} (${effStr}).` : `${riskStr} supera el umbral de concentración de riesgo.`,
-        `El rendimiento reportado no es atractivo (${yldStr} vs ${pctS(v.requiredReturn)} → ${v.yieldVerdict}), así que recortar no sacrifica una señal de valor clara.`,
-        "Es gestión de riesgo, reversible; no es un juicio de que la empresa sea mala.",
+        "Gestión de RIESGO (concentración), reversible — NO es un juicio de valoración ni de que la empresa sea mala.",
+        "No depende de si está cara o barata: no hay valoración fundada para decidir eso.",
       ],
-      risks: [...commonRisks, "Recortar un ganador reduce el upside si sigue subiendo; considera impuestos/costos."],
-      whatInvalidates: [...commonInval, `No aplica si bajas por debajo del límite o si la valoración pasa a barata.`],
+      risks: [...commonRisks, "Recortar un ganador reduce el recorrido si sigue subiendo; considera impuestos/costos."],
+      whatInvalidates: [...commonInval, "No aplica si bajas por debajo del límite."],
       beforeAfter: `Llevaría el peso directo de ${pctS(it.weight)} a ${pctS(cap)}${it.riskPct != null ? `; reduce su ${pctS(it.riskPct)} de aporte al riesgo` : ""}.`,
       severity: (highRisk ? 90 : 78) + it.weight * 50,
     };
   }
 
-  // AUMENTAR: barata + con espacio + alta calidad (con la advertencia de modelo preliminar).
-  if (cheap && !concentrated && q === "alta" && it.weight < it.maxWeightAsset) {
-    const target = Math.min(it.maxWeightAsset, it.weight + 0.05);
-    const amount = Math.max(0, (target - it.weight) * it.totalValue);
-    return {
-      ...base, action: "AUMENTAR", evidenceQuality: "media",
-      targetWeight: target, amountUsd: Math.round(amount),
-      rationale: [
-        `Rendimiento reportado atractivo (${yldStr} supera el exigido ${pctS(v.requiredReturn)} con margen) — señal independiente del precio, no el múltiplo.`,
-        `Hay espacio bajo tu límite por activo (${effStr}).`,
-        "Aumento modesto (hasta +5pp); NO se dimensiona por score ni por la proyección circular.",
-      ],
-      risks: [...commonRisks, "Una criba de rendimiento preliminar no justifica una apuesta grande; escalona la entrada."],
-      whatInvalidates: [...commonInval, "No aplica si el rendimiento cae por debajo del exigido, aparece señal cíclica, o rompe tu límite por activo/sector."],
-      beforeAfter: `Subiría el peso directo de ${pctS(it.weight)} a ${pctS(target)}.`,
-      severity: 60 + (yld != null ? (yld - v.requiredReturn) * 300 : 0) + it.weight * 20,
-    };
-  }
-
-  // MANTENER por defecto.
+  // MANTENER por defecto: hay datos y señales descriptivas, pero NO hay valoración fundada para
+  // comprar ni vender. AUMENTAR/VENDER por valoración quedan desactivados hasta integrar mejores datos.
   return {
     ...base, action: "MANTENER", evidenceQuality: q,
     rationale: [
-      `Dentro de límites y sin señal convergente para actuar (${yldStr} → ${v.yieldVerdict}).`,
+      `Dentro de límites; sin valoración fundada no se decide comprar ni vender (${yldStr}, ${v.yieldVsReference} de la referencia — descriptivo).`,
       `${effStr} ${riskStr}`,
-      cheap ? "Señal de valor atractiva, pero ya tiene peso adecuado o faltan condiciones para aumentar con convicción." : "Valoración y riesgo no piden cambios hoy.",
+      "Las decisiones por valoración esperan datos fundados (beneficios TTM/normalizados, estimaciones forward, múltiplos históricos).",
     ],
     risks: commonRisks, whatInvalidates: commonInval,
     beforeAfter: "Sin cambios propuestos.",

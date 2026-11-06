@@ -51,16 +51,24 @@ export interface CompanyValuation {
   dataSources: string[];
   limitations: string[];
   unavailableReason: string | null;
-  // --- Señal de valor NO circular (independiente del múltiplo) ---
-  epsReported: number | null;      // EPS reportado (USD/ADR, último ejercicio) usado en el rendimiento
-  earningsYield: number | null;    // EPS reportado / precio actual (no circular)
-  fcfYield: number | null;         // FCF / market cap (reportado)
-  requiredReturn: number;          // retorno exigido de referencia (supuesto explícito)
-  yieldVerdict: "atractivo" | "razonable" | "caro" | "n/d";
-  cyclical: boolean;               // beneficio extraordinario / rebote cíclico detectado
+  // --- SEÑALES DESCRIPTIVAS (no circulares, NO son valoración ni decisión) ---
+  epsReported: number | null;      // EPS reportado (USD/ADR, último ejercicio anual)
+  earningsBasis: "reported_annual" | "ttm" | "normalized" | "forward" | null;  // base del EPS usado
+  ttmEps: number | null;           // (arquitectura) EPS TTM — pendiente de proveedor
+  normalizedEps: number | null;    // (arquitectura) EPS normalizado/through-cycle — pendiente
+  forwardEps: number | null;       // (arquitectura) EPS forward (consenso) — pendiente
+  earningsYield: number | null;    // EPS reportado / precio actual (descriptivo)
+  fcfYield: number | null;         // FCF / market cap (reportado, descriptivo)
+  referenceYield: number;          // rendimiento de referencia DESCRIPTIVO (no umbral de decisión)
+  yieldVsReference: "encima" | "cerca" | "debajo" | "n/d";  // posición vs referencia; NO implica cara/barata
+  cyclicalAlert: boolean;          // ALERTA de posible ciclicidad/efecto extraordinario (no prueba de pico)
   cyclicalNote: string | null;
+  epsConsistent: boolean | null;   // identidad EPS×acciones≈utilidad neta (coherencia moneda/ADR)
+  consistencyNotes: string[];
   priceAnchored: boolean;          // los escenarios se anclan al precio/múltiplo actual (circular)
-  decisionBasis: string;           // la decisión del motor ≠ recomendación validada
+  decisionReady: boolean;          // ¿hay valoración FUNDADA para decidir? (hoy false)
+  decisionBlock: string | null;    // por qué no hay decisión de inversión todavía
+  decisionBasis: string;           // marco: señal preliminar ≠ recomendación validada
 }
 
 // --- Agregación a nivel cartera (Fase 3) -------------------------------------
@@ -128,14 +136,18 @@ const PE_COMPRESS = 0.80;   // conservador: múltiplo -20%
 const PE_EXPAND = 1.15;     // favorable: múltiplo +15%
 const GROWTH_FLOOR = -0.15, GROWTH_CAP = 0.35;
 
-// Señal de valor NO circular: rendimiento de beneficios/FCF reportado vs un retorno
-// exigido explícito (SUPUESTO, no un valor razonable). Es una CRIBA, no una valoración.
-const REQUIRED_RETURN = 0.07;            // retorno exigido de referencia (supuesto visible)
-const YIELD_ATTRACTIVE = 1.15;           // el rendimiento debe superar el umbral +15% para "atractivo"
-const CYCLICAL_GROWTH_ABS = 0.75;        // |crecimiento EPS YoY| ≥ 75% ⇒ beneficio extraordinario/cíclico
+// SEÑAL DESCRIPTIVA (no decisión): el rendimiento de beneficios/FCF reportado se
+// compara con un rendimiento de REFERENCIA sólo para situarlo, NUNCA para etiquetar
+// la acción como cara o barata (eso exige crecimiento, riesgo, calidad y sector).
+const REFERENCE_YIELD = 0.07;            // referencia descriptiva visible (no umbral de decisión)
+const REFERENCE_BAND = 0.15;            // ±15% alrededor de la referencia = "cerca"
+const CYCLICAL_GROWTH_ABS = 0.75;        // |crec. EPS YoY| ≥ 75% ⇒ ALERTA de ciclicidad/efecto extraordinario
 const DECISION_BASIS =
-  "Clasificación operativa del motor sobre datos limitados (EDGAR, último ejercicio anual). " +
-  "NO es una recomendación financiera validada ni un valor razonable: ver limitaciones.";
+  "Señal PRELIMINAR descriptiva sobre datos limitados (EDGAR, último ejercicio anual). " +
+  "NO es valoración, ni recomendación, ni base para decidir compra/venta.";
+const DECISION_BLOCK =
+  "Sin valoración fundada: faltan beneficios TTM, estimaciones forward, múltiplos históricos " +
+  "y beneficios normalizados/through-cycle. Hasta integrarlos, el motor sólo describe señales.";
 
 export function valuateCompany(input: FundamentalInput): CompanyValuation {
   const { ticker, name, sector, price, priceAsOf, f } = input;
@@ -145,9 +157,10 @@ export function valuateCompany(input: FundamentalInput): CompanyValuation {
     epsTtm: null, peUsed: null, growthCentral: null,
     scenarios: [], sensitivity: [], quality: "baja",
     dataSources: [], limitations: [], unavailableReason: null,
-    epsReported: null, earningsYield: null, fcfYield: null,
-    requiredReturn: REQUIRED_RETURN, yieldVerdict: "n/d",
-    cyclical: false, cyclicalNote: null, priceAnchored: true, decisionBasis: DECISION_BASIS,
+    epsReported: null, earningsBasis: null, ttmEps: null, normalizedEps: null, forwardEps: null,
+    earningsYield: null, fcfYield: null, referenceYield: REFERENCE_YIELD, yieldVsReference: "n/d",
+    cyclicalAlert: false, cyclicalNote: null, epsConsistent: null, consistencyNotes: [],
+    priceAnchored: true, decisionReady: false, decisionBlock: DECISION_BLOCK, decisionBasis: DECISION_BASIS,
   };
 
   if (price == null || price <= 0) {
@@ -241,24 +254,32 @@ export function valuateCompany(input: FundamentalInput): CompanyValuation {
       ? [`Contraste FCF: rendimiento de flujo de caja libre ${(f.fcf_yield * 100).toFixed(1)}% (contexto, no valoración primaria).`]
       : [];
 
-    // --- SEÑAL DE VALOR NO CIRCULAR: rendimiento de beneficios reportado vs retorno exigido ---
-    // EPS reportado (preferido del payload; si falta, se recupera de precio/pe como aproximación).
+    // --- SEÑAL DESCRIPTIVA (no circular, NO decisión) ---
+    // EPS reportado (anual). earnings_basis = reported_annual; TTM/normalizado/forward pendientes.
     const epsReported = (f.eps != null && isFinite(f.eps)) ? f.eps : (pe > 0 ? price / pe : null);
     const earningsYield = (epsReported != null && price > 0) ? epsReported / price : null;
     const fcfYield = (f.fcf_yield != null && isFinite(f.fcf_yield)) ? f.fcf_yield : null;
     const yld = earningsYield ?? fcfYield;
-    const yieldVerdict: CompanyValuation["yieldVerdict"] = yld == null ? "n/d"
-      : yld >= REQUIRED_RETURN * YIELD_ATTRACTIVE ? "atractivo"
-      : yld >= REQUIRED_RETURN ? "razonable" : "caro";
-    const cyclical = f.eps_growth_yoy != null && Math.abs(f.eps_growth_yoy) >= CYCLICAL_GROWTH_ABS;
-    const cyclicalNote = cyclical
-      ? `Crecimiento de EPS interanual ${((f.eps_growth_yoy ?? 0) * 100).toFixed(0)}%: probable beneficio extraordinario o rebote cíclico. El rendimiento de beneficios puede estar calculado sobre un pico y no ser sostenible — no apto para sustentar COMPRAR.`
+    // Posición vs referencia — SÓLO descriptiva, NO implica cara/barata (ignora crecimiento, riesgo, calidad, sector).
+    const yieldVsReference: CompanyValuation["yieldVsReference"] = yld == null ? "n/d"
+      : yld >= REFERENCE_YIELD * (1 + REFERENCE_BAND) ? "encima"
+      : yld <= REFERENCE_YIELD * (1 - REFERENCE_BAND) ? "debajo" : "cerca";
+    // Variación extrema de EPS = ALERTA de posible ciclicidad/efecto extraordinario (NO prueba de pico).
+    const cyclicalAlert = f.eps_growth_yoy != null && Math.abs(f.eps_growth_yoy) >= CYCLICAL_GROWTH_ABS;
+    const cyclicalNote = cyclicalAlert
+      ? `ALERTA: crecimiento de EPS interanual ${((f.eps_growth_yoy ?? 0) * 100).toFixed(0)}% — posible ciclicidad o efecto extraordinario. Requiere revisar beneficios normalizados antes de interpretar el rendimiento; NO se afirma que estén en un máximo.`
       : null;
+    // Consistencia EPS/precio/moneda/ADR (del backend si está disponible).
+    const consistencyNotes: string[] = [];
+    if (f.eps_consistent === false) consistencyNotes.push(`EPS×acciones no cuadra con la utilidad neta (ratio ${f.eps_check_ratio ?? "n/d"}): posible desajuste de acciones/ADR/periodo — tratar el rendimiento con cautela.`);
+    if (f.currency && f.currency !== "USD") consistencyNotes.push(`Fundamentales en ${f.currency} convertidos a USD (EPS por ADR); verificar FX/relación ADR antes de comparar con el precio.`);
     limitations.push(
-      `Los escenarios son PROYECCIÓN DE PRECIO a 12m ancladas al precio y múltiplo actuales (circular); el central equivale a proyectar el crecimiento de EPS sobre el precio de hoy. NO son valor razonable ni descuento.`,
-      `Señal de valor NO circular (criba, no valoración): rendimiento de beneficios ${earningsYield != null ? (earningsYield * 100).toFixed(1) + "%" : "n/d"}${fcfYield != null ? ` / FCF ${(fcfYield * 100).toFixed(1)}%` : ""} vs retorno exigido ${(REQUIRED_RETURN * 100).toFixed(0)}% (supuesto) → ${yieldVerdict}. Sobre beneficios del último ejercicio, sin normalizar.`,
+      `Los escenarios son PROYECCIÓN DE PRECIO a 12m ancladas al precio y múltiplo actuales (circular); NO son valor razonable ni descuento.`,
+      `Señal DESCRIPTIVA (no valoración, no decisión): rendimiento de beneficios ${earningsYield != null ? (earningsYield * 100).toFixed(1) + "%" : "n/d"}${fcfYield != null ? ` / FCF ${(fcfYield * 100).toFixed(1)}%` : ""} sobre EPS ANUAL reportado${f.as_of ? ` (${f.as_of})` : ""}. Referencia ${(REFERENCE_YIELD * 100).toFixed(0)}% sólo para situar; NO implica que la acción sea cara o barata (ignora crecimiento, riesgo, calidad y sector).`,
+      `Bases de beneficio: se usa ANUAL reportado; TTM, normalizado/through-cycle y forward NO disponibles (pendientes del proveedor). No se mezclan periodos.`,
     );
-    if (cyclical && cyclicalNote) limitations.unshift(cyclicalNote);
+    if (cyclicalNote) limitations.unshift(cyclicalNote);
+    consistencyNotes.forEach((n) => limitations.push(n));
 
     return {
       ...base, available: true, method: "pe_eps",
@@ -267,8 +288,12 @@ export function valuateCompany(input: FundamentalInput): CompanyValuation {
       dataSources: [srcPrice, srcFund, ...fcfCross],
       limitations,
       unavailableReason: null,
-      epsReported, earningsYield, fcfYield, requiredReturn: REQUIRED_RETURN,
-      yieldVerdict, cyclical, cyclicalNote, priceAnchored: true, decisionBasis: DECISION_BASIS,
+      epsReported, earningsBasis: (f.eps_basis as CompanyValuation["earningsBasis"]) ?? "reported_annual",
+      ttmEps: null, normalizedEps: null, forwardEps: null,
+      earningsYield, fcfYield, referenceYield: REFERENCE_YIELD, yieldVsReference,
+      cyclicalAlert, cyclicalNote,
+      epsConsistent: f.eps_consistent ?? null, consistencyNotes,
+      priceAnchored: true, decisionReady: false, decisionBlock: DECISION_BLOCK, decisionBasis: DECISION_BASIS,
     };
   }
 
@@ -289,8 +314,8 @@ export function valuateCompany(input: FundamentalInput): CompanyValuation {
       scenByYield("central", y, "se mantiene el rendimiento FCF actual"),
       scenByYield("favorable", y * 0.85, "se acepta −15% de rendimiento (múltiplo más alto)"),
     ];
-    const fcfVerdict: CompanyValuation["yieldVerdict"] =
-      y >= REQUIRED_RETURN * YIELD_ATTRACTIVE ? "atractivo" : y >= REQUIRED_RETURN ? "razonable" : "caro";
+    const fcfVsRef: CompanyValuation["yieldVsReference"] =
+      y >= REFERENCE_YIELD * (1 + REFERENCE_BAND) ? "encima" : y <= REFERENCE_YIELD * (1 - REFERENCE_BAND) ? "debajo" : "cerca";
     return {
       ...base, available: true, method: "fcf_fallback",
       epsTtm: null, peUsed: null, growthCentral: null,
@@ -299,12 +324,13 @@ export function valuateCompany(input: FundamentalInput): CompanyValuation {
       limitations: [
         "Sin P/E positivo (pérdidas o sin EPS en cobertura): se usa rendimiento FCF como respaldo.",
         "Los escenarios de este método son CIRCULARES respecto al precio (valor = precio × y/y_exigido); calidad baja. Requiere DCF con historial de FCF (pendiente).",
-        `Señal no circular disponible: rendimiento FCF ${(y * 100).toFixed(1)}% vs exigido ${(REQUIRED_RETURN * 100).toFixed(0)}% → ${fcfVerdict}. Sin EPS, no hay rendimiento de beneficios.`,
+        `Señal DESCRIPTIVA: rendimiento FCF ${(y * 100).toFixed(1)}% vs referencia ${(REFERENCE_YIELD * 100).toFixed(0)}% (${fcfVsRef}). Sin EPS no hay rendimiento de beneficios; NO implica cara/barata.`,
       ],
       unavailableReason: null,
-      epsReported: null, earningsYield: null, fcfYield: y, requiredReturn: REQUIRED_RETURN,
-      yieldVerdict: fcfVerdict, cyclical: false, cyclicalNote: null,
-      priceAnchored: true, decisionBasis: DECISION_BASIS,
+      epsReported: null, earningsBasis: null, ttmEps: null, normalizedEps: null, forwardEps: null,
+      earningsYield: null, fcfYield: y, referenceYield: REFERENCE_YIELD, yieldVsReference: fcfVsRef,
+      cyclicalAlert: false, cyclicalNote: null, epsConsistent: f.eps_consistent ?? null, consistencyNotes: [],
+      priceAnchored: true, decisionReady: false, decisionBlock: DECISION_BLOCK, decisionBasis: DECISION_BASIS,
     };
   }
 

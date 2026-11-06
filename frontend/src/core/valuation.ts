@@ -6,6 +6,9 @@
 export interface FundamentalsPayload {
   pe_ttm: number | null;
   eps?: number | null;            // EPS reportado (USD/ADR) → rendimiento de beneficios no circular
+  eps_basis?: string | null;      // reported_annual | ttm | normalized | forward
+  eps_consistent?: boolean | null; // identidad EPS×acciones≈utilidad neta
+  eps_check_ratio?: number | null; // EPS×acciones / utilidad neta (≈1 si coherente)
 
   pe_forward: number | null;      // no disponible gratis (EDGAR) -> null
   ev_ebitda: number | null;       // no disponible gratis -> null

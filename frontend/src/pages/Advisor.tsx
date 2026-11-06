@@ -22,10 +22,10 @@ import {
 } from "../core/opportunities";
 import { money, pct } from "../format";
 
-const OPP_STYLE: Record<OpportunityDecision["action"], { tone: string; bg: string }> = {
-  COMPRAR: { tone: "text-term-good", bg: "bg-term-good/10" },
-  ESPERAR: { tone: "text-term-warn", bg: "bg-term-warn/10" },
-  INVESTIGAR: { tone: "text-term-muted", bg: "bg-term-panel2" },
+const OPP_STYLE: Record<OpportunityDecision["action"], { tone: string; bg: string; label: string }> = {
+  COMPRAR: { tone: "text-term-good", bg: "bg-term-good/10", label: "COMPRAR" },
+  ESPERAR: { tone: "text-term-warn", bg: "bg-term-warn/10", label: "EN OBSERVACIÓN" },
+  INVESTIGAR: { tone: "text-term-muted", bg: "bg-term-panel2", label: "INVESTIGAR" },
 };
 
 const ACTION_STYLE: Record<Decision["action"], { label: string; tone: string }> = {
@@ -308,9 +308,9 @@ export function Advisor() {
           <Panel title="¿Qué haría hoy con mi cartera actual?"
             right={<span className="text-xs text-term-faint">{positionReviews.length} posición(es)</span>}>
             <p className="mb-2 text-sm text-term-muted">
-              Reviso <b>cada posición</b> integrando valoración fundamental (preliminar), exposición
-              efectiva vía ETFs, contribución al riesgo y calidad de datos. No recorto/vendo por
-              concentración sola ni compro por score; sin evidencia suficiente → <b>MANTENER</b> o <b>REVISAR</b>.
+              Reviso <b>cada posición</b> con señales <b>descriptivas</b> (rendimiento, exposición efectiva
+              vía ETFs, riesgo, calidad de datos). Sin valoración fundada <b>no</b> hay compras ni ventas
+              por valoración: sólo <b>REDUCIR</b> por concentración/riesgo (reversible); el resto, <b>MANTENER</b> o <b>REVISAR</b>.
             </p>
             {positionReviews.length === 0 ? (
               <p className="text-sm text-term-faint">Calculando revisión por posición… (requiere precios e historial).</p>
@@ -326,7 +326,7 @@ export function Advisor() {
                       <tr className="border-b border-term-border text-left text-xs uppercase text-term-muted">
                         <th className="py-1.5">#</th><th>Posición</th><th>Acción</th>
                         <th className="text-right">Peso directo</th><th className="text-right">Exp. efectiva</th>
-                        <th className="text-right">Valor central</th><th className="text-right">Calidad</th>
+                        <th className="text-right" title="Proyección de precio a 12m manteniendo el múltiplo: circular, sólo contexto">Proy. 12m (circ.)</th><th className="text-right">Calidad</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -339,7 +339,7 @@ export function Advisor() {
                             <td><span className={`text-xs font-bold ${POS_STYLE[r.action].tone}`}>{r.action}</span></td>
                             <td className="text-right tabnum">{pct(r.weight)}</td>
                             <td className="text-right tabnum">{r.effectiveWeight != null ? pct(r.effectiveWeight) : "—"}</td>
-                            <td className={`text-right tabnum ${c ? (c.upside >= 0 ? "text-term-good" : "text-term-crit") : "text-term-faint"}`}>{c ? `${c.upside >= 0 ? "+" : ""}${pct(c.upside)}` : "—"}</td>
+                            <td className="text-right tabnum text-term-faint">{c ? `${c.upside >= 0 ? "+" : ""}${pct(c.upside)}` : "—"}</td>
                             <td className="text-right text-xs text-term-muted">{r.kind === "equity" ? r.evidenceQuality : r.kind}</td>
                           </tr>
                         );
@@ -372,19 +372,19 @@ export function Advisor() {
             </div>
           </Panel>
 
-          {/* ¿QUÉ COMPRAR HOY? — oportunidades por valoración, no por score */}
-          <Panel title={`¿Qué comprar hoy? — hasta ${money(cash)} a evaluar`}
-            right={<span className="text-xs text-term-faint">{opportunities.decisions.filter((d) => d.action === "COMPRAR").length} COMPRAR</span>}>
+          {/* SEÑALES DE OPORTUNIDAD — preliminares, NO decisiones de compra */}
+          <Panel title="Señales de oportunidad (preliminares — no son decisiones de compra)"
+            right={<span className="text-xs text-term-faint">{opportunities.decisions.filter((d) => d.action === "ESPERAR").length} en observación</span>}>
             <p className="mb-2 text-sm text-term-muted">
-              Candidatas <b>fuera</b> de tu cartera, clasificadas por <b>valoración</b> (no por score):
-              <b className="text-term-good"> COMPRAR</b> exige descuento con calidad suficiente y espacio de concentración;
-              <b className="text-term-warn"> ESPERAR</b> = negocio interesante pero el precio de hoy no da margen;
-              <b className="text-term-muted"> INVESTIGAR</b> = faltan datos o están desactualizados. El score es solo contexto.
+              Candidatas <b>fuera</b> de tu cartera. <b>No se emite COMPRAR</b>: sin una valoración fundada,
+              el motor sólo describe señales.
+              <b className="text-term-warn"> EN OBSERVACIÓN</b> = hay datos y se muestra la señal, pero no es decisión;
+              <b className="text-term-muted"> INVESTIGAR</b> = faltan datos o están desactualizados (brecha de datos, no veredicto).
             </p>
             <div className="mb-3 flex flex-wrap gap-4 rounded-lg border border-term-border bg-term-panel2 px-3 py-2 text-xs text-term-muted">
-              <span>A desplegar hoy: <b className="text-term-good tabnum">{money(opportunities.deployed)}</b></span>
-              <span>Liquidez conservada: <b className="text-term-fg tabnum">{money(opportunities.cashKept)}</b></span>
-              <span className="text-term-faint">Montos por convicción (descuento central), no a partes iguales. No se fuerza el presupuesto.</span>
+              <span>Capital desplegado hoy: <b className="text-term-fg tabnum">{money(opportunities.deployed)}</b></span>
+              <span>Liquidez íntegra: <b className="text-term-fg tabnum">{money(opportunities.cashKept)}</b></span>
+              <span className="text-term-faint">Sin decisiones de compra ni montos hasta integrar valoración fundada.</span>
             </div>
             <p className="mb-3 text-xs text-term-faint">{opportunities.note}</p>
             {opportunities.decisions.length === 0 ? (
@@ -395,13 +395,12 @@ export function Advisor() {
               </div>
             )}
             <p className="mt-3 text-xs text-term-faint">
-              <b>Base de la decisión:</b> rendimiento de beneficios/FCF reportado (EDGAR, último ejercicio)
-              frente a un retorno exigido de referencia del {Math.round(0.07 * 100)}% (supuesto explícito).
-              La proyección de precio a 12m (EPS×P/E con múltiplo constante) es <b>circular</b> respecto al
-              precio y se muestra sólo como contexto — no es valor razonable ni descuento. Sin múltiplos
-              históricos, estimaciones forward ni beneficios normalizados/through-cycle. <b>La clasificación
-              del motor NO es una recomendación financiera validada</b>; INVESTIGAR indica brecha de datos,
-              no falta de atractivo.
+              <b>Qué es esto:</b> el rendimiento de beneficios/FCF reportado (EDGAR, último ejercicio ANUAL) es
+              una señal <b>descriptiva</b>; su posición frente a una referencia del {Math.round(0.07 * 100)}%
+              <b> no implica</b> cara o barata (ignora crecimiento, riesgo, calidad y sector). La proyección de
+              precio a 12m (EPS×P/E con múltiplo constante) es <b>circular</b> y sólo contexto. Faltan beneficios
+              TTM/normalizados, estimaciones forward y múltiplos históricos — por eso <b>no se decide comprar o vender</b>.
+              INVESTIGAR indica brecha de datos, no falta de atractivo.
             </p>
           </Panel>
 
@@ -547,16 +546,16 @@ function DecisionCard({ d }: { d: Decision }) {
 }
 
 function OpportunityCard({ d }: { d: OpportunityDecision }) {
-  const [open, setOpen] = useState(d.action === "COMPRAR");
+  const [open, setOpen] = useState(false);
   const st = OPP_STYLE[d.action];
-  const upTone = d.centralUpside == null ? "text-term-faint" : d.centralUpside >= 0 ? "text-term-good" : "text-term-crit";
+  const upTone = "text-term-faint";   // proyección circular: neutral, no implica bueno/malo
   return (
     <div className={`rounded-lg border border-term-border p-3 ${st.bg}`}>
       <button onClick={() => setOpen(!open)} className="flex w-full items-start justify-between gap-2 text-left">
         <span className="flex items-start gap-2">
           <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded bg-term-panel2 text-[11px] font-semibold text-term-faint tabnum">{d.priority}</span>
           <span className="text-sm">
-            <span className={`font-mono text-xs font-bold ${st.tone}`}>{d.action}</span>
+            <span className={`font-mono text-xs font-bold ${st.tone}`}>{st.label}</span>
             <span className="ml-1 font-mono font-semibold text-term-fg">{d.ticker}</span>
             {d.name && <span className="text-term-muted"> · {d.name}</span>}
             <span className="ml-2 text-xs text-term-faint">{d.price != null ? money(d.price) : "precio n/d"}{d.priceAsOf ? ` · ${d.priceAsOf}` : ""}</span>
@@ -576,8 +575,8 @@ function OpportunityCard({ d }: { d: OpportunityDecision }) {
       <p className="pl-7 text-xs text-term-faint">{d.relative} · {d.concentration}</p>
       {open && (
         <div className="mt-2 grid gap-2 pl-7 text-xs">
-          <Block title="Qué justifica comprar AHORA" items={d.evidenceForBuyingNow} tone="text-term-fg" />
-          <Block title="Qué información falta" items={d.missing} tone="text-term-muted" />
+          <Block title="Señal (no es decisión)" items={d.evidenceForBuyingNow} tone="text-term-fg" />
+          <Block title="Qué falta para decidir" items={d.missing} tone="text-term-muted" />
           <Block title="Qué cambiaría la decisión" items={d.whatWouldChange} tone="text-term-muted" />
         </div>
       )}

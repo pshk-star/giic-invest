@@ -221,10 +221,21 @@ def parse_companyfacts(facts: dict, ticker: str,
     fcf_yield = (fcf_usd / market_cap) if (fcf_usd is not None and market_cap) else None
     pe_ttm = (price / eps_usd) if (price and eps_usd and eps_usd > 0) else None
 
+    # Consistencia: identidad EPS × acciones ≈ utilidad neta (ambos en divisa de reporte).
+    # Valida coherencia de EPS con moneda/acciones antes de usarlo; ADR se refleja aparte.
+    eps_consistent = None
+    eps_check_ratio = None
+    if eps_l is not None and shares and ni_l not in (None, 0):
+        eps_check_ratio = (eps_l * shares) / ni_l
+        eps_consistent = abs(eps_check_ratio - 1.0) <= 0.15   # tolera básico/diluido y timing de acciones
+
     return Fundamentals(
         ticker=ticker,
         pe_ttm=pe_ttm,
         eps=eps_usd,                # EPS reportado (USD por ADR) → rendimiento de beneficios NO circular
+        eps_basis="reported_annual",  # único disponible hoy; TTM/normalizado/forward pendientes de proveedor
+        eps_consistent=eps_consistent,
+        eps_check_ratio=(round(eps_check_ratio, 4) if eps_check_ratio is not None else None),
         pe_forward=None,            # no disponible gratis en EDGAR
         ev_ebitda=None,             # requiere deuda/caja + EBITDA fiables
         fcf_yield=fcf_yield,

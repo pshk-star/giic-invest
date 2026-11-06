@@ -1,13 +1,11 @@
-// Pruebas del motor de OPORTUNIDADES (vitest, CI) — tras la auditoría de circularidad.
-// Verifican: COMPRAR se dispara por la señal de valor NO circular (rendimiento reportado
-// vs retorno exigido), NO por el crecimiento proyectado; cíclicos no son COMPRAR;
-// brecha de datos → INVESTIGAR (no veredicto); montos por convicción (exceso de rendimiento),
-// no reparto igual; liquidez conservada; sin compra forzada.
+// Pruebas del motor de SEÑALES de oportunidad (vitest, CI) — tras degradar la criba.
+// Verifican: NO se emite COMPRAR (no hay valoración fundada); con datos → EN OBSERVACIÓN
+// (ESPERAR) como señal descriptiva sin monto; brecha de datos → INVESTIGAR; la alerta de
+// ciclicidad se refleja; la liquidez se conserva íntegra; la nota aclara señal ≠ decisión.
 import { describe, expect, it } from "vitest";
 import { buildOpportunities, type OpportunityInput } from "./opportunities";
 import type { CompanyValuation, FundScenario } from "./fundamental";
 
-// scenarios sólo aportan la proyección 12m circular (contexto); la decisión NO depende de ella.
 const scen = (central: number): FundScenario[] => [
   { key: "conservador", label: "Conservador", fairValue: 100, upside: central - 0.1, assumptions: [] },
   { key: "central", label: "Central", fairValue: 100 * (1 + central), upside: central, assumptions: [] },
@@ -19,9 +17,10 @@ const val = (over: Partial<CompanyValuation> = {}): CompanyValuation => ({
   available: true, method: "pe_eps", horizonLabel: "12m", epsTtm: 5, peUsed: 20,
   growthCentral: 0.1, scenarios: scen(0.1), sensitivity: [], quality: "alta",
   dataSources: [], limitations: [], unavailableReason: null,
-  epsReported: 10, earningsYield: 0.10, fcfYield: null, requiredReturn: 0.07,
-  yieldVerdict: "atractivo", cyclical: false, cyclicalNote: null,
-  priceAnchored: true, decisionBasis: "test",
+  epsReported: 10, earningsBasis: "reported_annual", ttmEps: null, normalizedEps: null, forwardEps: null,
+  earningsYield: 0.10, fcfYield: null, referenceYield: 0.07, yieldVsReference: "encima",
+  cyclicalAlert: false, cyclicalNote: null, epsConsistent: true, consistencyNotes: [],
+  priceAnchored: true, decisionReady: false, decisionBlock: "sin valoración fundada", decisionBasis: "test",
   ...over,
 });
 
@@ -30,66 +29,47 @@ const inp = (over: Partial<OpportunityInput> = {}): OpportunityInput => ({
   valuation: val(), roe: 0.2, netMargin: 0.2, heldWeight: 0, effectiveWeight: null, ...over,
 });
 
-describe("COMPRAR se decide por rendimiento NO circular, no por crecimiento proyectado", () => {
-  it("un crecimiento proyectado alto NO basta para COMPRAR si el rendimiento no es atractivo", () => {
-    // central upside 35% (proyección circular alta) pero rendimiento 'caro' → ESPERAR.
+describe("el motor NO emite decisiones de compra (sin valoración fundada)", () => {
+  it("con rendimiento alto, calidad alta y no cíclico → EN OBSERVACIÓN (ESPERAR), NUNCA COMPRAR", () => {
     const r = buildOpportunities(
-      [inp({ composite: 95, valuation: val({ scenarios: scen(0.35), growthCentral: 0.35,
-        earningsYield: 0.03, yieldVerdict: "caro" }) })],
+      [inp({ composite: 95, valuation: val({ earningsYield: 0.20, yieldVsReference: "encima" }) })],
       3000, 10000, 0.25,
     );
     expect(r.decisions[0].action).toBe("ESPERAR");
+    expect(r.decisions.some((d) => d.action === "COMPRAR")).toBe(false);
     expect(r.decisions[0].suggestedAmountUsd).toBeNull();
   });
 
-  it("COMPRAR cuando el rendimiento reportado supera el exigido con margen, calidad alta, no cíclico", () => {
-    const r = buildOpportunities(
-      [inp({ ticker: "BUY", composite: 40, valuation: val({ earningsYield: 0.11, yieldVerdict: "atractivo",
-        scenarios: scen(0.04), growthCentral: 0.04 }) })],   // proyección circular BAJA, da igual
-      3000, 10000, 0.25,
-    );
-    const d = r.decisions.find((x) => x.ticker === "BUY")!;
-    expect(d.action).toBe("COMPRAR");
-    expect(d.suggestedAmountUsd).toBeGreaterThan(0);
-    expect(d.evidenceForBuyingNow.join(" ")).toContain("endimiento");
+  it("la decisión en observación muestra la señal descriptiva y por qué no es decisión", () => {
+    const r = buildOpportunities([inp({})], 3000, 10000, 0.25);
+    const d = r.decisions[0];
+    expect(d.action).toBe("ESPERAR");
+    expect(d.valuationLine.toLowerCase()).toContain("descriptiva");
+    expect(d.missing.join(" ").toLowerCase()).toContain("valoración fundada");
   });
 
-  it("rendimiento sólo 'razonable' (iguala pero no supera el exigido) → ESPERAR", () => {
+  it("la alerta de ciclicidad se refleja en la señal (no afirma pico)", () => {
     const r = buildOpportunities(
-      [inp({ valuation: val({ earningsYield: 0.072, yieldVerdict: "razonable" }) })],
+      [inp({ valuation: val({ earningsYield: 0.12, cyclicalAlert: true, cyclicalNote: "alerta" }) })],
       3000, 10000, 0.25,
     );
     expect(r.decisions[0].action).toBe("ESPERAR");
+    expect(r.decisions[0].missing.join(" ").toLowerCase()).toContain("ciclicidad");
   });
 });
 
-describe("cíclicos y beneficios extraordinarios", () => {
-  it("beneficio cíclico/extraordinario NO es COMPRAR aunque el rendimiento parezca atractivo", () => {
-    const r = buildOpportunities(
-      [inp({ valuation: val({ earningsYield: 0.12, yieldVerdict: "atractivo", cyclical: true,
-        cyclicalNote: "pico cíclico" }) })],
-      3000, 10000, 0.25,
-    );
-    expect(r.decisions[0].action).toBe("ESPERAR");
-  });
-});
-
-describe("brecha de datos → INVESTIGAR, no veredicto de inversión", () => {
-  it("sin valoración disponible → INVESTIGAR y lo declara como brecha de datos", () => {
+describe("brecha de datos → INVESTIGAR (no veredicto)", () => {
+  it("sin valoración disponible → INVESTIGAR y lo declara brecha de datos", () => {
     const r = buildOpportunities(
       [inp({ valuation: { ...val(), available: false, unavailableReason: "Sin EPS en EDGAR" } })],
       3000, 10000, 0.25,
     );
-    const d = r.decisions[0];
-    expect(d.action).toBe("INVESTIGAR");
-    expect(d.valuationLine.toLowerCase()).toContain("brecha de datos");
+    expect(r.decisions[0].action).toBe("INVESTIGAR");
+    expect(r.decisions[0].valuationLine.toLowerCase()).toContain("brecha de datos");
   });
 
-  it("calidad de datos baja → INVESTIGAR (no COMPRAR aunque el rendimiento sea alto)", () => {
-    const r = buildOpportunities(
-      [inp({ valuation: val({ quality: "baja", earningsYield: 0.15, yieldVerdict: "atractivo" }) })],
-      3000, 10000, 0.25,
-    );
+  it("calidad de datos baja → INVESTIGAR", () => {
+    const r = buildOpportunities([inp({ valuation: val({ quality: "baja" }) })], 3000, 10000, 0.25);
     expect(r.decisions[0].action).toBe("INVESTIGAR");
   });
 
@@ -102,56 +82,23 @@ describe("brecha de datos → INVESTIGAR, no veredicto de inversión", () => {
   });
 });
 
-describe("concentración", () => {
-  it("rendimiento atractivo pero sin espacio → ESPERAR", () => {
-    const r = buildOpportunities(
-      [inp({ heldWeight: 0.25, valuation: val({ earningsYield: 0.12, yieldVerdict: "atractivo" }) })],
-      3000, 10000, 0.25,
-    );
-    expect(r.decisions[0].action).toBe("ESPERAR");
-  });
-});
-
-describe("montos por convicción (exceso de rendimiento), no reparto igual", () => {
-  it("reparte más al de mayor exceso de rendimiento sobre el exigido", () => {
+describe("liquidez íntegra y framing de señales", () => {
+  it("nunca se despliega capital: deployed 0 y liquidez completa", () => {
     const r = buildOpportunities(
       [
-        inp({ ticker: "A", valuation: val({ earningsYield: 0.14, yieldVerdict: "atractivo" }) }), // exceso 100%
-        inp({ ticker: "B", valuation: val({ earningsYield: 0.084, yieldVerdict: "atractivo" }) }), // exceso 20%
+        inp({ ticker: "A", valuation: val({ earningsYield: 0.20 }) }),
+        inp({ ticker: "B", valuation: val({ earningsYield: 0.12 }) }),
       ],
       3000, 100000, 0.25,
     );
-    const a = r.decisions.find((x) => x.ticker === "A")!;
-    const b = r.decisions.find((x) => x.ticker === "B")!;
-    expect(a.action).toBe("COMPRAR");
-    expect(b.action).toBe("COMPRAR");
-    expect(a.suggestedAmountUsd!).toBeGreaterThan(b.suggestedAmountUsd!);
-    expect(a.suggestedAmountUsd).not.toBe(b.suggestedAmountUsd);
-  });
-
-  it("el tope de concentración limita el monto; el resto queda en liquidez", () => {
-    const r = buildOpportunities(
-      [inp({ ticker: "A", valuation: val({ earningsYield: 0.20, yieldVerdict: "atractivo" }) })],
-      3000, 1000, 0.25,   // techo por activo = 25% de (1000+3000) = 1000
-    );
-    const a = r.decisions[0];
-    expect(a.action).toBe("COMPRAR");
-    expect(a.suggestedAmountUsd!).toBeLessThanOrEqual(1000);
-    expect(r.cashKept).toBeGreaterThanOrEqual(2000);
-  });
-});
-
-describe("liquidez y ausencia de compra forzada", () => {
-  it("si ninguna candidata califica, no se despliega capital y la liquidez se mantiene", () => {
-    const r = buildOpportunities(
-      [
-        inp({ ticker: "A", valuation: val({ earningsYield: 0.03, yieldVerdict: "caro" }) }),
-        inp({ ticker: "B", valuation: { ...val(), available: false, unavailableReason: "n/d" } }),
-      ],
-      3000, 10000, 0.25,
-    );
     expect(r.deployed).toBe(0);
     expect(r.cashKept).toBe(3000);
-    expect(r.note).toContain("liquidez");
+    expect(r.decisions.every((d) => d.suggestedAmountUsd == null)).toBe(true);
+  });
+
+  it("la nota aclara que son señales, no decisiones de compra", () => {
+    const r = buildOpportunities([inp({})], 3000, 10000, 0.25);
+    expect(r.note.toLowerCase()).toContain("no decisiones");
+    expect(r.note.toLowerCase()).toContain("no emite compra");
   });
 });
