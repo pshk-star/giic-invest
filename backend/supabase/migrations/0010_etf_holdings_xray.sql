@@ -3,6 +3,27 @@
 -- ÍNDICE único independiente, y SOLO esa; (2) cada línea referencia su snapshot con FK íntegra;
 -- (3) credenciales: escritura solo service role, lectura autenticada.
 
+-- (1) Eliminar la clave antigua (etf,ticker) — sea PRIMARY KEY o UNIQUE (constraint o índice),
+-- y SOLO esa — antes de poder volver 'ticker' nullable.
+do $$
+declare r record;
+begin
+  for r in
+    select con.conname from pg_constraint con
+    where con.conrelid='public.etf_holdings'::regclass and con.contype in ('p','u')
+      and (select array_agg(a.attname order by a.attname) from unnest(con.conkey) k
+           join pg_attribute a on a.attrelid=con.conrelid and a.attnum=k) = array['etf','ticker']
+  loop execute format('alter table public.etf_holdings drop constraint %I', r.conname); end loop;
+
+  for r in
+    select i.indexrelid::regclass::text as idx from pg_index i
+    where i.indrelid='public.etf_holdings'::regclass and i.indisunique
+      and not exists (select 1 from pg_constraint c where c.conindid=i.indexrelid)
+      and (select array_agg(a.attname order by a.attname) from unnest(i.indkey) k
+           join pg_attribute a on a.attrelid=i.indrelid and a.attnum=k) = array['etf','ticker']
+  loop execute format('drop index if exists %s', r.idx); end loop;
+end $$;
+
 alter table public.etf_holdings alter column ticker drop not null;
 
 alter table public.etf_holdings
@@ -20,26 +41,6 @@ alter table public.etf_holdings
   add column if not exists market_value numeric,
   add column if not exists notional     numeric,
   add column if not exists line_key     text;
-
--- (1) Eliminar la unicidad antigua (etf,ticker), sea constraint o índice independiente; solo esa.
-do $$
-declare r record;
-begin
-  for r in
-    select con.conname from pg_constraint con
-    where con.conrelid='public.etf_holdings'::regclass and con.contype='u'
-      and (select array_agg(a.attname order by a.attname) from unnest(con.conkey) k
-           join pg_attribute a on a.attrelid=con.conrelid and a.attnum=k) = array['etf','ticker']
-  loop execute format('alter table public.etf_holdings drop constraint %I', r.conname); end loop;
-
-  for r in
-    select i.indexrelid::regclass::text as idx from pg_index i
-    where i.indrelid='public.etf_holdings'::regclass and i.indisunique
-      and not exists (select 1 from pg_constraint c where c.conindid=i.indexrelid)
-      and (select array_agg(a.attname order by a.attname) from unnest(i.indkey) k
-           join pg_attribute a on a.attrelid=i.indrelid and a.attnum=k) = array['etf','ticker']
-  loop execute format('drop index if exists %s', r.idx); end loop;
-end $$;
 
 -- Identificadores de snapshot OBLIGATORIOS (tabla vacía: seguro).
 alter table public.etf_holdings alter column etf      set not null;
