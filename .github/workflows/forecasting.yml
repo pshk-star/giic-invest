@@ -1,0 +1,40 @@
+name: GIIC forecasting (experimental)
+
+# Backtest fuera de muestra (walk-forward) de una señal simple + distribuciones
+# condicionales. Solo lectura de Yahoo; imprime métricas (no escribe en Supabase aún).
+on:
+  workflow_dispatch:
+    inputs:
+      acceptance:
+        description: "Ticker de aceptación (reporte individual)"
+        type: string
+        default: "MU"
+      range:
+        description: "Rango de histórico"
+        type: string
+        default: "5y"
+      tickers:
+        description: "Universo explícito (opcional)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-job.txt
+      - name: Backtest experimental
+        run: |
+          ARGS="--acceptance ${{ inputs.acceptance }} --range ${{ inputs.range }}"
+          if [ -n "${{ inputs.tickers }}" ]; then ARGS="$ARGS --tickers ${{ inputs.tickers }}"; fi
+          python -m app.research.backtest $ARGS
