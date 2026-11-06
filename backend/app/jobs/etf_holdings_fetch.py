@@ -325,7 +325,42 @@ def fetch_nport(ticker: str) -> Tuple[Optional[str], List[dict]]:
                       "cusip": (cusip.strip() if cusip else None),
                       "weight": (w / 100.0 if w is not None else None),
                       "asset_class": ac, "sector": None})
+    _resolve_tickers_openfigi(lines)
     return (as_of or date.today().isoformat()), lines
+
+
+def _resolve_tickers_openfigi(lines: List[dict]) -> None:
+    """Rellena ticker faltante desde CUSIP vía OpenFIGI (gratuito, sin key). Solo líneas equity
+    con CUSIP y sin ticker. Lotes de 10, con pausa por límite de tasa."""
+    import time
+    pend = [ln for ln in lines if not ln.get("ticker") and ln.get("cusip")
+            and ln.get("asset_class") == "equity" and len(str(ln["cusip"])) >= 8]
+    uniq = {}
+    for ln in pend:
+        uniq.setdefault(str(ln["cusip"])[:9], []).append(ln)
+    cusips = list(uniq.keys())
+    for i in range(0, min(len(cusips), 700), 10):
+        batch = cusips[i:i + 10]
+        try:
+            r = httpx.post("https://api.openfigi.com/v3/mapping",
+                           headers={"Content-Type": "application/json", "User-Agent": "GIIC/1.0"},
+                           json=[{"idType": "ID_CUSIP", "idValue": c} for c in batch], timeout=45)
+            if r.status_code != 200:
+                time.sleep(3); continue
+            for c, res in zip(batch, r.json()):
+                data = (res or {}).get("data") or []
+                tk = None
+                for d in data:
+                    if (d.get("exchCode") in ("US", "UV", "UW", "UN", "UQ")) and d.get("ticker"):
+                        tk = d["ticker"]; break
+                if not tk and data:
+                    tk = data[0].get("ticker")
+                if tk:
+                    for ln in uniq[c]:
+                        ln["ticker"] = tk
+        except Exception:
+            pass
+        time.sleep(2.6)  # límite ~25 req/min sin key
 
 
 ADAPTERS = {"ssga": fetch_ssga, "invesco": fetch_invesco,
