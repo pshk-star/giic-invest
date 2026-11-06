@@ -92,11 +92,23 @@ def run() -> dict:
     except Exception as e:
         asml_hist = [{"error": f"{type(e).__name__}"}]
 
+    # Conteo de price_history por ticker (viabilidad de proyección estadística individual).
+    hist_counts = {}
+    for t in FUND_TICKERS + ["VOO", "QQQ", "SCHD", "GLD", "SLV"]:
+        try:
+            r = cli.get(f"{base}/price_history", params={"select": "as_of", "ticker": f"eq.{t}", "limit": "0"},
+                        headers={"Prefer": "count=exact"})
+            cr = r.headers.get("content-range", "")
+            hist_counts[t] = int(cr.split("/")[-1]) if "/" in cr and cr.split("/")[-1].isdigit() else cr
+        except Exception as e:
+            hist_counts[t] = f"error: {type(e).__name__}"
+
     return {
         "tables": out, "fx_rates_rows": fx,
         "fundamentals_target": fundamentals,
         "prices_target": prices_now,
         "asml_price_history_latest": asml_hist,
+        "price_history_counts": hist_counts,
         "edgar_diagnostic": edgar_diag(["ASML", "TSM"]),
         "rls_sql_for_pablo": RLS_SQL,
     }
@@ -146,15 +158,26 @@ def edgar_diag(tickers: list) -> dict:
                 rows = (node[c].get("units", {}) or {}).get(u[0], []) if u else []
                 last = rows[-1] if rows else {}
                 detail[c] = {"units": u, "last_form": last.get("form"), "last_end": last.get("end")}
-            # Todas las unidades "per share" (para detectar EPS en USD por ADR).
+            # Todas las unidades "per share" (para detectar EPS en USD por ADR) + último valor
+            # real de EPS por unidad (resuelve si el USD es por ADR o por acción ordinaria).
             per_share = {}
+            eps_values = {}
             for c in node.keys():
-                if "pershare" in c.lower():
-                    u = list((node[c].get("units", {}) or {}).keys())
+                cl = c.lower()
+                if "pershare" in cl:
+                    units = (node[c].get("units", {}) or {})
+                    u = list(units.keys())
                     if u:
                         per_share[c] = u
+                    if "earningspershare" in cl or cl.startswith("dilutedearnings") or cl.startswith("basicearnings"):
+                        for un, rows in units.items():
+                            annual = [r for r in rows if str(r.get("form", "")).startswith(("10-K", "20-F", "40-F"))
+                                      and r.get("start") and r.get("end")]
+                            if annual:
+                                last = sorted(annual, key=lambda r: r["end"])[-1]
+                                eps_values[f"{c} [{un}]"] = {"val": last.get("val"), "end": last.get("end"), "form": last.get("form")}
             summ[tax] = {"n_concepts": len(node), "concepts": interesting,
-                         "detail": detail, "per_share_units": per_share}
+                         "detail": detail, "per_share_units": per_share, "eps_latest": eps_values}
         out[t] = summ
     return out
 
