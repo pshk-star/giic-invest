@@ -39,8 +39,11 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
         run: |
-          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
-            python -m app.jobs.resolve_identity --dry-run ${{ github.event.inputs.tickers }}
+          TK="${{ github.event.inputs.tickers }}"
+          DRY=""
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then DRY="--dry-run"; fi
+          if [ -n "$TK" ]; then
+            python -m app.jobs.resolve_identity $DRY --tickers $TK
           else
-            python -m app.jobs.resolve_identity ${{ github.event.inputs.tickers }}
+            python -m app.jobs.resolve_identity $DRY
           fi
