@@ -268,7 +268,10 @@ export async function getPredictionOutcomes(): Promise<OutcomeRow[]> {
 }
 
 // ---- Portfolio X-Ray: último snapshot 'complete' por ETF + sus líneas ----
-export interface XraySnapshot { etf: string; provider: string; as_of: string; equity_pct: number | null; }
+export interface XraySnapshot {
+  etf: string; provider: string; as_of: string; equity_pct: number | null;
+  status: string; n_lines: number | null; weight_sum: number | null; source: "auto" | "manual";
+}
 export interface XrayWeightRow {
   etf: string; ticker: string | null; name: string | null; weight: number | null;
   asset_class: string; company_key: string | null; sector?: string | null;
@@ -294,23 +297,25 @@ export async function addUserEtfImport(p: {
 
 // Solo importaciones COMPLETAS y validadas; la más reciente por ETF. Las parcial/fallida se
 // ignoran aquí (nunca reemplazan la última válida).
-async function userHoldingsLatest(etfs: string[]): Promise<Map<string, { as_of: string; rows: XrayWeightRow[] }>> {
-  const out = new Map<string, { as_of: string; rows: XrayWeightRow[] }>();
+interface ManualMeta { as_of: string; rows: XrayWeightRow[]; n_lines: number | null; weight_sum: number | null; }
+async function userHoldingsLatest(etfs: string[]): Promise<Map<string, ManualMeta>> {
+  const out = new Map<string, ManualMeta>();
   const imp = await supabase.from("user_etf_imports")
-    .select("etf,as_of,status").eq("status", "complete").order("as_of", { ascending: false });
+    .select("etf,as_of,status,n_lines,weight_sum").eq("status", "complete").order("as_of", { ascending: false });
   if (imp.error) return out; // 0011 aún no aplicada
   const up = etfs.map((e) => e.toUpperCase());
-  const chosen = new Map<string, string>();
+  const chosen = new Map<string, { as_of: string; n_lines: number | null; weight_sum: number | null }>();
   for (const r of imp.data ?? []) {
     const e = (r.etf as string).toUpperCase();
-    if (up.includes(e) && !chosen.has(e)) chosen.set(e, r.as_of);
+    if (up.includes(e) && !chosen.has(e)) chosen.set(e, { as_of: r.as_of, n_lines: r.n_lines, weight_sum: r.weight_sum });
   }
-  for (const [e, as_of] of chosen) {
+  for (const [e, m] of chosen) {
     const { data } = await supabase.from("user_etf_holdings")
-      .select("etf,ticker,name,weight,asset_class,company_key,sector").eq("etf", e).eq("as_of", as_of);
-    out.set(e, { as_of, rows: (data ?? []).map((r) => ({ etf: e, ticker: r.ticker, name: r.name,
-      weight: r.weight != null ? Number(r.weight) : null, asset_class: r.asset_class,
-      company_key: r.company_key, sector: r.sector })) });
+      .select("etf,ticker,name,weight,asset_class,company_key,sector").eq("etf", e).eq("as_of", m.as_of);
+    out.set(e, { as_of: m.as_of, n_lines: m.n_lines, weight_sum: m.weight_sum,
+      rows: (data ?? []).map((r) => ({ etf: e, ticker: r.ticker, name: r.name,
+        weight: r.weight != null ? Number(r.weight) : null, asset_class: r.asset_class,
+        company_key: r.company_key, sector: r.sector })) });
   }
   return out;
 }
@@ -321,12 +326,13 @@ export async function getXrayData(etfs: string[]): Promise<{ snapshots: XraySnap
   // automático: último snapshot 'complete' por etf
   const autoLatest = new Map<string, XraySnapshot>();
   const snapQ = await supabase.from("etf_snapshots")
-    .select("etf,provider,as_of,status,equity_pct").eq("status", "complete")
+    .select("etf,provider,as_of,status,equity_pct,n_lines,weight_sum").eq("status", "complete")
     .order("as_of", { ascending: false });
   if (!snapQ.error) {
     for (const s of snapQ.data ?? []) {
       const e = (s.etf as string).toUpperCase();
-      if (up.includes(e) && !autoLatest.has(e)) autoLatest.set(e, { etf: e, provider: s.provider, as_of: s.as_of, equity_pct: s.equity_pct });
+      if (up.includes(e) && !autoLatest.has(e)) autoLatest.set(e, { etf: e, provider: s.provider, as_of: s.as_of,
+        equity_pct: s.equity_pct, status: s.status, n_lines: s.n_lines, weight_sum: s.weight_sum, source: "auto" });
     }
   }
   const manual = await userHoldingsLatest(etfs);
@@ -337,7 +343,8 @@ export async function getXrayData(etfs: string[]): Promise<{ snapshots: XraySnap
     const a = autoLatest.get(e), m = manual.get(e);
     const useManual = m && (!a || m.as_of >= a.as_of);
     if (useManual && m) {
-      snapshots.push({ etf: e, provider: "manual", as_of: m.as_of, equity_pct: null });
+      snapshots.push({ etf: e, provider: "manual", as_of: m.as_of, equity_pct: null,
+        status: "complete", n_lines: m.n_lines, weight_sum: m.weight_sum, source: "manual" });
       weights.push(...m.rows);
     } else if (a) {
       snapshots.push(a);

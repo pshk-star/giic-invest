@@ -105,10 +105,6 @@ export function Portfolio() {
       isEtf: ETF_CLASSES.includes((instMap[p.ticker]?.asset_class ?? "").toLowerCase()),
       valueUsd: p.marketValue ?? 0,
     })), [positions, instMap]);
-  const sectorByTicker = useMemo(
-    () => Object.fromEntries(Object.entries(instMap).map(([t, m]) => [t, m.sector ?? undefined])),
-    [instMap]);
-
   const appliedSplits = useMemo(
     () => splits.filter((s) => positions.some((p) => p.qty > 1e-9 && p.ticker === s.ticker.toUpperCase())),
     [splits, positions]
@@ -222,7 +218,7 @@ export function Portfolio() {
       )}
 
       {xrayHoldings.some((h) => h.isEtf) && (
-        <XRayPanel holdings={xrayHoldings} sectorByTicker={sectorByTicker} />
+        <XRayPanel holdings={xrayHoldings} valuationAsOf={valuation.meta.asOfDate} />
       )}
 
       {/* Fondos (Fintual) oculto por ahora — código conservado en components/FintualPanel.tsx */}
