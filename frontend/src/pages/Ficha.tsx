@@ -3,7 +3,8 @@ import { Link, useParams } from "react-router-dom";
 import { Panel } from "../components/Panel";
 import {
   getCorporateActions, getFundamentals, getInstruments, getLatestRun, getLatestScan, getPrices,
-  getPriceHistory, getQuotes, getTransactions, type PriceBar, type QuoteRow, type ScanRow,
+  getPriceHistory, getPredictionsByTicker, getQuotes, getTransactions,
+  type PredictionRow, type PriceBar, type QuoteRow, type ScanRow,
 } from "../data";
 import { QuoteView } from "../components/Quote";
 import { PriceChart } from "../components/PriceChart";
@@ -18,6 +19,8 @@ const EMPTY_F: FundamentalsPayload = {
   pe_ttm: null, pe_forward: null, ev_ebitda: null, fcf_yield: null, roic: null, roe: null,
   rev_growth_yoy: null, eps_growth_yoy: null, net_margin: null, debt_to_equity: null, market_cap: null,
 };
+
+const todayISO = () => new Date().toISOString().slice(0, 10);
 
 function Bar({ v, tone = "bg-term-accent" }: { v: number; tone?: string }) {
   return (
@@ -37,9 +40,9 @@ function Metric({ label, value, help }: { label: string; value: string; help?: s
   );
 }
 
-export function CompanyFicha() {
-  const { ticker: raw } = useParams();
-  const ticker = (raw ?? "").toUpperCase();
+export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: string; embedded?: boolean }) {
+  const ticker = (rawTicker ?? "").toUpperCase();
+  const [preds, setPreds] = useState<PredictionRow[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [name, setName] = useState<string | null>(null);
@@ -63,11 +66,13 @@ export function CompanyFicha() {
   useEffect(() => {
     (async () => {
       setLoaded(false); setErr(null);
-      const [scanAll, instMap, priceMap, quoteMap, run, txns, h, hSpy, hQqq] = await Promise.all([
+      const [scanAll, instMap, priceMap, quoteMap, run, txns, h, hSpy, hQqq, pr] = await Promise.all([
         getLatestScan(), getInstruments([ticker]), getPrices([ticker]), getQuotes([ticker]),
         getLatestRun(), getTransactions(),
         getPriceHistory(ticker), getPriceHistory("SPY"), getPriceHistory("QQQ"),
+        getPredictionsByTicker(ticker),
       ]);
+      setPreds(pr);
       setQuote(quoteMap[ticker] ?? null);
       setHist(h); setSpy(hSpy); setQqq(hQqq);
       const meta = instMap[ticker];
@@ -135,7 +140,7 @@ export function CompanyFicha() {
 
   return (
     <div className="grid gap-4">
-      <Link to="/research" className="text-xs text-term-muted hover:text-term-fg">← Research</Link>
+      {!embedded && <Link to="/research" className="text-xs text-term-muted hover:text-term-fg">← Research</Link>}
 
       <Panel title="Ficha de la empresa">
         <div className="flex flex-wrap items-baseline justify-between gap-3">
@@ -169,6 +174,64 @@ export function CompanyFicha() {
             { label: "Nasdaq-100 (QQQ)", bars: qqq, color: "#fbbf24" },
           ]}
         />
+      </Panel>
+
+      <Panel title="Proyecciones del modelo (experimental)">
+        {preds.length === 0 ? (
+          <div className="text-sm">
+            <p className="text-term-warn">Sin cobertura del modelo para {ticker}.</p>
+            <p className="mt-1 text-term-muted">
+              Este activo no está en el universo invertible actual (fuera de cobertura, o precio/fundamentales
+              insuficientes). Arriba tienes el precio y, si existen, los fundamentales disponibles. No se generan
+              proyecciones inventadas.
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="mb-2 rounded-lg border border-term-warn/40 bg-term-warn/10 px-3 py-2 text-xs text-term-warn">
+              <strong>EXPERIMENTAL · NO VALIDADO.</strong> El retorno es <b>relativo</b> al universo equiponderado,
+              no el retorno absoluto del activo. Por eso <b>no se deriva un precio objetivo</b>.
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[520px] text-sm">
+                <thead>
+                  <tr className="text-left text-xs uppercase text-term-muted">
+                    <th className="py-1.5">Horizonte</th><th>Modelo</th>
+                    <th className="text-right">Retorno rel. previsto</th>
+                    <th className="text-right">Percentil</th><th>Evalúa en</th><th>Estado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {preds.map((p) => {
+                    const matured = p.evaluate_on <= todayISO();
+                    const rr = p.prediction?.rel_return;
+                    const prc = p.prediction?.pct_rank;
+                    return (
+                      <tr key={`${p.model_version}-${p.horizon_sessions}`} className="border-b border-term-border last:border-0">
+                        <td className="py-2 tabnum">{p.horizon_sessions} ses.</td>
+                        <td className="text-term-muted">{p.model_name} <span className="text-term-faint">{p.model_version}</span></td>
+                        <td className={`text-right tabnum ${rr != null && rr >= 0 ? "text-term-good" : "text-term-crit"}`}>
+                          {rr != null ? `${rr >= 0 ? "+" : ""}${(rr * 100).toFixed(2)}%` : "—"}
+                        </td>
+                        <td className="text-right tabnum">{prc != null ? num(prc * 100, 0) : "—"}</td>
+                        <td className="tabnum">{p.evaluate_on}</td>
+                        <td>{matured
+                          ? <span className="text-term-good">madura</span>
+                          : <span className="text-term-muted">pendiente</span>}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="mt-2 grid gap-1 text-xs text-term-faint">
+              <p><b className="text-term-muted">Cómo leerlo:</b> "+2%" quiere decir que el modelo prevé que {ticker} rinda ~2 puntos porcentuales por encima del promedio del universo en ese horizonte — no que suba 2% en absoluto.</p>
+              <p><b className="text-term-muted">Sin precio objetivo:</b> una estimación relativa no define un precio absoluto; convertirla lo sería incorrecto.</p>
+              <p><b className="text-term-muted">Percentil:</b> posición del activo dentro del universo ese día (100 = mejor previsto).</p>
+              <p><b className="text-term-muted">Limitaciones:</b> modelos A/B experimentales, sin ventaja estadística demostrada sobre el equiponderado; universo con sesgo de supervivencia; evaluación prospectiva aún sin madurar.</p>
+            </div>
+          </>
+        )}
       </Panel>
 
       {isEtf ? (
@@ -298,11 +361,18 @@ export function CompanyFicha() {
           <li>• Precio: {priceAsOf ? `al ${priceAsOf}` : "no disponible"} (Yahoo/Stooq vía el job).</li>
           <li>• Fundamentales: SEC EDGAR (último reporte anual). {missing.length ? `Faltantes: ${missing.join(", ")}.` : ""}</li>
           <li>• Scanner: {scanAsOf ? `corrida del ${scanAsOf}` : "sin fecha"} · percentiles multifactor.</li>
-          <li className="text-term-faint">• Gráfico de precio histórico: llega en el próximo incremento (registro histórico point-in-time).</li>
+          <li>• Proyecciones: {preds.length ? `${preds.length} horizonte(s), emitidas ${preds[0].as_of} (origin=production, inmutable)` : "sin cobertura del modelo"}.</li>
+          <li className="text-term-faint">• Modelos A/B experimentales, retorno relativo al universo; sin validación económica.</li>
         </ul>
       </Panel>
     </div>
   );
+}
+
+// Ruta con deep-link (/research/:ticker) — reutiliza la ficha.
+export function CompanyFicha() {
+  const { ticker } = useParams();
+  return <StockFiche ticker={(ticker ?? "").toUpperCase()} />;
 }
 
 function CompRow({ label, a, b, isPct = false, suffix = "" }:

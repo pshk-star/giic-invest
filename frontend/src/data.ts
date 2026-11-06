@@ -207,6 +207,16 @@ export async function getPredictions(): Promise<PredictionRow[]> {
   return (data ?? []) as PredictionRow[];
 }
 
+export async function getPredictionsByTicker(ticker: string): Promise<PredictionRow[]> {
+  const { data, error } = await supabase
+    .from("predictions")
+    .select("model_name,model_version,horizon_sessions,as_of,evaluate_on,ticker,benchmark,emitted_at,prediction,data_ref")
+    .eq("origin", "production").eq("ticker", ticker.toUpperCase())
+    .order("horizon_sessions", { ascending: true });
+  if (error) throw error;
+  return (data ?? []) as PredictionRow[];
+}
+
 export interface OutcomeRow {
   prediction_id: number;
   realized_return: number | null;
