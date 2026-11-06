@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { valuateCompany, type CompanyValuation } from "../core/fundamental";
+import { aggregateFundamental, valuateCompany, type AggItem, type CompanyValuation } from "../core/fundamental";
 import type { FundamentalsPayload } from "../core/valuation";
 import { money, pct } from "../format";
 
@@ -44,6 +44,14 @@ export function FundamentalView({ rows, fundamentals }: { rows: FundRow[]; funda
   const coveredValue = valuations.filter((v) => v.val.available).reduce((s, v) => s + (v.row.marketValue ?? 0), 0);
   const nCovered = valuations.filter((v) => v.val.available).length;
 
+  const totalValue = rows.reduce((s, r) => s + (r.marketValue ?? 0), 0);
+  const agg = useMemo(() => {
+    const covered: AggItem[] = valuations
+      .filter((v) => v.val.available && (v.row.price ?? 0) > 0 && (v.row.marketValue ?? 0) > 0)
+      .map((v) => ({ marketValue: v.row.marketValue!, price: v.row.price!, scenarios: v.val.scenarios }));
+    return aggregateFundamental(covered, Math.max(0, totalValue - covered.reduce((s, c) => s + c.marketValue, 0)));
+  }, [valuations, totalValue]);
+
   return (
     <div className="grid gap-4">
       <div className="rounded-lg border border-term-border bg-term-panel2 px-3 py-2 text-xs text-term-muted">
@@ -59,6 +67,31 @@ export function FundamentalView({ rows, fundamentals }: { rows: FundRow[]; funda
         <span>Valor con cobertura fundamental: <b className="text-term-fg tabnum">{money(coveredValue)}</b>{equityValue > 0 && <> ({pct(coveredValue / equityValue)} del valor en acciones directas)</>}</span>
         <span className="text-term-faint">ETFs y materias primas se tratan aparte (abajo).</span>
       </div>
+
+      {/* Consolidado fundamental de cartera (Fase 3) */}
+      {agg.coveredCurrent > 0 && (
+        <div className="rounded-lg border border-term-border bg-term-panel2 p-3">
+          <div className="mb-1 text-sm font-semibold text-term-fg">Valor fundamental consolidado (horizonte 12 meses)</div>
+          <p className="mb-2 text-xs text-term-muted">
+            Suma por <b>escenario coherente</b> (todas las empresas en el mismo escenario) de valor de mercado × (valor razonable / precio).
+            Solo <b>{pct(agg.coveragePct)}</b> de la cartera ({money(agg.coveredCurrent)}) tiene valoración fundamental; el resto
+            ({money(agg.uncoveredCurrent)}: ETFs, materias primas y posiciones sin cobertura) se mantiene a <b>valor actual</b>, sin proyectar.
+          </p>
+          <div className="grid grid-cols-3 gap-2 text-center">
+            {agg.perScenario.map((p) => (
+              <div key={p.key} className="rounded-lg border border-term-border bg-term-panel px-2 py-2">
+                <div className="text-[10px] uppercase text-term-muted">{p.label}</div>
+                <div className="text-base font-semibold tabnum text-term-fg">{money(p.value)}</div>
+                <div className={`text-xs tabnum ${p.upside >= 0 ? "text-term-good" : "text-term-crit"}`}>{p.upside >= 0 ? "+" : ""}{pct(p.upside)} vs {money(agg.totalCurrent)}</div>
+              </div>
+            ))}
+          </div>
+          <p className="mt-2 text-xs text-term-faint">
+            Sensibilidad a la parte no cubierta: {agg.sensitivityUncovered.map((s) => `${s.label} → ${money(s.value)}`).join(" · ")}.
+            {agg.coveragePct < 0.5 && " Cobertura baja: NO interpretes este consolidado como una proyección de la cartera completa."}
+          </p>
+        </div>
+      )}
 
       {valuations.map(({ row, val }) => <CompanyCard key={row.ticker} row={row} val={val} />)}
 

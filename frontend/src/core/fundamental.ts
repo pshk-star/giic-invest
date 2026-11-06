@@ -53,6 +53,52 @@ export interface CompanyValuation {
   unavailableReason: string | null;
 }
 
+// --- Agregación a nivel cartera (Fase 3) -------------------------------------
+// Suma por ESCENARIO COHERENTE (todas las empresas en su mismo escenario), no
+// suma de medianas individuales. La parte sin valoración fundamental se mantiene
+// a valor de mercado ACTUAL (no se proyecta ni se extrapola la cobertura al 100%).
+export interface AggItem { marketValue: number; price: number; scenarios: FundScenario[]; }
+export interface PortfolioAgg {
+  totalCurrent: number;
+  coveredCurrent: number;
+  uncoveredCurrent: number;
+  coveragePct: number;
+  perScenario: { key: FundScenario["key"]; label: string; value: number; upside: number }[];
+  sensitivityUncovered: { label: string; value: number; upside: number }[];
+}
+
+export function aggregateFundamental(covered: AggItem[], uncoveredCurrent: number): PortfolioAgg {
+  const coveredCurrent = covered.reduce((s, it) => s + it.marketValue, 0);
+  const totalCurrent = coveredCurrent + uncoveredCurrent;
+  const keys: FundScenario["key"][] = ["conservador", "central", "favorable"];
+  const label = (k: FundScenario["key"]) => k === "conservador" ? "Conservador" : k === "central" ? "Central" : "Favorable";
+  const projectedCovered = (k: FundScenario["key"]) =>
+    covered.reduce((s, it) => {
+      const sc = it.scenarios.find((x) => x.key === k);
+      // valor proyectado de la posición = valor de mercado × (valor razonable / precio)
+      const factor = sc && it.price > 0 ? sc.fairValue / it.price : 1;
+      return s + it.marketValue * factor;
+    }, 0);
+  const perScenario = keys.map((k) => {
+    const value = projectedCovered(k) + uncoveredCurrent;
+    return { key: k, label: label(k), value, upside: totalCurrent > 0 ? value / totalCurrent - 1 : 0 };
+  });
+  // Sensibilidad del consolidado central a la parte NO cubierta (±10%).
+  const centralCovered = projectedCovered("central");
+  const sensitivityUncovered = [
+    { label: "No cubierto −10%", mult: 0.9 },
+    { label: "No cubierto +10%", mult: 1.1 },
+  ].map((s) => {
+    const value = centralCovered + uncoveredCurrent * s.mult;
+    return { label: s.label, value, upside: totalCurrent > 0 ? value / totalCurrent - 1 : 0 };
+  });
+  return {
+    totalCurrent, coveredCurrent, uncoveredCurrent,
+    coveragePct: totalCurrent > 0 ? coveredCurrent / totalCurrent : 0,
+    perScenario, sensitivityUncovered,
+  };
+}
+
 const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
 const FINANCIAL_SECTORS = ["financ", "bank", "insur", "seguro"];
 

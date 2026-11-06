@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { valuateCompany, type FundamentalInput } from "./fundamental";
+import { aggregateFundamental, valuateCompany, type AggItem, type FundamentalInput } from "./fundamental";
 import type { FundamentalsPayload } from "./valuation";
 
 const payload = (p: Partial<FundamentalsPayload>): FundamentalsPayload => ({
@@ -65,5 +65,42 @@ describe("valoración fundamental — disponibilidad y límites", () => {
   it("escenarios no se presentan como probabilidades (etiqueta en limitaciones)", () => {
     const r = valuateCompany(input({ price: 100, f: payload({ pe_ttm: 20, eps_growth_yoy: 0.1 }) }));
     expect(r.limitations.join(" ").toLowerCase()).toContain("no son percentiles");
+  });
+});
+
+describe("agregación fundamental a cartera (coherente por escenario)", () => {
+  const sc = (central: number) => [
+    { key: "conservador" as const, label: "C", fairValue: central * 0.8, upside: 0, assumptions: [] },
+    { key: "central" as const, label: "Central", fairValue: central, upside: 0, assumptions: [] },
+    { key: "favorable" as const, label: "F", fairValue: central * 1.2, upside: 0, assumptions: [] },
+  ];
+  const items: AggItem[] = [
+    { marketValue: 1000, price: 100, scenarios: sc(110) }, // factor 1.1 -> 1100
+    { marketValue: 2000, price: 50, scenarios: sc(55) },   // factor 1.1 -> 2200
+  ];
+
+  it("suma por escenario coherente + no cubierto a valor actual; cobertura explícita", () => {
+    const a = aggregateFundamental(items, 1000);
+    expect(a.totalCurrent).toBe(4000);
+    expect(a.coveredCurrent).toBe(3000);
+    expect(a.uncoveredCurrent).toBe(1000);
+    expect(a.coveragePct).toBeCloseTo(0.75, 6);
+    const central = a.perScenario.find((p) => p.key === "central")!;
+    expect(central.value).toBeCloseTo(4300, 6);      // 1100 + 2200 + 1000
+    expect(central.upside).toBeCloseTo(0.075, 6);
+  });
+
+  it("la parte no cubierta no se proyecta (se mantiene constante) y tiene sensibilidad propia", () => {
+    const a = aggregateFundamental(items, 1000);
+    expect(a.sensitivityUncovered.length).toBe(2);
+    // central cubierto = 3300; ±10% sobre 1000 -> 4200 y 4400
+    expect(a.sensitivityUncovered[0].value).toBeCloseTo(4200, 6);
+    expect(a.sensitivityUncovered[1].value).toBeCloseTo(4400, 6);
+  });
+
+  it("cartera sin posiciones cubiertas: cobertura 0, no extrapola", () => {
+    const a = aggregateFundamental([], 5000);
+    expect(a.coveragePct).toBe(0);
+    expect(a.perScenario.every((p) => p.value === 5000)).toBe(true);
   });
 });
