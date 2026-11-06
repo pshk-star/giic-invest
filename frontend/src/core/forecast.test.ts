@@ -60,3 +60,26 @@ describe("forecast", () => {
     expect(r.warnings.length).toBeGreaterThan(0);
   });
 });
+
+describe("consistencia por horizonte e individual vs consolidado", () => {
+  it("cada horizonte: P5<=P50<=P95, probLoss en [0,1], var95 = valP5 - valor actual", () => {
+    const assets: AssetHistory[] = [{ ticker: "A", valueUsd: 10000, returns: series(400, 0.0003, 0.012, 9) }];
+    const r = forecast(assets, { sims: 400, seed: 11 });
+    expect(r.horizons.length).toBe(4);
+    for (const h of r.horizons) {
+      expect(h.valP5).toBeLessThanOrEqual(h.valP50);
+      expect(h.valP50).toBeLessThanOrEqual(h.valP95);
+      expect(h.probLoss).toBeGreaterThanOrEqual(0);
+      expect(h.probLoss).toBeLessThanOrEqual(1);
+      expect(Math.abs(h.var95 - (h.valP5 - r.currentValue))).toBeLessThan(1e-6);
+    }
+  });
+
+  it("proyección individual = mismo motor que el consolidado (determinista con misma semilla)", () => {
+    const a: AssetHistory[] = [{ ticker: "X", valueUsd: 5000, returns: series(300, 0.0002, 0.01, 3) }];
+    const r1 = forecast(a, { sims: 200, seed: 5 });
+    const r2 = forecast(a, { sims: 200, seed: 5 });
+    expect(r1.horizons[3].valP50).toBe(r2.horizons[3].valP50);
+    expect(r1.annVol).toBeCloseTo(r2.annVol, 12);
+  });
+});

@@ -14,7 +14,7 @@ import {
   type FundamentalsPayload, type ScanFactors, factorExplanation, fairValueByFcfYield,
   fairValueByPE, impliedFcfGrowth, missingFundamentals, peerMedian, riskFlags,
 } from "../core/valuation";
-import { money, num, pct } from "../format";
+import { money, moneyScale, num, pct } from "../format";
 
 const EMPTY_F: FundamentalsPayload = {
   pe_ttm: null, pe_forward: null, ev_ebitda: null, fcf_yield: null, roic: null, roe: null,
@@ -345,11 +345,12 @@ export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: st
               <Metric label="Crec. ingresos" value={pct(fund.rev_growth_yoy)} help="interanual" />
               <Metric label="Crec. EPS" value={pct(fund.eps_growth_yoy)} help="interanual" />
               <Metric label="Deuda/Capital" value={fund.debt_to_equity !== null ? `${num(fund.debt_to_equity, 2)}×` : "—"} />
-              <Metric label="Market cap" value={fund.market_cap !== null ? money(fund.market_cap) : "—"} />
+              <Metric label="Market cap" value={moneyScale(fund.market_cap)} help="USD; para ADR = precio × (acciones ordinarias / ratio ADR)" />
             </div>
             <p className="mt-2 text-[11px] text-term-faint">
               Fuente: SEC EDGAR ({fund.taxonomy ?? "companyfacts"}{fund.currency ? ` · divisa de reporte ${fund.currency}` : ""}){fund.as_of ? ` · ejercicio anual al ${fund.as_of}` : ""}.
-              {fund.currency && fund.currency !== "USD" && " Márgenes, ROE y crecimientos son adimensionales (correctos en cualquier divisa); P/E y market cap se expresan contra el precio en USD."}
+              {" "}El P/E usa el EPS de ese ejercicio anual, <b>no es un P/E TTM</b> (el EPS interino no está en el XBRL de forma fiable).
+              {fund.currency && fund.currency !== "USD" && " Márgenes, ROE y crecimientos son adimensionales (correctos en cualquier divisa); P/E y market cap se expresan en USD."}
             </p>
             {missing.length > 0 && (
               <p className="mt-2 text-xs text-term-warn">No disponibles gratis: {missing.join(", ")}.</p>

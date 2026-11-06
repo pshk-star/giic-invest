@@ -103,12 +103,32 @@ def run() -> dict:
         except Exception as e:
             hist_counts[t] = f"error: {type(e).__name__}"
 
+    # Validación del historial (sesiones válidas + ajuste por splits/distribuciones).
+    hist_validation = {}
+    for t in ["ASML", "TSM", "NVDA"]:
+        try:
+            rows = cli.get(f"{base}/price_history", params={"select": "as_of,close", "ticker": f"eq.{t}",
+                                                            "order": "as_of.asc", "limit": "2000"}).json()
+            closes = [float(r["close"]) for r in rows if r.get("close") is not None]
+            dates = [r["as_of"] for r in rows]
+            rets = [abs(closes[i] / closes[i - 1] - 1) for i in range(1, len(closes)) if closes[i - 1] > 0]
+            maxret = max(rets) if rets else None
+            big = sum(1 for r in rets if r > 0.40)   # saltos >40% => posible split sin ajustar
+            hist_validation[t] = {
+                "n": len(closes), "first": dates[0] if dates else None, "last": dates[-1] if dates else None,
+                "max_abs_daily_return": round(maxret, 4) if maxret is not None else None,
+                "days_over_40pct": big,  # esperado 0 si está ajustado por splits
+            }
+        except Exception as e:
+            hist_validation[t] = {"error": f"{type(e).__name__}: {str(e)[:80]}"}
+
     return {
         "tables": out, "fx_rates_rows": fx,
         "fundamentals_target": fundamentals,
         "prices_target": prices_now,
         "asml_price_history_latest": asml_hist,
         "price_history_counts": hist_counts,
+        "price_history_validation": hist_validation,
         "edgar_diagnostic": edgar_diag(["ASML", "TSM"]),
         "rls_sql_for_pablo": RLS_SQL,
     }
