@@ -161,32 +161,61 @@ def _sum_last4_3m(qpts: List[Tuple[date, date, float, date]]) -> Optional[Tuple[
     return sum(p[2] for p in last), last[0][0], last[-1][1]
 
 
-def compute_eps_ttm(eps_q: List[Tuple[date, date, float, date]],
-                    ni_q: List[Tuple[date, date, float, date]],
-                    wdil_q: List[Tuple[date, date, float, date]]) -> Optional[dict]:
-    """EPS TTM homogéneo y split-safe desde trimestres de 3 meses.
+def _duration_rows(unit_rows: list) -> List[Tuple[date, date, float, int, date]]:
+    """(start,end,val,días,filed) de hechos de DURACIÓN, con filed más reciente por (start,end)."""
+    out = {}
+    for r in unit_rows or []:
+        s, e, v = _parse_date(r.get("start")), _parse_date(r.get("end")), r.get("val")
+        if v is None or not s or not e:
+            continue
+        days = (e - s).days
+        if days < 60:
+            continue
+        filed = _parse_date(r.get("filed")) or date.min
+        k = (s, e)
+        if k not in out or filed >= out[k][4]:
+            out[k] = (s, e, float(v), days, filed)
+    return sorted(out.values(), key=lambda x: x[1])
 
-    - Si la base de acciones es HOMOGÉNEA en la ventana (sin split): suma de EPS trimestrales
-      (cada trimestre ya usa sus acciones ponderadas diluidas) — NO se divide por el último trimestre.
-    - Si hubo un SPLIT en la ventana (salto >1.5× en acciones ponderadas diluidas): se usa
-      Σ(utilidad neta trimestral) / acciones diluidas del trimestre MÁS RECIENTE (base post-split,
-      invariante al split), y se marca el método.
-    """
-    eps4 = _sum_last4_3m(eps_q)
-    ni4 = _sum_last4_3m(ni_q)
-    if wdil_q and len(wdil_q) >= 4:
-        w = [p[2] for p in wdil_q[-4:]]
-        homogeneous = (min(w) > 0 and max(w) / min(w) < 1.5)
-        current_dil = wdil_q[-1][2]
-    else:
-        homogeneous, current_dil = (eps4 is not None), None
-    if homogeneous and eps4 is not None:
-        return {"eps_ttm": eps4[0], "method": "suma_eps_trimestral",
-                "start": eps4[1].isoformat(), "end": eps4[2].isoformat()}
-    if ni4 is not None and current_dil and current_dil > 0:
-        return {"eps_ttm": ni4[0] / current_dil, "method": "utilidad_neta/acciones_vigentes(split)",
-                "start": ni4[1].isoformat(), "end": ni4[2].isoformat()}
-    return None
+
+def ttm_flow(unit_rows: list) -> Optional[dict]:
+    """TTM de un FLUJO (utilidad, EPS por acción, OCF, CAPEX) por la identidad rodante:
+    TTM = acumulado del ejercicio en curso + ejercicio anterior completo − acumulado del año
+    anterior al mismo corte. Usa YTD + anual (etiquetas fiables), NO exige 4 trimestres sueltos,
+    y es consistente ante splits porque usa los COMPARATIVOS REEXPRESADOS (filed más reciente).
+    Si el último dato es el anual, TTM = anual (equivale al ejercicio)."""
+    dur = _duration_rows(unit_rows)
+    if not dur:
+        return None
+    annual = [(s, e, v) for (s, e, v, d, _f) in dur if 330 <= d <= 400]
+    interim = [(s, e, v, d) for (s, e, v, d, _f) in dur if 60 <= d <= 300]
+    if not annual:
+        return None
+    latest_annual = max(annual, key=lambda x: x[1])
+    latest_interim = max(interim, key=lambda x: x[1]) if interim else None
+    # Sin interino más reciente que el anual → TTM = anual (ejercicio completo).
+    if latest_interim is None or latest_interim[1] <= latest_annual[1]:
+        return {"ttm": latest_annual[2], "end": latest_annual[1].isoformat(), "window": "anual"}
+    s, e, y, L = latest_interim
+    import datetime as _dt
+    prior_annual = [a for a in annual if abs((a[1] - (s - _dt.timedelta(days=1))).days) <= 45]
+    prior_ytd = [it for it in interim if abs((it[1] - (e - _dt.timedelta(days=365))).days) <= 25
+                 and abs(it[3] - L) <= 25]
+    if prior_annual and prior_ytd:
+        ttm = y + prior_annual[0][2] - prior_ytd[0][2]
+        return {"ttm": ttm, "end": e.isoformat(), "window": f"YTD({L}d)+anual−YTD_prev"}
+    # Sin comparativos para cerrar la identidad: no se fabrica un TTM parcial.
+    return {"ttm": latest_annual[2], "end": latest_annual[1].isoformat(), "window": "anual(sin_comparativos_TTM)"}
+
+
+def _ttm_best(facts, taxonomy, names, unit) -> Optional[dict]:
+    """TTM del mejor concepto-variante disponible (el de corte más reciente)."""
+    best = None
+    for n in names:
+        t = ttm_flow(_concept(facts, taxonomy, n, unit))
+        if t and (best is None or t["end"] > best["end"]):
+            best = t
+    return best
 # ADR: 1 ADR = N acciones ordinarias (hechos verificables, no estimaciones).
 ADR_RATIO = {"TSM": 5.0, "ASML": 1.0}
 
@@ -408,16 +437,19 @@ def parse_companyfacts(facts: dict, ticker: str,
         eps_for_pe, eps_conv = eps_l, fx
     eps_annual_usd = (eps_for_pe * adr * eps_conv) if (eps_for_pe is not None and eps_conv) else None
 
-    # EPS TTM (4 trimestres de 3m, split-safe) en USD por ADR — Control C.
-    ttm = compute_eps_ttm(_q3m(facts, tax, M["eps"], f"{ccy}/shares"),
-                          _q3m(facts, tax, M["ni"], ccy),
-                          _q3m(facts, tax, M.get("wdil", []), "shares"))
+    # EPS TTM por identidad rodante (YTD + anual − YTD previo), split-safe vía comparativos
+    # reexpresados — Control C. Preferir la serie oficial USD/shares (ADR); si no, la local × FX.
     eps_ttm_usd = eps_ttm_method = eps_ttm_window = None
-    if ttm is not None:
-        conv = 1.0 if ccy == "USD" else (fx or 0)
+    ttm_eps = (_ttm_best(facts, tax, M["eps"], "USD/shares") if ccy != "USD" else None) \
+        or _ttm_best(facts, tax, M["eps"], f"{ccy}/shares")
+    if ttm_eps is not None and "YTD" in ttm_eps["window"]:   # sólo si es un TTM real (no el anual)
+        local_is_usd = (ccy == "USD") or bool(_ttm_best(facts, tax, M["eps"], "USD/shares"))
+        conv = 1.0 if local_is_usd else (fx or 0)
         if conv:
-            eps_ttm_usd = ttm["eps_ttm"] * adr * conv
-            eps_ttm_method, eps_ttm_window = ttm["method"], f'{ttm["start"]}..{ttm["end"]}'
+            # si vino de la serie USD/shares ya es por acción ordinaria USD → × adr; si local, × adr × fx
+            per_ord = ttm_eps["ttm"]
+            eps_ttm_usd = per_ord * adr * (1.0 if local_is_usd else fx)
+            eps_ttm_method, eps_ttm_window = "YTD_rodante", ttm_eps["window"]
     ttm_vs_annual_ratio = (eps_ttm_usd / eps_annual_usd) if (eps_ttm_usd and eps_annual_usd) else None
 
     # EPS primario: TTM si está disponible (más actual); si no, el anual. El fallback (abajo) sólo
@@ -452,9 +484,11 @@ def parse_companyfacts(facts: dict, ticker: str,
 
     # FCF anual y TTM (Control D). FCF = flujo operativo − CAPEX (verificado por etiqueta).
     fcf_annual_ccy = (ocf_l - capex_l) if (ocf_l is not None and capex_l is not None) else None
-    ocf_ttm = _sum_last4_3m(_q3m(facts, tax, M["ocf"], ccy))
-    capex_ttm = _sum_last4_3m(_q3m(facts, tax, M["capex"], ccy))
-    fcf_ttm_ccy = (ocf_ttm[0] - capex_ttm[0]) if (ocf_ttm and capex_ttm) else None
+    ocf_ttm = _ttm_best(facts, tax, M["ocf"], ccy)
+    capex_ttm = _ttm_best(facts, tax, M["capex"], ccy)
+    # TTM sólo si AMBOS son TTM reales (misma identidad rodante), para no mezclar anual con TTM.
+    fcf_ttm_ccy = (ocf_ttm["ttm"] - capex_ttm["ttm"]) if (
+        ocf_ttm and capex_ttm and "YTD" in ocf_ttm["window"] and "YTD" in capex_ttm["window"]) else None
     fcf_annual = (fcf_annual_ccy * fx) if (fcf_annual_ccy is not None and fx) else None   # USD
     fcf_ttm = (fcf_ttm_ccy * fx) if (fcf_ttm_ccy is not None and fx) else None             # USD
     fcf_for_yield = fcf_ttm if fcf_ttm is not None else fcf_annual
