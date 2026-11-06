@@ -50,6 +50,20 @@ class FallbackPrices(MarketDataProvider):
             remaining = [t for t in remaining if t not in out]
         return out
 
+    def get_stats(self, tickers: List[str]) -> Dict[str, dict]:
+        """Estadísticas de fallback (EPS TTM / acciones): primera fuente que las ofrezca."""
+        out: Dict[str, dict] = {}
+        for p in self.providers:
+            getter = getattr(p, "get_stats", None)
+            if not callable(getter):
+                continue
+            try:
+                got = getter([t for t in tickers if t not in out]) or {}
+            except Exception:
+                got = {}
+            out.update(got)
+        return out
+
     def get_fundamentals(self, tickers): return {}
     def get_etf_holdings(self, etf_ticker): return []
     def list_universe(self, exchanges=None, limit=None): return []

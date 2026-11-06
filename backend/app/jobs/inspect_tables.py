@@ -250,6 +250,23 @@ def run() -> dict:
             "decision": opp_decision(opp_funds.get(t) if has_fund else None, px, asof),
         }
 
+    # PROBE del fallback Yahoo (v7/quote): ¿devuelve EPS TTM / acciones sin autenticación?
+    yahoo_stats_probe = {}
+    try:
+        import httpx as _hx
+        yq = _hx.Client(timeout=20.0, headers={"User-Agent": "Mozilla/5.0 GIIC research admin@giic.app"})
+        rr = yq.get("https://query1.finance.yahoo.com/v7/finance/quote", params={"symbols": "V,TSM,NVDA,MA"})
+        yahoo_stats_probe["http_status"] = rr.status_code
+        if rr.status_code == 200:
+            for q in (((rr.json() or {}).get("quoteResponse", {}) or {}).get("result", []) or []):
+                yahoo_stats_probe[q.get("symbol")] = {
+                    "epsTrailingTwelveMonths": q.get("epsTrailingTwelveMonths"),
+                    "sharesOutstanding": q.get("sharesOutstanding"), "currency": q.get("currency")}
+        else:
+            yahoo_stats_probe["body_head"] = rr.text[:160]
+    except Exception as e:
+        yahoo_stats_probe = {"_error": f"{type(e).__name__}: {str(e)[:80]}"}
+
     # MATRIZ DE CALIDAD por ticker (Fase 3A.E): fuente, fecha, período, moneda, calidad y campos
     # faltantes — desde los fundamentales PERSISTIDOS (reflejan el pipeline real incl. fallback).
     matrix_tickers = ["NVDA", "TSM", "ASML", "META", "NFLX", "QQQ", "VOO", "SCHD", "GLD", "SLV",
@@ -303,6 +320,7 @@ def run() -> dict:
         "predictions_count": pred_count,
         "instruments_columns": instr_cols,
         "instruments_identity_persisted": instr_identity,
+        "yahoo_stats_probe": yahoo_stats_probe,
         "fundamentals_quality_matrix": quality_matrix,
         "advisor_opportunity_validation": advisor_validation,
         "fundamentals_target": fundamentals,
