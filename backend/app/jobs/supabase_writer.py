@@ -85,6 +85,12 @@ class SupabaseWriter:
                               headers={"Prefer": "return=minimal"})
         r.raise_for_status()
 
+    def delete_rows(self, table: str, params: dict) -> int:
+        r = self._client.delete(f"{self.base}/{table}", params=params,
+                                headers={"Prefer": "return=minimal"})
+        r.raise_for_status()
+        return 0
+
     def insert_append(self, table: str, rows: List[dict], on_conflict: str) -> int:
         """Inserta ignorando duplicados (NO hace UPDATE). Para tablas APPEND-ONLY cuyos
         triggers rechazan UPDATE: on conflict se omite la fila, no se actualiza."""
