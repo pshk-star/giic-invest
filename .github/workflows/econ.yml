@@ -1,0 +1,47 @@
+name: GIIC evaluación económica + integridad
+
+# Confirmatorio (solo lectura de datos): evaluación económica A/B vs SPY vs equiponderado,
+# verificación de integridad de la emisión y análisis de cobertura macro. Imprime JSON.
+on:
+  workflow_dispatch:
+    inputs:
+      range:
+        type: string
+        default: "15y"
+      tickers:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  econ:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-job.txt
+      - name: Verificación de integridad de la emisión (solo lectura)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python -m app.jobs.verify_emission
+      - name: Cobertura macro (excluir NFCI/HY) — solo lectura
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python -m app.research.macro_coverage
+      - name: Evaluación económica confirmatoria A/B/SPY/EW
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          ARGS="--range ${{ inputs.range }}"
+          if [ -n "${{ inputs.tickers }}" ]; then ARGS="$ARGS --tickers ${{ inputs.tickers }}"; fi
+          python -m app.research.econ_eval $ARGS
