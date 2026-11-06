@@ -104,27 +104,34 @@ def run() -> dict:
 
 def edgar_diag(tickers: list) -> dict:
     """Diagnóstico EN VIVO de companyfacts de EDGAR: qué taxonomías y conceptos
-    publica cada emisor (causa raíz de cobertura). Requiere EDGAR_USER_AGENT."""
+    publica cada emisor (causa raíz de cobertura). Requiere EDGAR_USER_AGENT.
+    Usa httpx directo (sin importar el provider, que depende de pandas)."""
     ua = os.getenv("EDGAR_USER_AGENT", "")
     if not ua or "@" not in ua:
         return {"error": "sin EDGAR_USER_AGENT"}
+    import httpx
+    cli = httpx.Client(timeout=30.0, headers={"User-Agent": ua})
     try:
-        from ..providers.edgar import EDGARProvider
-        prov = EDGARProvider(user_agent=ua)
+        tk = cli.get("https://www.sec.gov/files/company_tickers.json").json()
     except Exception as e:
-        return {"error": f"{type(e).__name__}: {str(e)[:80]}"}
+        return {"error": f"company_tickers: {type(e).__name__}: {str(e)[:80]}"}
+    cikmap = {row["ticker"].upper(): int(row["cik_str"]) for row in tk.values()}
     KEYS = ("revenue", "profit", "netincome", "earningspershare", "equity",
             "operatingactivities", "cashflowsfromused")
     out = {}
     for t in tickers:
-        try:
-            facts = prov._facts(t)
-        except Exception as e:
-            out[t] = {"error": f"{type(e).__name__}: {str(e)[:80]}"}
+        cik = cikmap.get(t.upper())
+        if not cik:
+            out[t] = {"cik": None, "note": "ticker no está en company_tickers.json de la SEC"}
             continue
-        cik = prov._cik.get(t.upper())
-        if not facts:
-            out[t] = {"cik": cik, "facts": None}
+        try:
+            r = cli.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json")
+            if r.status_code != 200:
+                out[t] = {"cik": cik, "http_status": r.status_code}
+                continue
+            facts = r.json()
+        except Exception as e:
+            out[t] = {"cik": cik, "error": f"{type(e).__name__}: {str(e)[:80]}"}
             continue
         f = (facts.get("facts", {}) or {})
         summ = {"cik": cik, "taxonomies": list(f.keys())}
@@ -133,14 +140,13 @@ def edgar_diag(tickers: list) -> dict:
             if not node:
                 continue
             interesting = [c for c in node.keys() if any(k in c.lower() for k in KEYS)][:25]
-            units = {}
+            detail = {}
             for c in interesting[:12]:
                 u = list((node[c].get("units", {}) or {}).keys())
-                # último valor con su formulario, por unidad principal
                 rows = (node[c].get("units", {}) or {}).get(u[0], []) if u else []
                 last = rows[-1] if rows else {}
-                units[c] = {"units": u, "last_form": last.get("form"), "last_end": last.get("end")}
-            summ[tax] = {"n_concepts": len(node), "concepts": interesting, "detail": units}
+                detail[c] = {"units": u, "last_form": last.get("form"), "last_end": last.get("end")}
+            summ[tax] = {"n_concepts": len(node), "concepts": interesting, "detail": detail}
         out[t] = summ
     return out
 
