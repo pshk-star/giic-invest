@@ -67,6 +67,20 @@ class Fundamentals:
     ni_source_concept: Optional[str] = None  # concepto EDGAR de la utilidad neta (o "reconstruido: ...")
     ni_period: Optional[str] = None       # período fiscal de la utilidad neta usada
     shares_source: Optional[str] = None   # procedencia de las acciones vigentes usadas en market cap
+    # --- TTM y balance (Fase 3A C/D) ---
+    eps_annual: Optional[float] = None    # EPS diluido del último ejercicio anual (USD por ADR)
+    eps_ttm: Optional[float] = None       # EPS diluido TTM (4 trimestres de 3m, split-safe)
+    eps_ttm_method: Optional[str] = None  # suma_eps_trimestral | utilidad_neta/acciones_vigentes
+    eps_ttm_window: Optional[str] = None  # ventana fiscal de los 4 trimestres usados
+    ttm_vs_annual_ratio: Optional[float] = None  # EPS_TTM / EPS_anual (cross-check, ≈1 si equivalente)
+    fcf_annual: Optional[float] = None    # FCF anual (USD): OCF − CAPEX del ejercicio
+    fcf_ttm: Optional[float] = None       # FCF TTM (USD): ΣOCF_3m − ΣCAPEX_3m de 4 trimestres
+    diluted_shares: Optional[float] = None  # acciones promedio ponderadas diluidas (período de ref.)
+    gross_debt: Optional[float] = None    # deuda bruta (corto + largo plazo), divisa de reporte
+    cash_and_sti: Optional[float] = None  # efectivo + inversiones de corto plazo
+    net_debt: Optional[float] = None      # deuda neta = deuda bruta − efectivo
+    gross_margin: Optional[float] = None  # utilidad bruta / ingresos
+    operating_margin: Optional[float] = None  # resultado operativo / ingresos
     pe_forward: Optional[float] = None
     ev_ebitda: Optional[float] = None
     fcf_yield: Optional[float] = None     # free cash flow / market cap

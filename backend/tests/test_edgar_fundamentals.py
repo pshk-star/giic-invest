@@ -210,6 +210,65 @@ def test_fallback_never_overwrites_edgar_and_respects_currency():
     assert g.eps is None and g.pe_ttm is None                # EUR ≠ USD → no se fabrica
 
 
+def _q(unit, quarters, form="10-Q"):
+    return {unit: [{"start": s, "end": e, "val": v, "form": form, "filed": e} for s, e, v in quarters]}
+
+
+_Q25 = [("2025-01-01", "2025-03-31"), ("2025-04-01", "2025-06-30"),
+        ("2025-07-01", "2025-09-30"), ("2025-10-01", "2025-12-31")]
+
+
+def _qrows(vals, unit="USD"):
+    """Filas trimestrales de 3 meses (start,end,val) para 2025, filed = fin de trimestre."""
+    return [{"start": s, "end": e, "val": v, "form": "10-Q", "filed": e} for (s, e), v in zip(_Q25, vals)]
+
+
+def test_eps_ttm_and_fcf_ttm_and_net_debt_from_quarterly():
+    facts = {"facts": {"us-gaap": {
+        "Revenues": {"units": {"USD": [_row(2024, 1800), _row(2025, 2000)]}},
+        "NetIncomeLoss": {"units": {"USD": [_row(2024, 400), _row(2025, 440)] + _qrows([100, 110, 110, 120])}},
+        "EarningsPerShareDiluted": {"units": {"USD/shares": [_row(2024, 4.0), _row(2025, 4.4)] + _qrows([1.0, 1.1, 1.1, 1.2])}},
+        "WeightedAverageNumberOfDilutedSharesOutstanding": {"units": {"shares": [_row(2025, 100)] + _qrows([100, 100, 100, 100])}},
+        "NetCashProvidedByUsedInOperatingActivities": {"units": {"USD": [_row(2025, 500)] + _qrows([120, 130, 130, 120])}},
+        "PaymentsToAcquirePropertyPlantAndEquipment": {"units": {"USD": [_row(2025, 100)] + _qrows([25, 25, 25, 25])}},
+        "GrossProfit": {"units": {"USD": [_row(2025, 1200)]}},
+        "OperatingIncomeLoss": {"units": {"USD": [_row(2025, 600)]}},
+        "StockholdersEquity": {"units": {"USD": [{"end": "2025-12-31", "val": 2200, "form": "10-K", "filed": "2026-02-15"}]}},
+        "LongTermDebtNoncurrent": {"units": {"USD": [{"end": "2025-12-31", "val": 1000, "form": "10-K", "filed": "2026-02-15"}]}},
+        "LongTermDebtCurrent": {"units": {"USD": [{"end": "2025-12-31", "val": 200, "form": "10-K", "filed": "2026-02-15"}]}},
+        "CashAndCashEquivalentsAtCarryingValue": {"units": {"USD": [{"end": "2025-12-31", "val": 300, "form": "10-K", "filed": "2026-02-15"}]}},
+    }, "dei": {"EntityCommonStockSharesOutstanding": {"units": {"shares": [{"end": "2025-12-31", "val": 100, "form": "10-K", "filed": "2026-02-15"}]}}}}}
+    f = parse_companyfacts(facts, "QQ", price=44.0)
+    # EPS TTM = suma de 4 EPS trimestrales (base homogénea) = 4.4; anual = 4.4 (equivalente) → ratio≈1
+    assert abs(f.eps_ttm - 4.4) < 1e-9 and f.eps_ttm_method == "suma_eps_trimestral"
+    assert abs(f.eps_annual - 4.4) < 1e-9
+    assert f.eps_basis == "ttm" and abs(f.pe_ttm - 10.0) < 1e-9     # usa TTM
+    assert abs(f.ttm_vs_annual_ratio - 1.0) < 1e-9
+    # FCF: anual = 500-100 = 400; TTM = (120+130+130+120) - (25*4) = 500-100 = 400
+    assert abs(f.fcf_annual - 400.0) < 1e-9 and abs(f.fcf_ttm - 400.0) < 1e-9
+    # Deuda: bruta = 1000+200 = 1200; neta = 1200 - 300 = 900
+    assert abs(f.gross_debt - 1200.0) < 1e-9 and abs(f.cash_and_sti - 300.0) < 1e-9 and abs(f.net_debt - 900.0) < 1e-9
+    assert abs(f.gross_margin - 0.6) < 1e-9 and abs(f.operating_margin - 0.3) < 1e-9   # 1200/2000, 600/2000
+    assert abs(f.diluted_shares - 100.0) < 1e-9
+
+
+def test_eps_ttm_split_uses_net_income_over_current_shares():
+    # Split 10:1 dentro de la ventana: acciones ponderadas saltan 100→1000 → NO sumar EPS por acción;
+    # usar Σ utilidad neta / acciones vigentes (post-split), método marcado.
+    q = lambda vals: [(s, e, v) for (s, e), v in zip(_Q25, vals)]
+    facts = {"facts": {"us-gaap": {
+        "Revenues": {"units": {"USD": [_row(2025, 2000)]}},
+        "NetIncomeLoss": {"units": {"USD": [_row(2025, 440), *[{"start": s, "end": e, "val": v, "form": "10-Q", "filed": e} for (s, e), v in zip(_Q25, [100, 110, 110, 120])]]}},
+        "EarningsPerShareDiluted": {"units": {"USD/shares": [_row(2025, 4.4), *[{"start": s, "end": e, "val": v, "form": "10-Q", "filed": e} for (s, e), v in zip(_Q25, [1.0, 1.1, 0.11, 0.12])]]}},
+        "WeightedAverageNumberOfDilutedSharesOutstanding": {"units": {"shares": [_row(2025, 1000), *[{"start": s, "end": e, "val": v, "form": "10-Q", "filed": e} for (s, e), v in zip(_Q25, [100, 100, 1000, 1000])]]}},
+        "StockholdersEquity": {"units": {"USD": [{"end": "2025-12-31", "val": 2200, "form": "10-K", "filed": "2026-02-15"}]}},
+    }, "dei": {"EntityCommonStockSharesOutstanding": {"units": {"shares": [{"end": "2025-12-31", "val": 1000, "form": "10-K", "filed": "2026-02-15"}]}}}}}
+    f = parse_companyfacts(facts, "SPL", price=5.0)
+    # Σ NI = 440; acciones vigentes (último trimestre) = 1000 → EPS TTM = 0.44 (no la suma mixta de EPS)
+    assert abs(f.eps_ttm - 0.44) < 1e-9
+    assert f.eps_ttm_method.startswith("utilidad_neta/acciones_vigentes")
+
+
 def test_detect_eps_split_mixing_flags_crossing_a_split():
     from datetime import date
     from app.providers.edgar import detect_eps_split_mixing

@@ -281,15 +281,22 @@ def run() -> dict:
             if not p:
                 quality_matrix[t] = {"fundamentals": "ausente (ETF/commodity o sin cobertura EDGAR)"}
                 continue
-            missing = [k for k in ("eps", "pe_ttm", "roe", "net_margin", "fcf_yield") if p.get(k) in (None, "")]
+            missing = [k for k in ("eps_annual", "eps_ttm", "fcf_annual", "fcf_ttm", "net_debt",
+                                    "diluted_shares", "roe", "net_margin") if p.get(k) in (None, "")]
             quality_matrix[t] = {
-                "eps": p.get("eps"), "eps_source": p.get("eps_source"), "eps_basis": p.get("eps_basis"),
+                "eps_annual": p.get("eps_annual"), "eps_ttm": p.get("eps_ttm"),
+                "eps_ttm_method": p.get("eps_ttm_method"), "ttm_vs_annual_ratio": p.get("ttm_vs_annual_ratio"),
+                "eps_primary": p.get("eps"), "eps_basis": p.get("eps_basis"), "eps_source": p.get("eps_source"),
+                "fcf_annual": p.get("fcf_annual"), "fcf_ttm": p.get("fcf_ttm"),
+                "net_debt": p.get("net_debt"), "gross_debt": p.get("gross_debt"), "cash": p.get("cash_and_sti"),
+                "diluted_shares": p.get("diluted_shares"),
+                "gross_margin": p.get("gross_margin"), "operating_margin": p.get("operating_margin"),
+                "net_margin": p.get("net_margin"), "roe": p.get("roe"),
                 "period_as_of": p.get("as_of"), "currency": p.get("currency"), "taxonomy": p.get("taxonomy"),
                 "ni_source_concept": p.get("ni_source_concept"), "ni_reconstructed": p.get("ni_reconstructed"),
                 "consistency_independent": p.get("consistency_independent"),
                 "eps_consistent": p.get("eps_consistent"), "eps_check_ratio": p.get("eps_check_ratio"),
                 "shares_source": p.get("shares_source"), "fallback_sources": p.get("fallback_sources"),
-                "pe_ttm": p.get("pe_ttm"), "roe": p.get("roe"), "net_margin": p.get("net_margin"),
                 "missing_fields": missing,
             }
     except Exception as e:

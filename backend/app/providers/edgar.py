@@ -43,6 +43,13 @@ US_GAAP_MAP = {
     "capex": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets"],
     "wdil": ["WeightedAverageNumberOfDilutedSharesOutstanding"],
     "wbas": ["WeightedAverageNumberOfSharesOutstandingBasic", "WeightedAverageNumberOfShareOutstandingBasicAndDiluted"],
+    "gross_profit": ["GrossProfit"],
+    "op_income": ["OperatingIncomeLoss"],
+    "cash": ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsAndShortTermInvestments",
+             "CashAndCashEquivalentsAndShortTermInvestments"],
+    "sti": ["ShortTermInvestments"],
+    "debt_lt": ["LongTermDebtNoncurrent", "LongTermDebt"],
+    "debt_cur": ["LongTermDebtCurrent", "DebtCurrent", "ShortTermBorrowings"],
 }
 IFRS_MAP = {
     "rev": ["RevenueFromContractsWithCustomers", "Revenue"],
@@ -54,6 +61,12 @@ IFRS_MAP = {
     "capex": ["PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities"],
     "wdil": ["WeightedAverageShares", "AdjustedWeightedAverageShares"],
     "wbas": ["WeightedAverageShares"],
+    "gross_profit": ["GrossProfit"],
+    "op_income": ["ProfitLossFromOperatingActivities", "OperatingIncomeLoss"],
+    "cash": ["CashAndCashEquivalents"],
+    "sti": ["ShorttermInvestments", "CurrentInvestments"],
+    "debt_lt": ["NoncurrentPortionOfNoncurrentBorrowings", "NoncurrentBorrowings", "Borrowings"],
+    "debt_cur": ["CurrentBorrowings", "ShorttermBorrowings"],
 }
 
 
@@ -125,6 +138,55 @@ def detect_eps_split_mixing(eps_quarterly_points: List[Tuple[date, float]],
     ends = [d for d, _ in eps_quarterly_points]
     lo, hi = min(ends), max(ends)
     return any(lo < sd <= hi for sd in split_dates)
+
+
+def _q3m(facts, taxonomy, names, unit) -> List[Tuple[date, date, float, date]]:
+    """Mejor serie TRIMESTRAL de 3 meses (variante de concepto con más puntos recientes)."""
+    best: List[Tuple[date, date, float, date]] = []
+    for n in names:
+        pts = quarterly_3m_points(_concept(facts, taxonomy, n, unit))
+        if pts and (not best or pts[-1][1] > best[-1][1] or len(pts) > len(best)):
+            best = pts
+    return best
+
+
+def _sum_last4_3m(qpts: List[Tuple[date, date, float, date]]) -> Optional[Tuple[float, date, date]]:
+    """Suma de 4 trimestres de 3m CONSECUTIVOS (sin YTD, sin huecos). None si no hay 4 contiguos."""
+    if not qpts or len(qpts) < 4:
+        return None
+    last = qpts[-4:]
+    for i in range(1, 4):
+        if (last[i][0] - last[i - 1][1]).days > 10:      # hueco entre trimestres
+            return None
+    return sum(p[2] for p in last), last[0][0], last[-1][1]
+
+
+def compute_eps_ttm(eps_q: List[Tuple[date, date, float, date]],
+                    ni_q: List[Tuple[date, date, float, date]],
+                    wdil_q: List[Tuple[date, date, float, date]]) -> Optional[dict]:
+    """EPS TTM homogéneo y split-safe desde trimestres de 3 meses.
+
+    - Si la base de acciones es HOMOGÉNEA en la ventana (sin split): suma de EPS trimestrales
+      (cada trimestre ya usa sus acciones ponderadas diluidas) — NO se divide por el último trimestre.
+    - Si hubo un SPLIT en la ventana (salto >1.5× en acciones ponderadas diluidas): se usa
+      Σ(utilidad neta trimestral) / acciones diluidas del trimestre MÁS RECIENTE (base post-split,
+      invariante al split), y se marca el método.
+    """
+    eps4 = _sum_last4_3m(eps_q)
+    ni4 = _sum_last4_3m(ni_q)
+    if wdil_q and len(wdil_q) >= 4:
+        w = [p[2] for p in wdil_q[-4:]]
+        homogeneous = (min(w) > 0 and max(w) / min(w) < 1.5)
+        current_dil = wdil_q[-1][2]
+    else:
+        homogeneous, current_dil = (eps4 is not None), None
+    if homogeneous and eps4 is not None:
+        return {"eps_ttm": eps4[0], "method": "suma_eps_trimestral",
+                "start": eps4[1].isoformat(), "end": eps4[2].isoformat()}
+    if ni4 is not None and current_dil and current_dil > 0:
+        return {"eps_ttm": ni4[0] / current_dil, "method": "utilidad_neta/acciones_vigentes(split)",
+                "start": ni4[1].isoformat(), "end": ni4[2].isoformat()}
+    return None
 # ADR: 1 ADR = N acciones ordinarias (hechos verificables, no estimaciones).
 ADR_RATIO = {"TSM": 5.0, "ASML": 1.0}
 
@@ -339,13 +401,33 @@ def parse_companyfacts(facts: dict, ticker: str,
     fx = 1.0 if ccy == "USD" else fx_map.get(ccy)      # USD por 1 unidad de la divisa
     # EPS por ADR en USD: preferir la cifra oficial en USD/shares (conv=1); si no, convertir
     # la local con FX. En ambos casos × adr una sola vez (acción ordinaria -> ADR).
+    # EPS ANUAL (EDGAR) en USD por ADR.
     if eps_usd_series:
         eps_for_pe, eps_conv = _at(eps_usd_series, ref) or eps_usd_series[-1][1], 1.0
     else:
         eps_for_pe, eps_conv = eps_l, fx
-    eps_usd = (eps_for_pe * adr * eps_conv) if (eps_for_pe is not None and eps_conv) else None
-    eps_source = "edgar" if eps_usd is not None else None
-    eps_basis = "reported_annual" if eps_usd is not None else None
+    eps_annual_usd = (eps_for_pe * adr * eps_conv) if (eps_for_pe is not None and eps_conv) else None
+
+    # EPS TTM (4 trimestres de 3m, split-safe) en USD por ADR — Control C.
+    ttm = compute_eps_ttm(_q3m(facts, tax, M["eps"], f"{ccy}/shares"),
+                          _q3m(facts, tax, M["ni"], ccy),
+                          _q3m(facts, tax, M.get("wdil", []), "shares"))
+    eps_ttm_usd = eps_ttm_method = eps_ttm_window = None
+    if ttm is not None:
+        conv = 1.0 if ccy == "USD" else (fx or 0)
+        if conv:
+            eps_ttm_usd = ttm["eps_ttm"] * adr * conv
+            eps_ttm_method, eps_ttm_window = ttm["method"], f'{ttm["start"]}..{ttm["end"]}'
+    ttm_vs_annual_ratio = (eps_ttm_usd / eps_annual_usd) if (eps_ttm_usd and eps_annual_usd) else None
+
+    # EPS primario: TTM si está disponible (más actual); si no, el anual. El fallback (abajo) sólo
+    # actúa si no hay ninguno de EDGAR.
+    if eps_ttm_usd is not None:
+        eps_usd, eps_source, eps_basis = eps_ttm_usd, "edgar", "ttm"
+    elif eps_annual_usd is not None:
+        eps_usd, eps_source, eps_basis = eps_annual_usd, "edgar", "reported_annual"
+    else:
+        eps_usd = eps_source = eps_basis = None
 
     # --- FALLBACK MULTIFUENTE CONTROLADO (p. ej. Yahoo) ---
     # SÓLO cuando EDGAR no da el dato; NUNCA sobrescribe un dato oficial; exige coherencia de
@@ -367,10 +449,32 @@ def parse_companyfacts(facts: dict, ticker: str,
 
     adr_count = (shares / adr) if shares else None
     market_cap = (price * adr_count) if (price and adr_count) else None
-    fcf = (ocf_l - capex_l) if (ocf_l is not None and capex_l is not None) else None
-    fcf_usd = (fcf * fx) if (fcf is not None and fx) else None
-    fcf_yield = (fcf_usd / market_cap) if (fcf_usd is not None and market_cap) else None
+
+    # FCF anual y TTM (Control D). FCF = flujo operativo − CAPEX (verificado por etiqueta).
+    fcf_annual_ccy = (ocf_l - capex_l) if (ocf_l is not None and capex_l is not None) else None
+    ocf_ttm = _sum_last4_3m(_q3m(facts, tax, M["ocf"], ccy))
+    capex_ttm = _sum_last4_3m(_q3m(facts, tax, M["capex"], ccy))
+    fcf_ttm_ccy = (ocf_ttm[0] - capex_ttm[0]) if (ocf_ttm and capex_ttm) else None
+    fcf_annual = (fcf_annual_ccy * fx) if (fcf_annual_ccy is not None and fx) else None   # USD
+    fcf_ttm = (fcf_ttm_ccy * fx) if (fcf_ttm_ccy is not None and fx) else None             # USD
+    fcf_for_yield = fcf_ttm if fcf_ttm is not None else fcf_annual
+    fcf_yield = (fcf_for_yield / market_cap) if (fcf_for_yield is not None and market_cap) else None
     pe_ttm = (price / eps_usd) if (price and eps_usd and eps_usd > 0) else None
+
+    # Deuda (Control D): bruta = corto + largo plazo; neta = bruta − efectivo. En divisa de reporte
+    # (ver `currency`); se distingue explícitamente bruta/efectivo/neta y se omite si falta.
+    debt_lt = _at(_best_instant(facts, tax, M.get("debt_lt", []), ccy), ref)
+    debt_cur = _at(_best_instant(facts, tax, M.get("debt_cur", []), ccy), ref)
+    gross_debt = ((debt_lt or 0.0) + (debt_cur or 0.0)) if (debt_lt is not None or debt_cur is not None) else None
+    cash_and_sti = _at(_best_instant(facts, tax, M.get("cash", []), ccy), ref)   # efectivo y equivalentes (o combinado)
+    net_debt = (gross_debt - cash_and_sti) if (gross_debt is not None and cash_and_sti is not None) else None
+
+    # Márgenes adicionales (mismo período de referencia).
+    gp = _at(_best_annual(facts, tax, M.get("gross_profit", []), ccy), ref)
+    opi = _at(_best_annual(facts, tax, M.get("op_income", []), ccy), ref)
+    gross_margin = (gp / rev_l) if (gp is not None and rev_l) else None
+    operating_margin = (opi / rev_l) if (opi is not None and rev_l) else None
+    diluted_shares = wdil_l
 
     return Fundamentals(
         ticker=ticker,
@@ -386,6 +490,19 @@ def parse_companyfacts(facts: dict, ticker: str,
         ni_source_concept=ni_source_concept,
         ni_period=ni_period,
         shares_source=shares_source,
+        eps_annual=eps_annual_usd,
+        eps_ttm=eps_ttm_usd,
+        eps_ttm_method=eps_ttm_method,
+        eps_ttm_window=eps_ttm_window,
+        ttm_vs_annual_ratio=(round(ttm_vs_annual_ratio, 4) if ttm_vs_annual_ratio is not None else None),
+        fcf_annual=fcf_annual,
+        fcf_ttm=fcf_ttm,
+        diluted_shares=diluted_shares,
+        gross_debt=gross_debt,
+        cash_and_sti=cash_and_sti,
+        net_debt=net_debt,
+        gross_margin=gross_margin,
+        operating_margin=operating_margin,
         pe_forward=None,            # no disponible gratis en EDGAR
         ev_ebitda=None,             # requiere deuda/caja + EBITDA fiables
         fcf_yield=fcf_yield,
