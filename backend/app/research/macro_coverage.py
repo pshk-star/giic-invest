@@ -22,20 +22,23 @@ SHORT = ["NFCI", "BAMLH0A0HYM2"]
 ALL = LONG + SHORT
 
 
-def _avail_dates(by, series_ids):
-    """Fechas de observación en que TODAS las series de la lista tienen al menos un
-    vintage PIT-válido (vintage<=obs_date y release<=obs_date como aproximación de
-    'conocido en o cerca de la fecha'); aquí simplificamos a: existe la observación.
-    Devuelve el conjunto de obs_date cubiertos por cada serie y la intersección."""
-    per = {}
+def pit_window(by, series_ids):
+    """Ventana en que TODAS las series son PIT-disponibles a la vez. La restricción
+    vinculante es la ÚLTIMA serie en volverse conocida: inicio = max(primer vintage).
+    Fin = min(última obs). Correcto con frecuencias mixtas (mensual vs diaria): NO usa
+    intersección de fechas exactas (que se vaciaría por calendarios distintos)."""
+    first_vints, last_obs = [], []
     for s in series_ids:
-        per[s] = set(r["obs_date"] for r in by.get(s, []) if r.get("value") is not None)
-    if not per:
-        return set(), per
-    inter = None
-    for s, dd in per.items():
-        inter = dd if inter is None else (inter & dd)
-    return (inter or set()), per
+        rs = by.get(s, [])
+        vs = [r["vintage"] for r in rs if r.get("vintage")]
+        ob = [r["obs_date"] for r in rs if r.get("value") is not None]
+        if not vs or not ob:
+            return {"start": None, "end": None, "years": 0, "binding_series": s}
+        first_vints.append((min(vs), s)); last_obs.append(max(ob))
+    start, binding = max(first_vints)          # la última en estar disponible manda
+    end = min(last_obs)
+    years = round(_y(end) - _y(start), 1) if (start and end and end >= start) else 0
+    return {"start": start, "end": end, "years": years, "binding_series": binding}
 
 
 def run(writer) -> dict:
@@ -60,38 +63,33 @@ def run(writer) -> dict:
     long_present = [s for s in LONG if by.get(s)]
     all_present = [s for s in ALL if by.get(s)]
     missing = [s for s in ALL if not by.get(s)]
-    inter_all, _ = _avail_dates(by, all_present)
-    inter_long, _ = _avail_dates(by, long_present)
 
-    def summ(dates):
-        ds = sorted(dates)
-        return {"n_dates": len(ds), "first": ds[0] if ds else None, "last": ds[-1] if ds else None,
-                "years": (round((_y(ds[-1]) - _y(ds[0])), 1) if ds else 0)}
-
-    with_all = summ(inter_all)
-    with_long = summ(inter_long)
-    gained = with_long["n_dates"] - with_all["n_dates"]
-    gained_years = round((with_long["years"] - with_all["years"]), 1)
+    with_all = pit_window(by, all_present)
+    with_long = pit_window(by, long_present)
+    gained_years = round((with_long["years"] or 0) - (with_all["years"] or 0), 1)
 
     return {
         "read_only": True, "modifies_C": False,
         "long_series_used": long_present, "series_missing_in_db": missing,
         "series_spans": spans,
-        "common_sample_with_all_6": with_all,
-        "common_sample_long_only_excluding_NFCI_HY": with_long,
+        "pit_window_with_all_6": with_all,
+        "pit_window_long_only_excluding_NFCI_HY": with_long,
         "information_change": {
-            "extra_common_dates": gained,
+            "start_moves_from": with_all["start"], "start_moves_to": with_long["start"],
+            "binding_series_all": with_all["binding_series"],
+            "binding_series_long": with_long["binding_series"],
             "extra_years": gained_years,
-            "interpretation": ("Excluir NFCI y HY extiende la ventana común macro de "
-                               f"{with_all['first']} a {with_long['first']} "
-                               f"(+{gained_years} años, +{gained} fechas de observación comunes). "
-                               "La pérdida es la señal de condiciones financieras (NFCI) y de crédito "
-                               "HY (BAMLH0A0HYM2); en el experimento A/B/C la macro NO aportó señal "
-                               "transversal (es constante por fecha), por lo que la pérdida informativa "
-                               "para ESTE uso transversal es baja. Validar en una C versionada aparte."),
+            "interpretation": (
+                f"La disponibilidad PIT conjunta de las 6 series arranca en {with_all['start']} "
+                f"(la vinculante es {with_all['binding_series']}). Excluyendo NFCI y HY, arranca en "
+                f"{with_long['start']} (vinculante {with_long['binding_series']}): +{gained_years} años "
+                "de historia PIT utilizable. Se pierde la señal de condiciones financieras (NFCI) y "
+                "crédito HY; pero en el experimento A/B/C la macro NO aportó señal transversal (es "
+                "constante por fecha), por lo que para ESTE uso transversal la pérdida informativa es "
+                "baja. Cualquier C nueva debe versionarse y evaluarse por separado."),
         },
-        "caveat": "Cobertura por existencia de observación PIT; una C nueva debe re-evaluarse "
-                  "con vintage/release estrictos y comparación pareada dentro de su propia muestra.",
+        "caveat": "Ventana por restricción de vintage (la última serie en estar disponible manda). "
+                  "Frecuencias mixtas: no se usa intersección de fechas exactas.",
     }
 
 
