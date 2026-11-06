@@ -173,6 +173,10 @@ def parse_companyfacts(facts: dict, ticker: str,
         tax, ccy, M, rev, ni = "us-gaap", "USD", US_GAAP_MAP, [], []
 
     eps = _best_annual(facts, tax, M["eps"], f"{ccy}/shares")
+    # EPS oficial en USD por acción (p. ej. TSM publica DilutedEarningsLossPerShare en
+    # USD/shares además de TWD): se prefiere para el P/E y se evita convertir desde la
+    # divisa local. Es por ACCIÓN ORDINARIA; el factor ADR se aplica una sola vez abajo.
+    eps_usd_series = _best_annual(facts, tax, M["eps"], "USD/shares") if ccy != "USD" else []
     equity = _best_instant(facts, tax, M["equity"], ccy)
     ocf = _best_annual(facts, tax, M["ocf"], ccy)
     capex = _best_annual(facts, tax, M["capex"], ccy)
@@ -203,7 +207,13 @@ def parse_companyfacts(facts: dict, ticker: str,
     # Dependientes de divisa/ADR.
     adr = adr_ratio if adr_ratio else 1.0
     fx = 1.0 if ccy == "USD" else fx_map.get(ccy)      # USD por 1 unidad de la divisa
-    eps_usd = (eps_l * adr * fx) if (eps_l is not None and fx) else None
+    # EPS por ADR en USD: preferir la cifra oficial en USD/shares (conv=1); si no, convertir
+    # la local con FX. En ambos casos × adr una sola vez (acción ordinaria -> ADR).
+    if eps_usd_series:
+        eps_for_pe, eps_conv = eps_usd_series[-1][1], 1.0
+    else:
+        eps_for_pe, eps_conv = eps_l, fx
+    eps_usd = (eps_for_pe * adr * eps_conv) if (eps_for_pe is not None and eps_conv) else None
     adr_count = (shares / adr) if shares else None
     market_cap = (price * adr_count) if (price and adr_count) else None
     fcf = (ocf_l - capex_l) if (ocf_l is not None and capex_l is not None) else None

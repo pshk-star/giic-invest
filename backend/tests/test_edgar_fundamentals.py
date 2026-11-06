@@ -76,3 +76,32 @@ def test_adr_ratio_scales_eps_and_market_cap():
     f5 = parse_companyfacts(ASML_FACTS, "X5", price=600.0, fx_map={"EUR": 1.0}, adr_ratio=5.0)
     assert abs(f5.pe_ttm - f1.pe_ttm / 5.0) < 1e-6           # eps 5x mayor -> P/E 5x menor
     assert abs(f5.market_cap - f1.market_cap / 5.0) < 1e-6   # menos ADRs
+
+
+# TSM-like: ifrs-full en TWD, pero EPS oficial también en USD/shares (por ADR 5:1).
+TSM_FACTS = {
+    "facts": {
+        "ifrs-full": {
+            "RevenueFromContractsWithCustomers": {"units": _annual("TWD", [(2023, 2000), (2024, 2500)], "20-F")},
+            "ProfitLoss": {"units": _annual("TWD", [(2023, 800), (2024, 1000)], "20-F")},
+            "Equity": {"units": _instant("TWD", [(2023, 4000), (2024, 5000)], "20-F")},
+            "DilutedEarningsLossPerShare": {"units": {
+                "TWD/shares": [{"start": f"{y}-01-01", "end": f"{y}-12-31", "val": v, "form": "20-F"} for y, v in [(2023, 36.0), (2024, 45.0)]],
+                "USD/shares": [{"start": f"{y}-01-01", "end": f"{y}-12-31", "val": v, "form": "20-F"} for y, v in [(2023, 1.2), (2024, 1.5)]],
+            }},
+        },
+        "dei": {"EntityCommonStockSharesOutstanding": {"units": _instant("shares", [(2024, 25)], "20-F")}},
+    }
+}
+
+
+def test_tsm_prefers_official_usd_eps_no_twd_fx():
+    # Sin FX de TWD: aun así el P/E se calcula con el EPS oficial en USD/shares × ADR(5).
+    f = parse_companyfacts(TSM_FACTS, "TSM", price=371.0, fx_map={}, adr_ratio=5.0)
+    assert f.currency == "TWD" and f.taxonomy == "ifrs-full"
+    assert abs(f.net_margin - 0.40) < 1e-9          # 1000/2500 (TWD, adimensional)
+    assert abs(f.roe - 0.20) < 1e-9                 # 1000/5000
+    assert abs(f.eps_growth_yoy - 0.25) < 1e-9      # 45/36-1 (serie TWD)
+    assert abs(f.pe_ttm - (371.0 / (1.5 * 5.0))) < 1e-6   # EPS USD 1.5 × ADR 5 = 7.5
+    # market cap = precio × (acciones ordinarias / ADR) = 371 × (25/5) = 1855
+    assert abs(f.market_cap - 1855.0) < 1e-6
