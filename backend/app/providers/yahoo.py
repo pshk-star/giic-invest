@@ -186,12 +186,15 @@ class YahooProvider(MarketDataProvider):
         self.retries = retries
         self._client = httpx.Client(timeout=timeout, headers={"User-Agent": _UA})
 
-    def _chart(self, ticker: str, rng: str = "2y", interval: str = "1d") -> dict:
+    def _chart(self, ticker: str, rng: str = "2y", interval: str = "1d",
+               events: Optional[str] = None) -> dict:
         last = None
+        params = {"range": rng, "interval": interval}
+        if events:
+            params["events"] = events   # p.ej. "div,splits" (necesario para eventos)
         for _ in range(max(1, self.retries)):
             try:
-                r = self._client.get(f"{BASE}{ticker}",
-                                     params={"range": rng, "interval": interval})
+                r = self._client.get(f"{BASE}{ticker}", params=params)
                 r.raise_for_status()
                 return r.json()
             except Exception as e:
@@ -238,7 +241,7 @@ class YahooProvider(MarketDataProvider):
         out: Dict[str, List[dict]] = {}
         for t in tickers:
             try:
-                sp = parse_yahoo_splits(self._chart(t, rng="max", interval="1d"))
+                sp = parse_yahoo_splits(self._chart(t, rng="max", interval="1d", events="div,splits"))
             except Exception:
                 sp = []
             if sp:
