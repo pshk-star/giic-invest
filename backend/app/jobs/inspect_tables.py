@@ -283,9 +283,23 @@ def run() -> dict:
                 continue
             missing = [k for k in ("eps_annual", "eps_ttm", "fcf_annual", "fcf_ttm", "net_debt",
                                     "diluted_shares", "roe", "net_margin") if p.get(k) in (None, "")]
+            # Clasificación 4 vías (Control final).
+            derived = []
+            if p.get("ni_reconstructed"):
+                derived.append("utilidad_neta(reconstruida)")
+            if p.get("eps_source") and p.get("eps_source") != "edgar":
+                derived.append(f"eps({p.get('eps_source')})")
+            if p.get("eps_ttm") is not None:
+                derived.append("eps_ttm(NI/acciones)")
+            if p.get("shares_source") and "proxy" in (p.get("shares_source") or ""):
+                derived.append("acciones(proxy)")
+            dq = p.get("data_quality") or "ok"
+            status = ("inconsistente/bloqueado" if dq != "ok" else ("verificado" if not derived else "parcial(derivado)"))
             quality_matrix[t] = {
+                "status": status, "data_quality": dq, "quality_reason": p.get("quality_reason"),
                 "eps_annual": p.get("eps_annual"), "eps_ttm": p.get("eps_ttm"),
-                "eps_ttm_method": p.get("eps_ttm_method"), "ttm_vs_annual_ratio": p.get("ttm_vs_annual_ratio"),
+                "eps_ttm_method": p.get("eps_ttm_method"), "eps_ttm_denominator": p.get("eps_ttm_denominator"),
+                "eps_ttm_pershare_check": p.get("eps_ttm_pershare_check"), "ttm_vs_annual_ratio": p.get("ttm_vs_annual_ratio"),
                 "eps_primary": p.get("eps"), "eps_basis": p.get("eps_basis"), "eps_source": p.get("eps_source"),
                 "fcf_annual": p.get("fcf_annual"), "fcf_ttm": p.get("fcf_ttm"),
                 "net_debt": p.get("net_debt"), "gross_debt": p.get("gross_debt"), "cash": p.get("cash_and_sti"),
@@ -293,10 +307,13 @@ def run() -> dict:
                 "gross_margin": p.get("gross_margin"), "operating_margin": p.get("operating_margin"),
                 "net_margin": p.get("net_margin"), "roe": p.get("roe"),
                 "period_as_of": p.get("as_of"), "currency": p.get("currency"), "taxonomy": p.get("taxonomy"),
-                "ni_source_concept": p.get("ni_source_concept"), "ni_reconstructed": p.get("ni_reconstructed"),
+                "ni_source_concept": p.get("ni_source_concept"),
                 "consistency_independent": p.get("consistency_independent"),
                 "eps_consistent": p.get("eps_consistent"), "eps_check_ratio": p.get("eps_check_ratio"),
                 "shares_source": p.get("shares_source"), "fallback_sources": p.get("fallback_sources"),
+                "verified_fields": [k for k in ("eps_annual", "net_margin", "roe", "net_debt", "diluted_shares")
+                                    if p.get(k) not in (None, "") and dq == "ok" and not p.get("ni_reconstructed")],
+                "derived_fields": derived,
                 "missing_fields": missing,
             }
     except Exception as e:

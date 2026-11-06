@@ -81,6 +81,10 @@ class Fundamentals:
     net_debt: Optional[float] = None      # deuda neta = deuda bruta − efectivo
     gross_margin: Optional[float] = None  # utilidad bruta / ingresos
     operating_margin: Optional[float] = None  # resultado operativo / ingresos
+    eps_ttm_denominator: Optional[float] = None  # acciones diluidas usadas en EPS_TTM (y su período)
+    eps_ttm_pershare_check: Optional[float] = None  # EPS_TTM(NI/acciones) / EPS_TTM(identidad por-acción) ≈1
+    data_quality: str = "ok"              # ok | sospechoso | bloqueado (guard de plausibilidad)
+    quality_reason: Optional[str] = None  # por qué se marcó sospechoso/bloqueado
     pe_forward: Optional[float] = None
     ev_ebitda: Optional[float] = None
     fcf_yield: Optional[float] = None     # free cash flow / market cap
