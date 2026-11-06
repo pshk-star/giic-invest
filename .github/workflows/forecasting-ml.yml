@@ -1,0 +1,37 @@
+name: GIIC forecasting ML (experimental)
+
+# Motor multivariable Ridge/Elastic Net con validación walk-forward. Solo lectura;
+# imprime métricas OOS (no escribe en Supabase todavía).
+on:
+  workflow_dispatch:
+    inputs:
+      acceptance:
+        type: string
+        default: "MU"
+      range:
+        type: string
+        default: "7y"
+      tickers:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  model:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-job.txt
+      - name: Modelo multivariable (walk-forward OOS)
+        run: |
+          ARGS="--acceptance ${{ inputs.acceptance }} --range ${{ inputs.range }}"
+          if [ -n "${{ inputs.tickers }}" ]; then ARGS="$ARGS --tickers ${{ inputs.tickers }}"; fi
+          python -m app.research.multifactor_model $ARGS
