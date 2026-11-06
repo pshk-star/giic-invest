@@ -19,3 +19,11 @@ Registrados a petición de Pablo (2026-11-05). Abordar después de cerrar el Hit
   consistente con el diseño premium.
 
 (Prioridad: después del Hito 2 — Portfolio X-Ray. Luego sigue Portfolio Forecast.)
+
+## Mantenimiento Portfolio X-Ray (registrado 2026-11-06)
+- **C. Sector SIC≈GICS:** el mapeo sector usa el código SIC de la SEC (verificable) aproximado a
+  GICS; no es GICS oficial. Indicado en la UI ("SIC≈GICS"). Mejorar el mapeo para reducir el
+  % "Sin clasificar" (ampliar reglas SIC o incorporar una fuente GICS).
+- **D. Antigüedad N-PORT:** las composiciones SEC N-PORT tienen rezago (VOO/QQQ al 30/06/2026).
+  La UI muestra un badge de días de antigüedad (>35d). El cron diario ya reintenta y tomará
+  automáticamente declaraciones más recientes cuando la SEC las publique; verificar periódicamente.

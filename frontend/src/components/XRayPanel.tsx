@@ -6,6 +6,7 @@ import { HoldingsImport } from "./HoldingsImport";
 import { money } from "../format";
 
 const COMMODITY_ETFS = ["GLD", "SLV", "IAU", "PPLT", "PALL", "SGOL", "SIVR"];
+const staleDays = (as_of: string) => Math.round((Date.now() - Date.parse(as_of)) / 86400000);
 const PROVIDER_LABEL: Record<string, string> = {
   nport: "SEC N-PORT", ssga: "State Street", invesco: "Invesco", vanguard: "Vanguard",
   commodity: "Materia prima", manual: "Importación manual",
@@ -118,7 +119,9 @@ export function XRayPanel({ holdings, valuationAsOf }:
                   <tr key={e} className="border-b border-term-border last:border-0">
                     <td className="py-1.5 font-mono font-semibold">{e}</td>
                     <td className="text-term-muted">{s ? (PROVIDER_LABEL[s.provider] ?? s.provider) : "—"}</td>
-                    <td className="tabnum">{s?.as_of ?? <span className="text-term-warn">sin datos</span>}</td>
+                    <td className="tabnum">{s?.as_of
+                      ? <>{s.as_of}{staleDays(s.as_of) > 35 && <span className="ml-1 rounded bg-term-warn/15 px-1 text-[10px] text-term-warn">{staleDays(s.as_of)}d</span>}</>
+                      : <span className="text-term-warn">sin datos</span>}</td>
                     <td className="text-right tabnum">{s?.n_lines ?? "—"}</td>
                     <td className="text-right tabnum">{s?.weight_sum != null ? `${(s.weight_sum * 100).toFixed(1)}%` : "—"}</td>
                     <td>{s
@@ -191,7 +194,7 @@ export function XRayPanel({ holdings, valuationAsOf }:
           <div>
             <div className="mb-1 flex items-center justify-between">
               <h4 className="text-xs uppercase text-term-muted">Concentración por sector</h4>
-              <span className="text-[10px] text-term-faint">{(sectorKnownPct * 100).toFixed(0)}% clasificado</span>
+              <span className="text-[10px] text-term-faint" title="Clasificación por código SIC de la SEC, aproximada a GICS">{(sectorKnownPct * 100).toFixed(0)}% clasificado · SIC≈GICS</span>
             </div>
             {sectorConc.slice(0, 9).map((s) => (
               <div key={s.sector} className="mb-1">
