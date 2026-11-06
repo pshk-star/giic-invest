@@ -29,17 +29,28 @@ SSGA = ["SPY", "DIA", "XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLB", "X
 ISSUER: Dict[str, str] = {**{t: "ssga" for t in SSGA}, "QQQ": "invesco"}
 
 
-def detect_etfs(writer) -> List[str]:
+KNOWN_ETFS = set(SSGA) | {"QQQ", "VOO", "VTI", "SMH", "SCHD", "IWM", "DIA", "GLD", "SLV", "VOOG", "SOXX", "VGT"}
+
+
+def detect_etfs(writer, diag: Optional[dict] = None) -> List[str]:
     try:
-        tx = writer.select_rows("transactions", select="ticker")
-        tickers = sorted({r["ticker"].upper() for r in tx})
+        tx = writer.select_rows("transactions", select="ticker,fund_id")
+        tickers = sorted({r["ticker"].upper() for r in tx if not r.get("fund_id")})
+        if diag is not None:
+            diag["tx_tickers"] = tickers
         if not tickers:
             return []
         inst = writer.select_rows("instruments", select="ticker,asset_class",
                                   params={"ticker": "in.(" + ",".join(tickers) + ")"})
-        etfs = [r["ticker"].upper() for r in inst if (r.get("asset_class") or "").lower() in ("etf", "fund")]
+        classes = {r["ticker"].upper(): (r.get("asset_class") or "").lower() for r in inst}
+        if diag is not None:
+            diag["instrument_classes"] = classes
+        # ETF por clasificación en instruments O por lista conocida (robusto si falta asset_class)
+        etfs = [t for t in tickers if classes.get(t) in ("etf", "fund") or t in KNOWN_ETFS]
         return sorted(set(etfs))
-    except Exception:
+    except Exception as e:
+        if diag is not None:
+            diag["detect_error"] = f"{type(e).__name__}: {str(e)[:120]}"
         return []
 
 
@@ -187,8 +198,9 @@ def normalize(etf: str, provider: str, as_of: str, lines: List[dict]) -> Tuple[L
 
 
 def run(writer, etfs: Optional[List[str]], dry: bool) -> dict:
-    targets = [t.upper() for t in etfs] if etfs else detect_etfs(writer)
-    report = {"detected": targets, "covered": [], "pending_coverage": [], "results": []}
+    diag: dict = {}
+    targets = [t.upper() for t in etfs] if etfs else detect_etfs(writer, diag)
+    report = {"detected": targets, "diag": diag, "covered": [], "pending_coverage": [], "results": []}
     for etf in targets:
         issuer = ISSUER.get(etf)
         if not issuer:
