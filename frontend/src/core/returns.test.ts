@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { annualize, simpleReturn, twr, xirr } from "./returns";
+import { annualize, investmentCashFlows, simpleReturn, twr, xirr, type TxnLike } from "./returns";
+
+const tx = (o: Partial<TxnLike>): TxnLike => ({
+  side: "buy", quantity: null, price: null, fees: 0, amount: null,
+  currency: "USD", executed_at: "2025-01-01", ...o,
+});
 
 describe("xirr (money-weighted)", () => {
   it("−1000 hoy, +1100 en 1 año => ~10%", () => {
@@ -45,5 +50,65 @@ describe("twr y utilidades", () => {
   it("simpleReturn", () => {
     expect(simpleReturn(1000, 1200)).toBeCloseTo(0.2, 9);
     expect(simpleReturn(0, 100)).toBeNull();
+  });
+});
+
+describe("investmentCashFlows — casos reproducibles (sin doble conteo)", () => {
+  it("compras y ventas parciales + posición abierta (valor terminal)", () => {
+    const txns = [
+      tx({ side: "buy", quantity: 10, price: 100, executed_at: "2025-01-01" }),   // -1000
+      tx({ side: "buy", quantity: 10, price: 120, executed_at: "2025-06-01" }),   // -1200
+      tx({ side: "sell", quantity: 5, price: 150, executed_at: "2025-09-01" }),   // +750
+    ];
+    const b = investmentCashFlows(txns, 2500, "2026-01-01", "USD"); // 15 abiertas valen 2500
+    expect(b.mixedCurrency).toBe(false);
+    expect(b.flows.map((f) => f.amount)).toEqual([-1000, -1200, 750, 2500]);
+    const r = xirr(b.flows);
+    expect(r).not.toBeNull();
+    expect((r as number)).toBeGreaterThan(0);
+  });
+
+  it("dividendos cuentan como entrada", () => {
+    const b = investmentCashFlows([
+      tx({ side: "buy", quantity: 10, price: 100, executed_at: "2025-01-01" }),
+      tx({ side: "dividend", amount: 30, executed_at: "2025-07-01" }),
+    ], 1050, "2026-01-01");
+    expect(b.flows.map((f) => f.amount)).toEqual([-1000, 30, 1050]);
+  });
+
+  it("depósitos y retiros de efectivo se EXCLUYEN (no doble conteo)", () => {
+    const b = investmentCashFlows([
+      tx({ side: "deposit", amount: 5000, executed_at: "2025-01-01" }),
+      tx({ side: "buy", quantity: 10, price: 100, executed_at: "2025-01-02" }),
+      tx({ side: "withdrawal", amount: 200, executed_at: "2025-03-01" }),
+      tx({ side: "split", quantity: 2, executed_at: "2025-04-01" }),
+    ], 1200, "2026-01-01");
+    // solo la compra y el valor terminal; depósito/retiro/split fuera
+    expect(b.flows.map((f) => f.amount)).toEqual([-1000, 1200]);
+  });
+
+  it("comisiones restan al costo y al producto de venta", () => {
+    const b = investmentCashFlows([
+      tx({ side: "buy", quantity: 10, price: 100, fees: 5, executed_at: "2025-01-01" }),
+      tx({ side: "sell", quantity: 10, price: 110, fees: 5, executed_at: "2025-06-01" }),
+    ], 0, "2026-01-01");
+    expect(b.flows.map((f) => f.amount)).toEqual([-1005, 1095]); // sin valor terminal (0)
+  });
+
+  it("multimoneda (MXN+USD) => mixedCurrency, sin flujos (requiere FX)", () => {
+    const b = investmentCashFlows([
+      tx({ side: "buy", quantity: 10, price: 100, currency: "USD" }),
+      tx({ side: "buy", quantity: 100, price: 20, currency: "MXN" }),
+    ], 5000, "2026-01-01", "USD");
+    expect(b.mixedCurrency).toBe(true);
+    expect(b.flows).toEqual([]);
+  });
+
+  it("cartera solo con efectivo (sin inversión) => sin flujos de inversión", () => {
+    const b = investmentCashFlows([
+      tx({ side: "deposit", amount: 1000, executed_at: "2025-01-01" }),
+    ], 0, "2026-01-01");
+    expect(b.flows).toEqual([]);
+    expect(xirr(b.flows)).toBeNull();
   });
 });

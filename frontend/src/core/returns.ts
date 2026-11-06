@@ -8,6 +8,47 @@ export interface CashFlow {
   amount: number; // salida de caja NEGATIVA (compra/aporte), entrada POSITIVA (venta/dividendo/valor final)
 }
 
+export interface TxnLike {
+  side: "buy" | "sell" | "dividend" | "deposit" | "withdrawal" | "split";
+  quantity: number | null;
+  price: number | null;
+  fees: number;
+  amount: number | null;
+  currency: string;
+  executed_at: string;
+}
+
+export interface CashFlowBuild {
+  flows: CashFlow[];
+  mixedCurrency: boolean;   // hay transacciones de inversión en otra moneda que la base
+  base: string;
+}
+
+// Construye los flujos de INVERSIÓN para XIRR a partir de transacciones:
+//  - buy  -> salida  -(q*precio + comisiones)
+//  - sell -> entrada +(q*precio - comisiones)
+//  - dividend -> entrada +amount
+//  - deposit/withdrawal/split -> EXCLUIDOS (financiamiento/estructural; no son retorno) => sin doble conteo
+//  - valor de mercado actual de posiciones abiertas -> flujo terminal +marketValue (hoy)
+// Multimoneda: si alguna transacción de inversión no está en `base`, se marca mixedCurrency
+// y NO se arman flujos (XIRR mezclando monedas sin FX sería incorrecto).
+export function investmentCashFlows(
+  txns: TxnLike[], marketValue: number, today: string, base = "USD",
+): CashFlowBuild {
+  const inv = txns.filter((t) => t.side === "buy" || t.side === "sell" || t.side === "dividend");
+  const mixed = inv.some((t) => (t.currency || base) !== base);
+  if (mixed) return { flows: [], mixedCurrency: true, base };
+  const flows: CashFlow[] = [];
+  for (const t of inv) {
+    const q = t.quantity ?? 0, p = t.price ?? 0, fee = t.fees ?? 0;
+    if (t.side === "buy") flows.push({ date: t.executed_at, amount: -(q * p + fee) });
+    else if (t.side === "sell") flows.push({ date: t.executed_at, amount: q * p - fee });
+    else if (t.side === "dividend") flows.push({ date: t.executed_at, amount: t.amount ?? 0 });
+  }
+  if (marketValue > 0) flows.push({ date: today, amount: marketValue });
+  return { flows, mixedCurrency: false, base };
+}
+
 function yearsBetween(a: string, b: string): number {
   const d1 = Date.parse(a), d2 = Date.parse(b);
   return (d2 - d1) / (365.0 * 86400000);
@@ -53,6 +94,9 @@ export function xirr(flows: CashFlow[]): number | null {
 }
 
 // TWR a partir de retornos por subperiodo (encadenamiento geométrico). Neutral a flujos.
+// NOTA: el TWR de la CARTERA requiere la valorización en CADA fecha de flujo (entre aportes),
+// datos que hoy NO tenemos (solo valor actual). Por eso NO se muestra un TWR de cartera: sería
+// engañoso. Esta función queda para cuando exista el histórico de valorización de la cartera.
 export function twr(subReturns: number[]): number {
   let g = 1;
   for (const r of subReturns) g *= (1 + r);

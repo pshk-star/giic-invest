@@ -11,7 +11,7 @@ import {
 } from "../core/portfolio-tx";
 import { classifyQuote } from "../core/quotefmt";
 import { mergeValuation } from "../core/price-source";
-import { xirr, type CashFlow } from "../core/returns";
+import { investmentCashFlows, xirr } from "../core/returns";
 import { ValuationStamp } from "../components/ValuationStamp";
 import { money, num, pct } from "../format";
 
@@ -86,17 +86,8 @@ export function Portfolio() {
   // financiamiento, no retorno). Base USD; si hay transacciones en otra moneda, no se calcula
   // aún (requiere FX; llega con Fintual/multimoneda).
   const xirrPct = useMemo(() => {
-    const secTx = txns.filter((t) => ["buy", "sell", "dividend"].includes(t.side));
-    if (secTx.some((t) => (t.currency || "USD") !== "USD")) return { value: null as number | null, mixed: true };
-    const flows: CashFlow[] = [];
-    for (const t of secTx) {
-      const q = t.quantity ?? 0, p = t.price ?? 0, fee = t.fees ?? 0;
-      if (t.side === "buy") flows.push({ date: t.executed_at, amount: -(q * p + fee) });
-      else if (t.side === "sell") flows.push({ date: t.executed_at, amount: q * p - fee });
-      else if (t.side === "dividend") flows.push({ date: t.executed_at, amount: t.amount ?? 0 });
-    }
-    if (totals.marketValue > 0) flows.push({ date: todayISO(), amount: totals.marketValue });
-    return { value: xirr(flows), mixed: false };
+    const b = investmentCashFlows(txns, totals.marketValue, todayISO(), "USD");
+    return { value: b.mixedCurrency ? null : xirr(b.flows), mixed: b.mixedCurrency };
   }, [txns, totals.marketValue]);
 
   const appliedSplits = useMemo(
