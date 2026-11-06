@@ -1,0 +1,37 @@
+name: GIIC A/B/C experiment
+
+# Comparación OOS: A (precio) vs B (+fundamentales PIT) vs C (+macro PIT). Solo lectura
+# (Supabase para fundamentals_pit/macro_pit, Yahoo para precios). Imprime la tabla.
+on:
+  workflow_dispatch:
+    inputs:
+      range:
+        type: string
+        default: "8y"
+      tickers:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  abc:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-job.txt
+      - name: Experimento A/B/C
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          ARGS="--range ${{ inputs.range }}"
+          if [ -n "${{ inputs.tickers }}" ]; then ARGS="$ARGS --tickers ${{ inputs.tickers }}"; fi
+          python -m app.research.abc_compare $ARGS
