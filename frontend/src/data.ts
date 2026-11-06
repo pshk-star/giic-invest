@@ -183,6 +183,46 @@ export async function getPrices(tickers: string[]): Promise<Record<string, Price
   return out;
 }
 
+// ---- Predicciones del modelo (laboratorio) — SOLO LECTURA ----
+export interface PredictionRow {
+  model_name: string;
+  model_version: string;
+  horizon_sessions: number;
+  as_of: string;
+  evaluate_on: string;
+  ticker: string;
+  benchmark: string | null;
+  emitted_at: string | null;
+  prediction: { rel_return?: number; pct_rank?: number; n_cross_section?: number } | null;
+  data_ref: { status?: string; feature_set?: string; features_version?: string } | null;
+}
+
+export async function getPredictions(): Promise<PredictionRow[]> {
+  const { data, error } = await supabase
+    .from("predictions")
+    .select("model_name,model_version,horizon_sessions,as_of,evaluate_on,ticker,benchmark,emitted_at,prediction,data_ref")
+    .eq("origin", "production")
+    .order("as_of", { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as PredictionRow[];
+}
+
+export interface OutcomeRow {
+  prediction_id: number;
+  realized_return: number | null;
+  benchmark_return: number | null;
+  outperformed: boolean | null;
+  evaluated_at: string;
+}
+
+export async function getPredictionOutcomes(): Promise<OutcomeRow[]> {
+  const { data, error } = await supabase
+    .from("prediction_outcomes")
+    .select("prediction_id,realized_return,benchmark_return,outperformed,evaluated_at");
+  if (error) throw error;
+  return (data ?? []) as OutcomeRow[];
+}
+
 export async function getEtfHoldings(etfs: string[]): Promise<Record<string, ETFHolding[]>> {
   if (etfs.length === 0) return {};
   const { data, error } = await supabase.from("etf_holdings").select("*").in("etf", etfs);

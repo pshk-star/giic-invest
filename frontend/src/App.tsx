@@ -9,6 +9,7 @@ import { Advisor } from "./pages/Advisor";
 import { Opportunities } from "./pages/Opportunities";
 import { Research } from "./pages/Research";
 import { CompanyFicha } from "./pages/Ficha";
+import { Lab } from "./pages/Lab";
 
 const tabs = [
   { to: "/command", label: "Dashboard" },
@@ -16,6 +17,7 @@ const tabs = [
   { to: "/advisor", label: "Investment Advisor" },
   { to: "/research", label: "Research" },
   { to: "/opportunities", label: "Oportunidades" },
+  { to: "/lab", label: "Laboratorio" },
 ];
 
 export default function App() {
@@ -78,6 +80,7 @@ export default function App() {
           <Route path="/research" element={<Research />} />
           <Route path="/research/:ticker" element={<CompanyFicha />} />
           <Route path="/opportunities" element={<Opportunities />} />
+          <Route path="/lab" element={<Lab />} />
         </Routes>
       </main>
     </div>
