@@ -176,7 +176,7 @@ export function Portfolio() {
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
             <ValuationStamp meta={valuation.meta} />
             <span className="text-xs text-term-muted">
-              · Rentabilidad (TIR anual, money-weighted):{" "}
+              · TIR anual de inversiones (acciones/ETF, USD; money-weighted):{" "}
               {xirrPct.mixed ? (
                 <span className="text-term-faint">pendiente (transacciones multimoneda)</span>
               ) : xirrPct.value !== null ? (
