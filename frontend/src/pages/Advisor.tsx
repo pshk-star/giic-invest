@@ -112,10 +112,8 @@ export function Advisor() {
       const pxMap: Record<string, { close: number | null; asOf: string | null }> = {};
       for (const t of Object.keys(prices)) pxMap[t.toUpperCase()] = { close: prices[t].close, asOf: prices[t].as_of };
       try {
-        const [cf, cp] = await Promise.all([
-          candidates.length ? getFundamentals(candidates) : Promise.resolve({}),
-          candPrices.length ? getPrices(candPrices) : Promise.resolve({}),
-        ]);
+        const cf: Record<string, FundamentalsPayload> = candidates.length ? await getFundamentals(candidates) : {};
+        const cp: Record<string, { close: number | null; as_of: string | null }> = candPrices.length ? await getPrices(candPrices) : {};
         allFunds = { ...funds, ...cf };
         for (const t of Object.keys(cp)) pxMap[t.toUpperCase()] = { close: cp[t].close, asOf: cp[t].as_of };
       } catch { /* sin datos de candidatas: quedarán como INVESTIGAR */ }
