@@ -146,7 +146,15 @@ def edgar_diag(tickers: list) -> dict:
                 rows = (node[c].get("units", {}) or {}).get(u[0], []) if u else []
                 last = rows[-1] if rows else {}
                 detail[c] = {"units": u, "last_form": last.get("form"), "last_end": last.get("end")}
-            summ[tax] = {"n_concepts": len(node), "concepts": interesting, "detail": detail}
+            # Todas las unidades "per share" (para detectar EPS en USD por ADR).
+            per_share = {}
+            for c in node.keys():
+                if "pershare" in c.lower():
+                    u = list((node[c].get("units", {}) or {}).keys())
+                    if u:
+                        per_share[c] = u
+            summ[tax] = {"n_concepts": len(node), "concepts": interesting,
+                         "detail": detail, "per_share_units": per_share}
         out[t] = summ
     return out
 
