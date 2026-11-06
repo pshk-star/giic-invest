@@ -131,23 +131,31 @@ def run_backtest(provider, tickers: List[str], acceptance: str = "MU", rng: str 
     }
 
     # ----- Episodios de caída/recuperación: distribución condicional de retornos -----
-    def conditional_dist(bars: List[dict]) -> dict:
+    # Se calcula POR TICKER (nunca sobre precios concatenados) y se agrupan las muestras
+    # de retorno futuro; así nunca se mide un retorno cruzando de un ticker a otro.
+    def dd_forward_samples(bars: List[dict]) -> Dict[int, List[float]]:
         prices = [b["close"] for b in bars]
         dd = drawdown_from_high(prices, lookback=252)
-        res = {}
-        for days, label in TRADING.items():
-            fwd = []
+        out: Dict[int, List[float]] = {days: [] for days in TRADING}
+        for days in TRADING:
             for i in range(len(prices) - days):
                 if dd[i] <= DD_THRESHOLD and prices[i] > 0:
-                    fwd.append(prices[i + days] / prices[i] - 1.0)
+                    out[days].append(prices[i + days] / prices[i] - 1.0)
+        return out
+
+    def dist_from_samples(samples: Dict[int, List[float]]) -> dict:
+        res = {}
+        for days, label in TRADING.items():
+            fwd = samples.get(days, [])
             res[label] = {"n": len(fwd), **({k: (round(v, 4) if v is not None else None)
-                                            for k, v in quantiles(fwd, [0.1, 0.25, 0.5, 0.75, 0.9]).items()} if fwd else {})}
+                          for k, v in quantiles(fwd, [0.1, 0.25, 0.5, 0.75, 0.9]).items()} if fwd else {})}
         return res
 
-    pooled_bars: List[dict] = []
+    pooled: Dict[int, List[float]] = {days: [] for days in TRADING}
     for b in daily.values():
-        pooled_bars += b
-    pooled_bars.sort(key=lambda x: x["as_of"])
+        s = dd_forward_samples(b)
+        for days in TRADING:
+            pooled[days] += s[days]
 
     acceptance = acceptance.upper()
     summary = {
@@ -159,8 +167,8 @@ def run_backtest(provider, tickers: List[str], acceptance: str = "MU", rng: str 
         "strategy_vs_benchmark_h1": strategy,
         "drawdown_recovery_distribution": {
             "threshold": DD_THRESHOLD,
-            "universe_pooled": conditional_dist(pooled_bars) if pooled_bars else {},
-            acceptance: conditional_dist(daily[acceptance]) if acceptance in daily else "sin histórico",
+            "universe_pooled": dist_from_samples(pooled),
+            acceptance: dist_from_samples(dd_forward_samples(daily[acceptance])) if acceptance in daily else "sin histórico",
         },
     }
     # MU como aceptación: señal actual y percentil transversal (mismas funciones)
