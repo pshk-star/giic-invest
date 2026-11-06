@@ -97,8 +97,52 @@ def run() -> dict:
         "fundamentals_target": fundamentals,
         "prices_target": prices_now,
         "asml_price_history_latest": asml_hist,
+        "edgar_diagnostic": edgar_diag(["ASML", "TSM"]),
         "rls_sql_for_pablo": RLS_SQL,
     }
+
+
+def edgar_diag(tickers: list) -> dict:
+    """Diagnóstico EN VIVO de companyfacts de EDGAR: qué taxonomías y conceptos
+    publica cada emisor (causa raíz de cobertura). Requiere EDGAR_USER_AGENT."""
+    ua = os.getenv("EDGAR_USER_AGENT", "")
+    if not ua or "@" not in ua:
+        return {"error": "sin EDGAR_USER_AGENT"}
+    try:
+        from ..providers.edgar import EDGARProvider
+        prov = EDGARProvider(user_agent=ua)
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {str(e)[:80]}"}
+    KEYS = ("revenue", "profit", "netincome", "earningspershare", "equity",
+            "operatingactivities", "cashflowsfromused")
+    out = {}
+    for t in tickers:
+        try:
+            facts = prov._facts(t)
+        except Exception as e:
+            out[t] = {"error": f"{type(e).__name__}: {str(e)[:80]}"}
+            continue
+        cik = prov._cik.get(t.upper())
+        if not facts:
+            out[t] = {"cik": cik, "facts": None}
+            continue
+        f = (facts.get("facts", {}) or {})
+        summ = {"cik": cik, "taxonomies": list(f.keys())}
+        for tax in ("us-gaap", "ifrs-full"):
+            node = f.get(tax)
+            if not node:
+                continue
+            interesting = [c for c in node.keys() if any(k in c.lower() for k in KEYS)][:25]
+            units = {}
+            for c in interesting[:12]:
+                u = list((node[c].get("units", {}) or {}).keys())
+                # último valor con su formulario, por unidad principal
+                rows = (node[c].get("units", {}) or {}).get(u[0], []) if u else []
+                last = rows[-1] if rows else {}
+                units[c] = {"units": u, "last_form": last.get("form"), "last_end": last.get("end")}
+            summ[tax] = {"n_concepts": len(node), "concepts": interesting, "detail": units}
+        out[t] = summ
+    return out
 
 
 def main(argv=None):

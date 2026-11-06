@@ -99,6 +99,29 @@ def _first_concept(facts, taxonomy, names, unit):
     return []
 
 
+def _best_annual(facts, taxonomy, names, unit) -> List[Tuple[date, float]]:
+    """Entre variantes de concepto, usa la que tenga datos ANUALES más RECIENTES.
+
+    Evita series obsoletas cuando el emisor migró de etiqueta (p. ej. META:
+    'Revenues' hasta 2017 vs 'RevenueFromContractWithCustomerExcludingAssessedTax').
+    """
+    best: List[Tuple[date, float]] = []
+    for n in names:
+        pts = _annual_points(_concept(facts, taxonomy, n, unit))
+        if pts and (not best or pts[-1][0] > best[-1][0]):
+            best = pts
+    return best
+
+
+def _best_instant(facts, taxonomy, names, unit) -> List[Tuple[date, float]]:
+    best: List[Tuple[date, float]] = []
+    for n in names:
+        pts = _instant_points(_concept(facts, taxonomy, n, unit))
+        if pts and (not best or pts[-1][0] > best[-1][0]):
+            best = pts
+    return best
+
+
 def _currency_for(facts, taxonomy, names) -> Optional[str]:
     """Divisa de reporte: primera unidad monetaria (3 letras, sin '/') con datos."""
     try:
@@ -130,25 +153,29 @@ def parse_companyfacts(facts: dict, ticker: str,
     fx_map = fx_map or {}
     root = (facts or {}).get("facts", {}) or {}
 
-    # Taxonomía + divisa de reporte.
-    if root.get("us-gaap") and (_first_concept(facts, "us-gaap", US_GAAP_MAP["rev"], "USD")
-                                or _concept(facts, "us-gaap", "NetIncomeLoss", "USD")):
+    # Taxonomía + divisa de reporte. DATA-DRIVEN: se elige us-gaap solo si produce
+    # datos ANUALES reales (no por mera presencia de algún tag suelto); si no, se
+    # intenta ifrs-full (emisores 20-F). Evita que un emisor extranjero con un tag
+    # us-gaap residual quede sin datos.
+    _us_rev = _annual_points(_first_concept(facts, "us-gaap", US_GAAP_MAP["rev"], "USD"))
+    _us_ni = _annual_points(_first_concept(facts, "us-gaap", US_GAAP_MAP["ni"], "USD"))
+    _ifrs_ccy = _currency_for(facts, "ifrs-full", IFRS_MAP["rev"] + IFRS_MAP["ni"] + IFRS_MAP["equity"])
+    if _us_rev or _us_ni:
         tax, ccy, M = "us-gaap", "USD", US_GAAP_MAP
-    elif root.get("ifrs-full"):
-        tax, M = "ifrs-full", IFRS_MAP
-        ccy = _currency_for(facts, "ifrs-full", M["rev"] + M["ni"] + M["equity"]) or "USD"
+    elif root.get("ifrs-full") and _ifrs_ccy:
+        tax, ccy, M = "ifrs-full", _ifrs_ccy, IFRS_MAP
     else:
         tax, ccy, M = "us-gaap", "USD", US_GAAP_MAP
 
-    rev = _annual_points(_first_concept(facts, tax, M["rev"], ccy))
-    ni = _annual_points(_first_concept(facts, tax, M["ni"], ccy))
-    eps = _annual_points(_first_concept(facts, tax, M["eps"], f"{ccy}/shares"))
-    equity = _instant_points(_first_concept(facts, tax, M["equity"], ccy))
-    ocf = _annual_points(_first_concept(facts, tax, M["ocf"], ccy))
-    capex = _annual_points(_first_concept(facts, tax, M["capex"], ccy))
+    rev = _best_annual(facts, tax, M["rev"], ccy)
+    ni = _best_annual(facts, tax, M["ni"], ccy)
+    eps = _best_annual(facts, tax, M["eps"], f"{ccy}/shares")
+    equity = _best_instant(facts, tax, M["equity"], ccy)
+    ocf = _best_annual(facts, tax, M["ocf"], ccy)
+    capex = _best_annual(facts, tax, M["capex"], ccy)
     if shares is None:
-        sh = _instant_points(_first_concept(facts, "dei", ["EntityCommonStockSharesOutstanding"], "shares")) or \
-            _instant_points(_first_concept(facts, tax, ["CommonStockSharesOutstanding"], "shares"))
+        sh = _best_instant(facts, "dei", ["EntityCommonStockSharesOutstanding"], "shares") or \
+            _best_instant(facts, tax, ["CommonStockSharesOutstanding"], "shares")
         shares = sh[-1][1] if sh else None
 
     def latest(points):
