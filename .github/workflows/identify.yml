@@ -10,6 +10,14 @@ on:
         description: "Recargar el catálogo US completo (Nasdaq Trader)"
         type: boolean
         default: true
+      dry_run:
+        description: "Solo imprimir (incluye splits detectados), sin escribir"
+        type: boolean
+        default: false
+      tickers:
+        description: "Tickers explícitos para dry-run (separados por espacio)"
+        type: string
+        default: ""
   schedule:
     - cron: "10 22 * * 1"
 
@@ -39,8 +47,12 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         # En el cron (sin inputs) siempre recarga catálogo; en manual respeta el input.
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.with_catalog }}" != "true" ]; then
-            python -m app.jobs.identify
+          ARGS=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+            if [ "${{ inputs.with_catalog }}" = "true" ]; then ARGS="$ARGS --with-catalog"; fi
+            if [ -n "${{ inputs.tickers }}" ]; then ARGS="$ARGS --tickers ${{ inputs.tickers }}"; fi
           else
-            python -m app.jobs.identify --with-catalog
+            ARGS="--with-catalog"
           fi
+          python -m app.jobs.identify $ARGS
