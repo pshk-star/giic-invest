@@ -7,7 +7,7 @@ import {
 import {
   derivePositions, portfolioTotals, type DerivedPosition, type PortfolioTotals,
 } from "../core/portfolio-tx";
-import { mergeValuation, type ValuationMeta } from "../core/valuation";
+import { mergeValuation, type ValuationMeta } from "../core/price-source";
 import { ValuationStamp } from "../components/ValuationStamp";
 import { money, num, pct } from "../format";
 

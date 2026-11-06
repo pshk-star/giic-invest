@@ -1,4 +1,4 @@
-import type { ValuationMeta } from "../core/valuation";
+import type { ValuationMeta } from "../core/price-source";
 import { fmtQuoteTime } from "../core/quotefmt";
 
 // Sello de valoración: muestra, de forma consistente en Dashboard y Mi Cartera, a qué

@@ -5,6 +5,8 @@ import random
 
 import pytest
 
+pytest.importorskip("sklearn")  # el entrenamiento usa Ridge; se omite si no está instalado
+
 from app.jobs import emit_predictions as E
 
 

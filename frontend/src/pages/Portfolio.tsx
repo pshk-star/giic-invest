@@ -10,7 +10,7 @@ import {
   derivePositions, portfolioTotals, type InstrumentMeta, type Side, type Split, type Txn,
 } from "../core/portfolio-tx";
 import { classifyQuote } from "../core/quotefmt";
-import { mergeValuation } from "../core/valuation";
+import { mergeValuation } from "../core/price-source";
 import { ValuationStamp } from "../components/ValuationStamp";
 import { money, num, pct } from "../format";
 
