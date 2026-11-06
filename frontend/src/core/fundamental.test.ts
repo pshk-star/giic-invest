@@ -104,3 +104,16 @@ describe("agregación fundamental a cartera (coherente por escenario)", () => {
     expect(a.perScenario.every((p) => p.value === 5000)).toBe(true);
   });
 });
+
+describe("antigüedad de fundamentales", () => {
+  it("fundamentales viejos (>18m) degradan la calidad a baja", () => {
+    const r = valuateCompany(input({ price: 100, priceAsOf: "2026-11-01", f: payload({ pe_ttm: 20, eps_growth_yoy: 0.1, as_of: "2024-01-01" }) }));
+    expect(r.available).toBe(true);
+    expect(r.quality).toBe("baja");
+    expect(r.limitations.join(" ").toLowerCase()).toContain("antigüedad");
+  });
+  it("fundamentales recientes conservan calidad alta", () => {
+    const r = valuateCompany(input({ price: 100, priceAsOf: "2026-11-01", f: payload({ pe_ttm: 20, eps_growth_yoy: 0.1, as_of: "2026-03-31" }) }));
+    expect(r.quality).toBe("alta");
+  });
+});

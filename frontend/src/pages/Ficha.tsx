@@ -9,6 +9,7 @@ import {
 import { QuoteView } from "../components/Quote";
 import { PriceChart } from "../components/PriceChart";
 import { derivePositions, portfolioTotals } from "../core/portfolio-tx";
+import { buildAssets, forecast } from "../core/forecast";
 import {
   type FundamentalsPayload, type ScanFactors, factorExplanation, fairValueByFcfYield,
   fairValueByPE, impliedFcfGrowth, missingFundamentals, peerMedian, riskFlags,
@@ -26,6 +27,87 @@ function Bar({ v, tone = "bg-term-accent" }: { v: number; tone?: string }) {
   return (
     <div className="h-1.5 w-full rounded bg-term-panel2">
       <div className={`h-full rounded ${tone}`} style={{ width: `${Math.max(0, Math.min(100, v))}%` }} />
+    </div>
+  );
+}
+
+// Proyección estadística INDIVIDUAL: disponible para CUALQUIER acción con historial
+// suficiente, independiente del universo A/B/C, de EDGAR y de los fundamentales.
+// Misma metodología que Portfolio Forecast (bootstrap por bloques sobre retornos
+// ajustados). Es una distribución CONDICIONADA a supuestos históricos, no una
+// predicción de rendimiento demostrado.
+function StatProjection({ ticker, bars, price }: { ticker: string; bars: PriceBar[]; price: number | null }) {
+  const [horizon, setHorizon] = useState(252);
+  const [drift, setDrift] = useState<"neutral" | "historical">("neutral");
+  const result = useMemo(() => {
+    if (!price || bars.length < 61) return null;
+    const assets = buildAssets({ [ticker]: bars }, { [ticker]: price });
+    return assets.length ? forecast(assets, { drift }) : null;
+  }, [ticker, bars, price, drift]);
+
+  return (
+    <Panel title="Proyección estadística individual (B · simulación histórica)">
+      <p className="mb-2 text-xs text-term-muted">
+        Simulación de la distribución de resultados de <b>{ticker}</b> a partir de sus <b>precios históricos ajustados</b>
+        (bootstrap por bloques; misma metodología que Portfolio Forecast). Independiente del modelo A/B/C y de los
+        fundamentales. Es una <b>distribución condicionada a supuestos históricos</b>, no una predicción validada.
+      </p>
+      {!price ? (
+        <p className="text-sm text-term-warn">Sin precio actual: no se puede anclar la proyección.</p>
+      ) : bars.length < 61 ? (
+        <p className="text-sm text-term-warn">Historial insuficiente ({bars.length} sesiones; se requieren ≥61). No se proyecta.</p>
+      ) : !result || !result.horizons.length ? (
+        <p className="text-sm text-term-warn">No fue posible proyectar con el historial disponible.</p>
+      ) : (
+        <StatProjectionBody result={result} price={price} horizon={horizon} setHorizon={setHorizon} drift={drift} setDrift={setDrift} />
+      )}
+    </Panel>
+  );
+}
+
+function StatProjectionBody({ result, price, horizon, setHorizon, drift, setDrift }: {
+  result: ReturnType<typeof forecast>; price: number; horizon: number;
+  setHorizon: (n: number) => void; drift: "neutral" | "historical"; setDrift: (d: "neutral" | "historical") => void;
+}) {
+  const hz = result.horizons.find((h) => h.days === horizon) ?? result.horizons[result.horizons.length - 1];
+  return (
+    <div className="grid gap-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex gap-1">
+          {result.horizons.map((h) => (
+            <button key={h.days} onClick={() => setHorizon(h.days)}
+              className={`rounded px-2.5 py-1 text-sm ${horizon === h.days ? "bg-term-accent text-term-bg" : "bg-term-panel2 text-term-muted"}`}>{h.label}</button>
+          ))}
+        </div>
+        <div className="ml-auto flex gap-1 text-xs">
+          {(["neutral", "historical"] as const).map((d) => (
+            <button key={d} onClick={() => setDrift(d)}
+              className={`rounded px-2 py-1 ${drift === d ? "bg-term-panel text-term-fg ring-1 ring-term-accent" : "bg-term-panel2 text-term-muted"}`}>
+              {d === "neutral" ? "Sin deriva" : "Con deriva histórica"}</button>
+          ))}
+        </div>
+      </div>
+      <div className="grid grid-cols-3 gap-2 text-center">
+        {([["Desfavorable (P5)", hz.valP5, hz.retP5, "text-term-crit"], ["Central (P50)", hz.valP50, hz.retP50, "text-term-fg"], ["Favorable (P95)", hz.valP95, hz.retP95, "text-term-good"]] as const).map(([label, v, r, tone]) => (
+          <div key={label} className="rounded-lg border border-term-border bg-term-panel2 px-2 py-2">
+            <div className="text-[10px] uppercase text-term-muted">{label}</div>
+            <div className={`text-base font-semibold tabnum ${tone}`}>{money(v)}</div>
+            <div className={`text-xs tabnum ${r >= 0 ? "text-term-good" : "text-term-crit"}`}>{r >= 0 ? "+" : ""}{pct(r)}</div>
+          </div>
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-term-muted">
+        <span>Precio ancla: <b className="text-term-fg">{money(price)}</b></span>
+        <span>Volatilidad anual: <b className="text-term-fg">{pct(result.annVol)}</b></span>
+        <span>Prob. de pérdida a {hz.label}: <b className={hz.probLoss > 0.5 ? "text-term-crit" : "text-term-fg"}>{pct(hz.probLoss)}</b></span>
+        <span>VaR 5%: <b className="text-term-crit">{money(hz.var95)}</b></span>
+        <span>Historial: <b className="text-term-fg">{result.nObs}</b> sesiones</span>
+      </div>
+      <p className="text-[11px] text-term-faint">
+        Supuestos: compra y mantenimiento, sin rebalanceo; el muestreo por bloques preserva autocorrelación corta.
+        «Sin deriva» centra los retornos en 0 (no extrapola el mercado alcista reciente). Los percentiles son rango de
+        resultados históricos, <b>no</b> probabilidades predictivas calibradas ni rendimiento demostrado.
+      </p>
     </div>
   );
 }
@@ -182,6 +264,9 @@ export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: st
         )}
       </Panel>
 
+      <StatProjection ticker={ticker} bars={hist} price={price} />
+
+
       <Panel title="Proyecciones del modelo (experimental)">
         {preds.length === 0 ? (
           <div className="text-sm">
@@ -253,7 +338,7 @@ export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: st
         <>
           <Panel title="Fundamentales (reales, de SEC EDGAR)">
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <Metric label="P/E ttm" value={fund.pe_ttm !== null ? `${num(fund.pe_ttm, 1)}×` : "—"} />
+              <Metric label="P/E (anual)" value={fund.pe_ttm !== null ? `${num(fund.pe_ttm, 1)}×` : "—"} help={fund.as_of ? `EPS del ejercicio ${fund.as_of}, no TTM` : "sobre EPS del último ejercicio, no TTM"} />
               <Metric label="FCF yield" value={pct(fund.fcf_yield)} />
               <Metric label="ROE" value={pct(fund.roe)} />
               <Metric label="Margen neto" value={pct(fund.net_margin)} />

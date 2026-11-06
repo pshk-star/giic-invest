@@ -102,6 +102,16 @@ export function aggregateFundamental(covered: AggItem[], uncoveredCurrent: numbe
 const clamp = (x: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, x));
 const FINANCIAL_SECTORS = ["financ", "bank", "insur", "seguro"];
 
+// Antigüedad (en días) entre la fecha del ejercicio y la fecha de referencia (precio).
+function ageDays(asOf?: string | null, ref?: string | null): number | null {
+  if (!asOf || !ref) return null;
+  const a = Date.parse(asOf), b = Date.parse(ref);
+  if (isNaN(a) || isNaN(b)) return null;
+  return Math.round((b - a) / 86400000);
+}
+const STALE_SOFT = 400;   // ~13 meses: deja de ser "alta" calidad
+const STALE_HARD = 550;   // ~18 meses: calidad baja (no apto para decisiones fuertes)
+
 // Bandas de escenario (supuestos explícitos, no pronósticos):
 const GROWTH_STEP = 0.05;   // ±5 pp de crecimiento anual de EPS
 const PE_COMPRESS = 0.80;   // conservador: múltiplo -20%
@@ -159,7 +169,7 @@ export function valuateCompany(input: FundamentalInput): CompanyValuation {
         label: key === "conservador" ? "Conservador" : key === "central" ? "Central" : "Favorable",
         fairValue, upside: fairValue / price - 1,
         assumptions: [
-          `EPS TTM ${eps.toFixed(2)} → ${(eps * (1 + gS)).toFixed(2)} (${gS >= 0 ? "+" : ""}${(gS * 100).toFixed(0)}% a 12m)`,
+          `EPS último ejercicio${f.as_of ? ` (${f.as_of})` : ""} ${eps.toFixed(2)} → ${(eps * (1 + gS)).toFixed(2)} (${gS >= 0 ? "+" : ""}${(gS * 100).toFixed(0)}% a 12m)`,
           `Múltiplo P/E ${mS.toFixed(1)}× (${extra})`,
         ],
       };
@@ -179,17 +189,27 @@ export function valuateCompany(input: FundamentalInput): CompanyValuation {
       { label: "Múltiplo +10%", fairValue: eps * (1 + g) * pe * 1.1, upside: 0 },
     ].map((s) => ({ ...s, upside: s.fairValue / price - 1 }));
 
-    const quality: CompanyValuation["quality"] =
+    let quality: CompanyValuation["quality"] =
       f.eps_growth_yoy != null && Math.abs(f.eps_growth_yoy) < 0.5 ? "alta"
       : f.eps_growth_yoy != null || f.rev_growth_yoy != null ? "media" : "baja";
 
+    // Antigüedad del ejercicio: fundamentales viejos NO deben sustentar decisiones fuertes.
+    const age = ageDays(f.as_of, priceAsOf);
+    const staleMonths = age != null ? Math.round(age / 30) : null;
+    if (age != null && age > STALE_HARD) quality = "baja";
+    else if (age != null && age > STALE_SOFT && quality === "alta") quality = "media";
+
     const limitations = [
+      `El P/E usa el EPS del último ejercicio anual${f.as_of ? ` (${f.as_of})` : ""}, NO un TTM; con un precio actual, el P/E resultante no es un P/E TTM de hoy.`,
       "El múltiplo central supone que el P/E actual se mantiene: es un supuesto, no un pronóstico.",
       `El crecimiento usa ${gNote} — no son estimaciones de analistas.`,
       "Horizonte 12 meses: no aplicable a 1 mes (no extrapolar un objetivo anual a corto plazo).",
       "Los escenarios no son percentiles ni probabilidades.",
       "Sin cobertura de P/E forward, EV/EBITDA, ROIC ni DCF con datos actuales (pendiente de enriquecer EDGAR).",
     ];
+    if (staleMonths != null && age! > STALE_SOFT) {
+      limitations.unshift(`Fundamentales con ~${staleMonths} meses de antigüedad (ejercicio ${f.as_of}): ${age! > STALE_HARD ? "calidad degradada a baja; no apto para decisiones fuertes" : "calidad reducida"}. Busca un ejercicio más reciente antes de actuar.`);
+    }
     if (isFinancial) limitations.push("Sector financiero: P/E sobre EPS es aproximado; idealmente P/B o modelo específico (pendiente).");
     const fcfCross = f.fcf_yield != null && isFinite(f.fcf_yield)
       ? [`Contraste FCF: rendimiento de flujo de caja libre ${(f.fcf_yield * 100).toFixed(1)}% (contexto, no valoración primaria).`]
