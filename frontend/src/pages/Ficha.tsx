@@ -155,7 +155,7 @@ export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: st
               ? <QuoteView q={quote} />
               : <>
                   <div className="font-mono text-xl tabnum text-term-fg">{price !== null ? money(price) : <span className="text-term-warn">pendiente</span>}</div>
-                  <div className="text-[10px] text-term-faint">{priceAsOf ? `cierre al ${priceAsOf}` : "sin precio aún"}</div>
+                  <div className="text-[10px] text-term-faint">{priceAsOf ? `precio de mercado · al ${priceAsOf}` : "sin precio aún"}</div>
                 </>}
           </div>
         </div>
@@ -174,16 +174,24 @@ export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: st
             { label: "Nasdaq-100 (QQQ)", bars: qqq, color: "#fbbf24" },
           ]}
         />
+        {hist.length > 0 && (
+          <p className="mt-1 text-[10px] text-term-faint">
+            Cierre ajustado (splits y dividendos). Último punto: {money(hist[hist.length - 1].close)} al {hist[hist.length - 1].as_of}.
+            El «precio de mercado» de arriba es la cotización del día ({priceAsOf ?? "s/f"}); por eso puede diferir del último cierre del gráfico.
+          </p>
+        )}
       </Panel>
 
       <Panel title="Proyecciones del modelo (experimental)">
         {preds.length === 0 ? (
           <div className="text-sm">
-            <p className="text-term-warn">Sin cobertura del modelo para {ticker}.</p>
+            <p className="text-term-warn">Sin cobertura del modelo experimental A/B/C para {ticker}.</p>
             <p className="mt-1 text-term-muted">
-              Este activo no está en el universo invertible actual (fuera de cobertura, o precio/fundamentales
-              insuficientes). Arriba tienes el precio y, si existen, los fundamentales disponibles. No se generan
-              proyecciones inventadas.
+              <b>Causa concreta:</b> {ticker} no está en el universo del modelo (universe.py), definido como
+              acciones estadounidenses líquidas; los emisores extranjeros (ASML, TSM) quedan fuera por diseño.
+              Tiene historial de precios y {fund.pe_ttm != null || fund.roe != null ? "ya cuenta con fundamentales reales (abajo)" : "fundamentales según disponibilidad"}.
+              Incluirlo en A/B/C exigiría una <b>emisión nueva y validada</b> (no se modifican las 309 predicciones
+              registradas ni se generan predicciones artificiales).
             </p>
           </div>
         ) : (
@@ -254,6 +262,10 @@ export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: st
               <Metric label="Deuda/Capital" value={fund.debt_to_equity !== null ? `${num(fund.debt_to_equity, 2)}×` : "—"} />
               <Metric label="Market cap" value={fund.market_cap !== null ? money(fund.market_cap) : "—"} />
             </div>
+            <p className="mt-2 text-[11px] text-term-faint">
+              Fuente: SEC EDGAR ({fund.taxonomy ?? "companyfacts"}{fund.currency ? ` · divisa de reporte ${fund.currency}` : ""}){fund.as_of ? ` · ejercicio anual al ${fund.as_of}` : ""}.
+              {fund.currency && fund.currency !== "USD" && " Márgenes, ROE y crecimientos son adimensionales (correctos en cualquier divisa); P/E y market cap se expresan contra el precio en USD."}
+            </p>
             {missing.length > 0 && (
               <p className="mt-2 text-xs text-term-warn">No disponibles gratis: {missing.join(", ")}.</p>
             )}

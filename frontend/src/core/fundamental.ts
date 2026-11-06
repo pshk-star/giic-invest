@@ -130,8 +130,9 @@ export function valuateCompany(input: FundamentalInput): CompanyValuation {
   }
 
   const isFinancial = sector != null && FINANCIAL_SECTORS.some((k) => sector.toLowerCase().includes(k));
-  const srcPrice = `Precio ${price.toFixed(2)} USD de price_history (adjclose Yahoo)${priceAsOf ? ` al ${priceAsOf}` : ""}.`;
-  const srcFund = "Fundamentales SEC EDGAR (companyfacts) vía el scan diario.";
+  const srcPrice = `Precio ${price.toFixed(2)} USD (cotización del día)${priceAsOf ? ` al ${priceAsOf}` : ""}.`;
+  const prov = `${f.taxonomy ?? "companyfacts"}${f.currency ? `, ${f.currency}` : ""}${f.as_of ? `, ejercicio al ${f.as_of}` : ""}`;
+  const srcFund = `Fundamentales SEC EDGAR (${prov}) vía el scan.`;
 
   // Crecimiento central: EPS YoY si existe, si no ingresos YoY; acotado y etiquetado como ruidoso.
   let g: number | null = null;
@@ -235,10 +236,15 @@ export function valuateCompany(input: FundamentalInput): CompanyValuation {
     };
   }
 
-  return {
-    ...base,
-    unavailableReason: pe != null && pe <= 0
-      ? "P/E no válido (la empresa reporta pérdidas) y sin rendimiento FCF: valoración por múltiplos no aplicable con los datos actuales."
-      : "Fundamentales insuficientes (sin P/E TTM ni rendimiento FCF) para una valoración defendible.",
-  };
+  const hasRatios = f.roe != null || f.net_margin != null || f.eps_growth_yoy != null;
+  const foreignNoFx = f.currency != null && f.currency !== "USD";
+  let reason: string;
+  if (foreignNoFx && hasRatios) {
+    reason = `Hay fundamentales en ${f.currency} (${prov}) — ROE, márgenes y crecimientos sí disponibles en Research — pero P/E y FCF en USD requieren conversión FX ${f.currency}→USD, no disponible gratis. Valoración por múltiplos en USD: no disponible.`;
+  } else if (pe != null && pe <= 0) {
+    reason = "P/E no válido (la empresa reporta pérdidas) y sin rendimiento FCF: valoración por múltiplos no aplicable con los datos actuales.";
+  } else {
+    reason = "Fundamentales insuficientes (sin P/E TTM ni rendimiento FCF) para una valoración defendible.";
+  }
+  return { ...base, unavailableReason: reason };
 }

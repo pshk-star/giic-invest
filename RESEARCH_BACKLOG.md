@@ -29,13 +29,21 @@ Registrados a petición de Pablo (2026-11-05). Abordar después de cerrar el Hit
   automáticamente declaraciones más recientes cuando la SEC las publique; verificar periódicamente.
 
 ## Valoración fundamental — cobertura de emisores extranjeros (registrado 2026-11-06)
-- **E. IFRS/20-F (ASML, TSM) — mapeo a payload de ratios.** `edgar_pit.py` YA ingiere los
-  conceptos crudos ifrs-full (Revenue, ProfitLoss, EPS, Equity, etc.) a `fundamentals_pit`
-  además de us-gaap (soporte preparado y testeado). PENDIENTE: que `run_scan.py` mapee los
-  conceptos IFRS → el `payload` de ratios (pe_ttm, eps_growth_yoy, fcf_yield, etc.) para que
-  ASML/TSM tengan valoración fundamental. Hoy aparecen SIEMPRE en proyección y Advisor con
-  acción REVISAR y causa concreta ("emisor extranjero 20-F / IFRS, fuera de us-gaap"). No se
-  inventan sus fundamentales.
-- **F. Enriquecer el payload** con historial (ingresos/EPS/FCF), acciones diluidas, deuda neta,
-  P/E histórico y procedencia por campo (period_end + filing_date) para mejorar el motor
-  fundamental (hoy usa pe_ttm/eps_growth_yoy/fcf_yield; múltiplo histórico y DCF pendientes).
+- **E. RESUELTO (2026-11-06): ASML y TSM con fundamentales reales.** Causa raíz: el parser
+  (`providers/edgar.py::parse_companyfacts`, fuente real del `payload`) solo leía us-gaap/USD/10-K.
+  Diagnóstico en vivo: ASML publica bajo **us-gaap pero en EUR** (20-F); TSM bajo **ifrs-full/TWD**.
+  Fix: detección de taxonomía y DIVISA data-driven, formularios 10-K/20-F/40-F, conversión FX
+  (USD por unidad) y adr_ratio (TSM 5, ASML 1); variante de concepto más reciente.
+  Verificado tras ingesta real: ASML ROE 49%, P/E 51.4, margen 29.4%, crec. EPS 28.4%;
+  TSM ROE 27%, margen 40%, crecimientos reales.
+- **E.1 PENDIENTE — TSM P/E/FCF en USD:** requieren FX TWD→USD, que Frankfurter (ECB) no publica.
+  Hoy TSM muestra ratios adimensionales (ROE, márgenes, crecimientos) y P/E/FCF como "no
+  disponible" con causa. Buscar fuente FX TWD→USD gratis o derivarla.
+- **E.2 PENDIENTE — cobertura de `shares` (market cap/FCF) de algunos US (p. ej. META):**
+  market_cap/fcf_yield quedan null cuando no se resuelve EntityCommonStockSharesOutstanding;
+  ampliar fuentes de acciones en circulación.
+- **F. Enriquecer el payload** con historial (ingresos/EPS/FCF), P/E histórico y procedencia por
+  campo (period_end + filing_date) para múltiplo histórico y DCF (hoy múltiplo central = P/E
+  actual, un supuesto preliminar). `edgar_pit.py` ya ingiere el crudo (us-gaap + ifrs-full).
+- **G. A/B/C y emisores extranjeros:** ASML/TSM no están en `universe.py` (universo US). Para
+  incluirlos en A/B/C se requiere una emisión nueva y validada (no modificar las 309).

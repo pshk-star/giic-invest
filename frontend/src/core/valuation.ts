@@ -15,6 +15,9 @@ export interface FundamentalsPayload {
   net_margin: number | null;
   debt_to_equity: number | null;
   market_cap: number | null;
+  currency?: string | null;       // divisa de reporte (EDGAR): USD, EUR, TWD, ...
+  as_of?: string | null;          // fin del último ejercicio anual usado (YYYY-MM-DD)
+  taxonomy?: string | null;       // us-gaap | ifrs-full (procedencia)
 }
 
 export function median(xs: Array<number | null | undefined>): number | null {
