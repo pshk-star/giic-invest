@@ -69,8 +69,10 @@ class EdgarFundamentalsConnector:
     spec = ConnectorSpec(
         id="edgar_companyfacts", kind="fundamentals", provenance="SEC EDGAR (companyfacts)",
         quality=QualityTier.OFFICIAL, priority=10, cost_tier=CostTier.FREE,
-        coverage=Coverage(instrument_types=("stock", "adr", "gdr", "common", "equity", "unknown"),
-                          fields=FUND_FIELDS, jurisdictions=()),
+        # Cubre CUALQUIER tipo de instrumento: el conector es consciente del routing y, ante un
+        # vehículo (ETF/trust), emite el veredicto `no_aplica` explícito (restricción semántica),
+        # en vez de quedar fuera de cobertura y dejar el campo sin marcar.
+        coverage=Coverage(instrument_types=(), fields=FUND_FIELDS, jurisdictions=()),
         cache_ttl_s=6 * 3600, rate_limit_per_s=8.0, frequency="trimestral/anual (10-Q/10-K/20-F)",
         limitations=("sólo emisores con presentaciones XBRL en EDGAR",
                      "no expone XBRL dimensional (p. ej. EPS por clase accionaria)"),
