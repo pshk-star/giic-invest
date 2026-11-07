@@ -335,3 +335,59 @@ perdido, ningún otro cambio de presencia; márgenes/ROE/net_debt/eps_annual id�
 casos anual-como-TTM coinciden EXACTO con el EPS diluido oficial — AAPL 8.98, AMZN 7.17, COST 20.76,
 C 6.99 (diferencia relativa 0.0). Los casos YTD (WMT, HD) difieren ~1% del último anual, como debe
 ser (un TTM rodante a mitad de año ≠ EPS del ejercicio previo). Exactitud confirmada, sin estimación.
+
+---
+
+## 12. E3.2 — XBRL dimensional (resultados) y E3.3 — cobertura contable
+
+**E3.2 — extractor dimensional reutilizable** (`core/xbrl_dimensional.py`): parsea el XBRL inline
+(ix:nonFraction + contextos), maneja escala/signo/unidad y recupera hechos POR CLASE con dimensión,
+clase, período, unidad. `latest_annual_by_class` NO combina clases. Registrado como conector E2
+`edgar_xbrl_dimensional` (oficial, **on-demand**: descarga el 10-K sólo al pedir sus campos; nunca
+en barridos). Devuelve `{clase:{value,period_end,unit}}` con accession/procedencia. Sin lógica por
+ticker.
+
+*Validación Visa (contra su 10-K oficial, reconciliación independiente):* Clase A diluido
+**EPS 12.32 × 1,907M acciones = $23.494B** vs **utilidad neta agregada oficial $23.504B → 99.96%**.
+Clases B1/B2/B3/C quedan separadas (EPS 19.1/18.66/18.46/49.3, base as-converted), sin combinar.
+GOOGL (contraste): EPS uniforme por clase (~10.8) que reconcilia sólo sumando acciones de clases
+—refuerza no asumir una agregación por emisor; el extractor las entrega separadas.
+
+**E3.3 — cobertura contable + sector** (`core/quality.py`, `core/normalize.py`):
+- `is_financial_sector`/`field_applies`: márgenes y utilidad/margen operativo son **no_aplica** para
+  el sector financiero (SIC 6000–6799: bancos, seguros, brokers). No se fuerzan definiciones
+  industriales. Procesadores de pago (V/MA, SIC 7389) NO son financieras y conservan margen.
+- Variantes de CAPEX y de ingresos añadidas (recuperan emisores que usan etiquetas alternas).
+- Regresión batería main→fde-e3: **0 campos perdidos**; eps_ttm 65→94%, fcf_ttm 60→87%,
+  fcf_annual 82→84%, net_margin 90→95%.
+
+## 13. Evaluación final — cobertura (A) vs cobertura vigente (B)
+
+Tres dimensiones distintas: **cobertura** (¿está el dato?), **exactitud** (¿coincide con el oficial?)
+y **actualidad** (¿es suficientemente reciente para valorar hoy?). La vigencia (`core/recency.py`)
+usa la **cadencia del propio emisor** y la **existencia de reportes posteriores** (reportDate más
+nuevo que el corte del dato), sin umbrales universales. Un anual correcto como TTM NO se presenta
+como vigente si el emisor ya publicó un período posterior.
+
+Indicadores sobre 63 operativas (eval 2026-11-07):
+
+| Segmento | n | A cobertura | B cobertura vigente |
+|---|---|---|---|
+| us_equities | 39 | 89.1% | 87.0% |
+| adr_ifrs | 14 | 84.5% | **0.0%** |
+| bancos_y_financieras | 8 | 76.1% | 56.8% |
+| otros (V/MA) | 2 | 91.7% | 91.7% |
+| **TOTAL** | **63** | **86.6%** | **64.0%** |
+
+Lectura: los **ADR/IFRS** tienen buena cobertura pero **no actual** — EDGAR sólo contiene su 20-F
+anual y ya existen trimestres posteriores (ASML FY2025, TSM FY2024). El dato es históricamente
+correcto, pero queda marcado `desactualizado`, no vigente. Casos US recién cerrados (AAPL) son
+vigentes; los de TTM rodante (MSFT, JPM) también. **Discrepancias/validaciones:** E3.1 cuadra exacto
+vs `companyconcept` (AAPL/AMZN/COST/C, dif 0.0); E3.2 Visa reconcilia 99.96% vs NI agregado.
+**Bloqueados:** MU (anomalía no resuelta). **No vigentes** (dato válido, no actual): 17 — los 13
+ADR/IFRS + C y SHOP (anual-como-TTM con 10-Q posterior en EDGAR).
+
+**Limitaciones pendientes (no resueltas gratis):** TTM actual de ADR/IFRS exige un conector externo
+(ranura E3.4 tras el gate de costo); algunos interinos US rezagados en companyfacts dejan el
+anual-como-TTM desactualizado hasta que la SEC publique el XBRL del trimestre. net_debt (68%) y
+operating_income en no-financieras siguen con huecos por etiquetas no cubiertas.
