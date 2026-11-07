@@ -249,13 +249,28 @@ def test_agregar_proveedor_comercial_solo_requiere_registrar():
 
 
 # --- registro por defecto (offline) ---
+def test_on_demand_se_excluye_de_barridos_y_se_incluye_al_pedir_su_campo():
+    dim_spec = ConnectorSpec(id="dim", kind="fundamentals", provenance="dim", quality=QualityTier.OFFICIAL,
+                             priority=15, coverage=Coverage(fields=("eps_diluted_by_class",)), on_demand=True)
+    r = ConnectorRegistry()
+    r.register(Fake(spec("edgar"), {}))
+    r.register(Fake(dim_spec, {}))
+    # Barrido general (field=None): el on_demand NO aparece.
+    assert "dim" not in [c.spec.id for c in r.connectors_for("fundamentals")]
+    # Al pedir su campo explícitamente: SÍ aparece.
+    assert "dim" in [c.spec.id for c in r.connectors_for("fundamentals", field="eps_diluted_by_class")]
+
+
 def test_default_registry_catalogo_offline():
     reg = build_default_registry(edgar_user_agent=None)
     cat = reg.catalog()
     ids = {c["id"] for c in cat}
-    assert {"edgar_companyfacts", "yahoo_stats", "frankfurter_fx", "prices_yahoo_stooq"} <= ids
+    assert {"edgar_companyfacts", "edgar_xbrl_dimensional", "yahoo_stats",
+            "frankfurter_fx", "prices_yahoo_stooq"} <= ids
     h = reg.health()
-    assert h["tope_costo"] == "free" and h["n_conectores"] == 4
+    assert h["tope_costo"] == "free" and h["n_conectores"] == 5
+    dim = next(c for c in cat if c["id"] == "edgar_xbrl_dimensional")
+    assert dim["on_demand"] is True and dim["quality"] == "official"
     # EDGAR declarado oficial y operativo; Yahoo stats declarado DOWN (401) con honestidad.
     edgar = next(c for c in cat if c["id"] == "edgar_companyfacts")
     yh = next(c for c in cat if c["id"] == "yahoo_stats")

@@ -237,3 +237,157 @@ persisten), selección multicriterio (calidad/autoridad/comparabilidad/actualida
 último desempate), relleno de `faltante`, caché TTL y "añadir proveedor comercial = sólo registrar
 + subir el tope". Pendiente (no en E2): migrar `CompositeProvider`/scan para consumir el registro;
 E3 (XBRL dimensional de Visa); Fair Value.
+
+---
+
+## 10. E3 — diagnóstico de cobertura, plan y estimación (PARA REVISIÓN; sin extractores aún)
+
+Diagnóstico medido en CI (`jobs/e3_coverage_diag.py`, solo lectura) sobre las 63 empresas
+operativas de la batería de 76 (ETF/trusts excluidos por routing; MU bloqueado).
+
+### 10.1 Cobertura actual Fair Value (% "completo", EDGAR gratuito)
+| Campo | Cobertura | | Campo | Cobertura |
+|---|---|---|---|---|
+| diluted_shares | 95.2% | | ocf | 63.5% |
+| cash | 84.1% | | revenue | 60.3% |
+| gross_debt | 84.1% | | fcf_ttm | 60.3% |
+| fcf_annual | 82.5% | | capex | 58.7% |
+| net_debt | 69.8% | | operating_income | 46.0% |
+| net_income / eps | 65.1% | | | |
+
+### 10.2 Causa raíz de los huecos (qué falta REALMENTE y qué es recuperable gratis)
+1. **TTM "solo_anual" — el hueco MÁS grande.** La mayoría de huecos de eps/ni/revenue/op_income
+   son "hay anual, falta TTM". Dos subgrupos:
+   - **Extranjeros ADR/IFRS (13: ASML, TSM, SAP, TM, NVO, AZN, BABA, SONY, UL, RIO, SE, NVS, HSBC).**
+     Presentan 20-F anual pero **no taguean interinos en XBRL de EDGAR** → el TTM por identidad
+     rodante no se puede cerrar. **NO recuperable desde EDGAR gratis.**
+   - **US con desalineación de interinos (AAPL, AMZN, COST, C).** Taguean 10-Q, pero la
+     reconstrucción TTM actual no cierra la identidad (calendario fiscal / ventanas). **Recuperable
+     gratis** mejorando el reconstructor TTM (Q4 = FY−9M, mejor emparejamiento de ventanas).
+2. **EPS/acciones SÓLO dimensional (ausente en APIs agregadas).** Confirmado parseando el XBRL
+   inline del 10-K: **Visa = 28/28 hechos de EPS diluido y de acciones diluidas son dimensionales
+   (por clase A/B/C), 0 agregados** → por eso companyfacts no los tiene. GOOGL los da agregados + por
+   clase (9/15 dim); MA sólo agregados. Candidatos adicionales con EPS ausente en agregado: XOM, BP,
+   SHEL (confirmar si dimensional o variante de concepto). **Recuperable gratis** con extractor
+   dimensional del instance (universal, sin lógica por ticker). Alcance: ~1 cierto (V) + hasta 3.
+3. **operating_income el más bajo (46%) — en parte N/A real.** Los **bancos (JPM, BAC, WFC, C, GS,
+   MS)** no reportan "OperatingIncomeLoss": es **N/A semántico**, no un hueco a rellenar. No-bancos
+   (XOM, CVX, MRK, LLY, Fox/News) usan conceptos alternos → **recuperable gratis** extendiendo mapas.
+4. **fcf_ttm (60%)** depende de OCF_TTM y CAPEX_TTM; sube con la mejora de reconstrucción TTM (#1 US).
+5. **MU** sigue **bloqueado** (1 ticker) hasta contraste con documentos oficiales.
+
+### 10.3 Plan de implementación E3 (priorizado por impacto/costo, sin excepción por ticker)
+- **E3.1 — Reconstrucción TTM robusta desde interinos de EDGAR ya presentes** (gratis, universal).
+  Q4 = FY−9M, mejor detección/emparejamiento de ventanas YTD. *Mayor palanca para filers US.*
+- **E3.2 — Extractor XBRL dimensional reutilizable** registrado como conector E2 (calidad `official`,
+  procedencia = instance del 10-K con accession). Recupera EPS/acciones por **clase** cuando el
+  agregado no existe (Visa) y como enriquecimiento (GOOGL). Sin lógica por ticker: itera hechos
+  `ix:nonFraction` y sus contextos dimensionales. Guarda **clase accionaria** y método.
+- **E3.3 — Extensión de mapas de conceptos** (operating_income/revenue variantes). Marca
+  `operating_income` como **no_aplica por campo** para bancos (restricción semántica, análoga a E1).
+- **E3.4 — Interinos de extranjeros**: **límite declarado** (no recuperable gratis) + ranura de
+  conector externo (API) **detrás del gate de costo** — sin tocar el núcleo (ya soportado por E2).
+- **Trazabilidad** (E3 en todos): documento (accession/URL), fecha, período fiscal, moneda, unidad,
+  **clase accionaria** y método de cálculo en `ProvenancedField`; no mezclar períodos/monedas/clases.
+- **Regresión**: re-correr la batería de 76 antes/después; además de cobertura, **validar cifras**
+  dimensionales contra el 10-K (p. ej. EPS por clase de Visa cuadra con el reporte). MU sigue bloqueado.
+
+### 10.4 Estimación de mejora esperada (sólo trabajo GRATIS en EDGAR)
+| Campo | Hoy | Esperado | Palanca | No recuperable gratis |
+|---|---|---|---|---|
+| eps "completo" | 65% | **73–78%** | E3.1 (AAPL/AMZN/COST/C) + E3.2 (V,+≤3) | 13 extranjeros (TTM) |
+| diluted_shares | 95% | **97–100%** | E3.2 (V, XOM, BP) | — |
+| operating_income (no-banco) | ~46% | **65–72%** | E3.3 mapas + E3.1 | bancos = N/A; extranjeros TTM |
+| fcf_ttm | 60% | **70–75%** | E3.1 (OCF/CAPEX TTM US) | extranjeros |
+| revenue/net_income TTM | 60–65% | **72–78%** | E3.1 | extranjeros |
+
+La cobertura de **extranjeros ADR/IFRS** sólo sube con un conector externo (E3.4, de pago → gate de
+costo con autorización), no con EDGAR. **No basta con subir cobertura**: cada recuperación dimensional
+se validará contra el documento oficial antes de marcarse `verificado`.
+
+---
+
+## 11. E3.1 — reconstrucción TTM (resultados medidos)
+
+**Causa verificada (no supuesta)** con sonda de solo lectura sobre muestra representativa: en AAPL,
+AMZN, COST, C los interinos SÍ están en EDGAR (266–300 hechos), pero su período COMPLETO más reciente
+es el anual (10-K; aún sin 10-Q posterior) → la identidad rodante devuelve `window="anual"` y el
+parser lo descartaba por exigir ventana YTD. Es **disponible-no-recuperado por gating**, no ausencia
+ni rechazo por calidad. Contraste: MSFT/NVDA/META sí tienen YTD fresco y ya funcionaban. (Hallazgo
+lateral: NVDA CAPEX sale de un concepto viejo → E3.3.)
+
+**Fix (universal, en `parse_companyfacts`):** cuando no hay TTM rodante pero el período completo más
+reciente es el anual, `eps_ttm = EPS anual diluido REPORTADO` y `fcf_ttm = FCF anual` (idénticos por
+definición), usando la cifra OFICIAL (no re-derivada), con `window="anual"` para trazabilidad. Sólo
+rellena cuando antes era `None`; el camino YTD no se toca.
+
+**Cobertura antes→después (63 operativas, batería de 76, medido en CI):**
+| Campo | Antes | Después | | Campo | Antes | Después |
+|---|---|---|---|---|---|---|
+| eps_ttm | 65.1% | **93.7%** | | fcf_ttm | 60.3% | **85.7%** |
+
+18 tickers ganan eps_ttm (incluidos extranjeros ASML/TSM/SAP/AZN/BABA/HSBC/NVO/NVS/RIO/SE/SONY/TM/UL,
+cuyo último período completo es el 20-F anual), 16 ganan fcf_ttm. **0 regresiones**: ningún campo
+perdido, ningún otro cambio de presencia; márgenes/ROE/net_debt/eps_annual idénticos; MU sigue
+**bloqueado**; no_aplica 5.
+
+**Validación de valor (independiente, vs endpoint oficial `companyconcept` de la SEC):** los cuatro
+casos anual-como-TTM coinciden EXACTO con el EPS diluido oficial — AAPL 8.98, AMZN 7.17, COST 20.76,
+C 6.99 (diferencia relativa 0.0). Los casos YTD (WMT, HD) difieren ~1% del último anual, como debe
+ser (un TTM rodante a mitad de año ≠ EPS del ejercicio previo). Exactitud confirmada, sin estimación.
+
+---
+
+## 12. E3.2 — XBRL dimensional (resultados) y E3.3 — cobertura contable
+
+**E3.2 — extractor dimensional reutilizable** (`core/xbrl_dimensional.py`): parsea el XBRL inline
+(ix:nonFraction + contextos), maneja escala/signo/unidad y recupera hechos POR CLASE con dimensión,
+clase, período, unidad. `latest_annual_by_class` NO combina clases. Registrado como conector E2
+`edgar_xbrl_dimensional` (oficial, **on-demand**: descarga el 10-K sólo al pedir sus campos; nunca
+en barridos). Devuelve `{clase:{value,period_end,unit}}` con accession/procedencia. Sin lógica por
+ticker.
+
+*Validación Visa (contra su 10-K oficial, reconciliación independiente):* Clase A diluido
+**EPS 12.32 × 1,907M acciones = $23.494B** vs **utilidad neta agregada oficial $23.504B → 99.96%**.
+Clases B1/B2/B3/C quedan separadas (EPS 19.1/18.66/18.46/49.3, base as-converted), sin combinar.
+GOOGL (contraste): EPS uniforme por clase (~10.8) que reconcilia sólo sumando acciones de clases
+—refuerza no asumir una agregación por emisor; el extractor las entrega separadas.
+
+**E3.3 — cobertura contable + sector** (`core/quality.py`, `core/normalize.py`):
+- `is_financial_sector`/`field_applies`: márgenes y utilidad/margen operativo son **no_aplica** para
+  el sector financiero (SIC 6000–6799: bancos, seguros, brokers). No se fuerzan definiciones
+  industriales. Procesadores de pago (V/MA, SIC 7389) NO son financieras y conservan margen.
+- Variantes de CAPEX y de ingresos añadidas (recuperan emisores que usan etiquetas alternas).
+- Regresión batería main→fde-e3: **0 campos perdidos**; eps_ttm 65→94%, fcf_ttm 60→87%,
+  fcf_annual 82→84%, net_margin 90→95%.
+
+## 13. Evaluación final — cobertura (A) vs cobertura vigente (B)
+
+Tres dimensiones distintas: **cobertura** (¿está el dato?), **exactitud** (¿coincide con el oficial?)
+y **actualidad** (¿es suficientemente reciente para valorar hoy?). La vigencia (`core/recency.py`)
+usa la **cadencia del propio emisor** y la **existencia de reportes posteriores** (reportDate más
+nuevo que el corte del dato), sin umbrales universales. Un anual correcto como TTM NO se presenta
+como vigente si el emisor ya publicó un período posterior.
+
+Indicadores sobre 63 operativas (eval 2026-11-07):
+
+| Segmento | n | A cobertura | B cobertura vigente |
+|---|---|---|---|
+| us_equities | 39 | 89.1% | 87.0% |
+| adr_ifrs | 14 | 84.5% | **0.0%** |
+| bancos_y_financieras | 8 | 76.1% | 56.8% |
+| otros (V/MA) | 2 | 91.7% | 91.7% |
+| **TOTAL** | **63** | **86.6%** | **64.0%** |
+
+Lectura: los **ADR/IFRS** tienen buena cobertura pero **no actual** — EDGAR sólo contiene su 20-F
+anual y ya existen trimestres posteriores (ASML FY2025, TSM FY2024). El dato es históricamente
+correcto, pero queda marcado `desactualizado`, no vigente. Casos US recién cerrados (AAPL) son
+vigentes; los de TTM rodante (MSFT, JPM) también. **Discrepancias/validaciones:** E3.1 cuadra exacto
+vs `companyconcept` (AAPL/AMZN/COST/C, dif 0.0); E3.2 Visa reconcilia 99.96% vs NI agregado.
+**Bloqueados:** MU (anomalía no resuelta). **No vigentes** (dato válido, no actual): 17 — los 13
+ADR/IFRS + C y SHOP (anual-como-TTM con 10-Q posterior en EDGAR).
+
+**Limitaciones pendientes (no resueltas gratis):** TTM actual de ADR/IFRS exige un conector externo
+(ranura E3.4 tras el gate de costo); algunos interinos US rezagados en companyfacts dejan el
+anual-como-TTM desactualizado hasta que la SEC publique el XBRL del trimestre. net_debt (68%) y
+operating_income en no-financieras siguen con huecos por etiquetas no cubiertas.

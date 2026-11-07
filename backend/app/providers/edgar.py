@@ -237,6 +237,16 @@ def parse_companyfacts(facts: dict, ticker: str,
                 ps_usd = ps["ttm"] * adr * (1.0 if ps_is_usd else (fx or 1))
                 if ps_usd:
                     eps_ttm_pershare_check = round(eps_ttm_usd / ps_usd, 4)
+    # E3.1 — TTM = ejercicio cuando el período COMPLETO más reciente es el anual (aún no hay 10-Q
+    # posterior al cierre): el TTM coincide POR DEFINICIÓN con el EPS anual diluido reportado. Se usa
+    # la cifra OFICIAL reportada (no se re-deriva por NI/acciones) y se marca window="anual" para
+    # trazabilidad. Universal: sólo se activa si la identidad rodante (YTD) no produjo un TTM.
+    if (eps_ttm_usd is None and eps_annual_usd is not None and ni_ttm is not None
+            and ni_ttm["window"].startswith("anual")):
+        eps_ttm_usd = eps_annual_usd
+        eps_ttm_method = "EPS anual diluido reportado = TTM (sin trimestre posterior al cierre)"
+        eps_ttm_window = "anual"
+        eps_ttm_denominator = wdil_l
     ttm_vs_annual_ratio = (eps_ttm_usd / eps_annual_usd) if (eps_ttm_usd and eps_annual_usd) else None
 
     # EPS primario: TTM si está disponible (más actual); si no, el anual. El fallback (abajo) sólo
@@ -279,6 +289,12 @@ def parse_companyfacts(facts: dict, ticker: str,
         ocf_ttm and capex_ttm and "YTD" in ocf_ttm["window"] and "YTD" in capex_ttm["window"]) else None
     fcf_annual = (fcf_annual_ccy * fx) if (fcf_annual_ccy is not None and fx) else None   # USD
     fcf_ttm = (fcf_ttm_ccy * fx) if (fcf_ttm_ccy is not None and fx) else None             # USD
+    # E3.1 — FCF TTM = FCF anual cuando el período COMPLETO más reciente de OCF/CAPEX es el anual
+    # (sin trimestre posterior): coincide por definición con el ejercicio. Mismo criterio que EPS.
+    if (fcf_ttm is None and fcf_annual is not None and ocf_ttm is not None
+            and ocf_ttm["window"].startswith("anual")
+            and (capex_ttm is None or capex_ttm["window"].startswith("anual"))):
+        fcf_ttm = fcf_annual
     fcf_for_yield = fcf_ttm if fcf_ttm is not None else fcf_annual
     fcf_yield = (fcf_for_yield / market_cap) if (fcf_for_yield is not None and market_cap) else None
     pe_ttm = (price / eps_usd) if (price and eps_usd and eps_usd > 0) else None

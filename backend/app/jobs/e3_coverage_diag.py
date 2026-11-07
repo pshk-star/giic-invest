@@ -29,7 +29,7 @@ import time
 from datetime import date, datetime
 
 from app.core.normalize import (US_GAAP_MAP, IFRS_MAP, _at, _best_annual, _best_instant,
-                                 _currency_for, _ttm_best, _annual_points, _concept)
+                                 _currency_for, _ttm_best, _annual_points, _concept, ttm_flow)
 from app.providers.edgar import parse_companyfacts
 from app.services.identity import resolve_identity
 from app.jobs.coverage_battery import UNIVERSE, ADR_SEED, FX
@@ -183,6 +183,140 @@ def dimensional_probe(cli, cikmap, tickers):
     return out
 
 
+# ---- Sonda de CAUSA del TTM faltante (no suponer: medir) ----
+def _dur_summary(facts, tax, names, ccy):
+    """Resumen de hechos de DURACIÓN del mejor concepto: conteos anual/interino, últimos cortes,
+    y el resultado de ttm_flow (ventana). Permite ver por qué NO se cierra el TTM."""
+    best_rows, best_name = [], None
+    for n in names:
+        rows = _concept(facts, tax, n, ccy)
+        durs = [(_parse_date(r.get("start")), _parse_date(r.get("end")), r.get("val"), r.get("form"), r.get("filed"))
+                for r in rows if _parse_date(r.get("start")) and _parse_date(r.get("end")) and r.get("val") is not None]
+        if len(durs) > len(best_rows):
+            best_rows, best_name = durs, n
+    annual = [d for d in best_rows if 330 <= (d[1] - d[0]).days <= 400]
+    interim = [d for d in best_rows if 60 <= (d[1] - d[0]).days <= 300]
+    tf = ttm_flow(_concept(facts, tax, best_name, ccy)) if best_name else None
+    latest_annual = max((d[1] for d in annual), default=None)
+    latest_interim = max((d[1] for d in interim), default=None)
+    # Verdicto de causa.
+    if not best_rows:
+        causa = "ausente_en_edgar"
+    elif tf and "YTD" in tf.get("window", ""):
+        causa = "recuperable_TTM"
+    elif latest_interim is None or (latest_annual and latest_interim <= latest_annual):
+        causa = "ultimo_es_anual (TTM=anual; no expuesto por exigir ventana YTD)"
+    elif interim:
+        causa = "disponible_no_recuperado (hay interinos; la identidad rodante no cierra)"
+    else:
+        causa = "indeterminado"
+    return {"concepto": best_name, "n_anual": len(annual), "n_interino": len(interim),
+            "ultimo_anual": latest_annual.isoformat() if latest_annual else None,
+            "ultimo_interino": latest_interim.isoformat() if latest_interim else None,
+            "ttm_flow_window": (tf or {}).get("window"), "causa": causa}
+
+
+def ttm_cause_probe(cli, cikmap, tickers):
+    """Para cada ticker, clasifica por qué falta el TTM en NI/OCF/CAPEX: ausente en EDGAR vs
+    disponible-no-recuperado vs último-es-anual vs rechazado-por-calidad. NO supone la causa."""
+    out = {}
+    for t in tickers:
+        cik = cikmap.get(t.upper())
+        if not cik:
+            out[t] = {"error": "sin CIK"}
+            continue
+        try:
+            facts = cli.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json").json()
+            time.sleep(0.12)
+        except Exception as e:
+            out[t] = {"error": type(e).__name__}
+            continue
+        tax, ccy, M = _pick_tax(facts)
+        dq = parse_companyfacts(facts, t, price=None).data_quality
+        out[t] = {"taxonomy": tax, "currency": ccy, "data_quality": dq,
+                  "net_income": _dur_summary(facts, tax, M["ni"], ccy),
+                  "ocf": _dur_summary(facts, tax, M["ocf"], ccy),
+                  "capex": _dur_summary(facts, tax, M["capex"], ccy)}
+    return out
+
+
+def e31_value_check(cli, cikmap, tickers):
+    """Validación independiente del VALOR de E3.1: el eps_ttm (=anual) expuesto debe coincidir con el
+    EPS diluido anual que la SEC publica en su endpoint `companyconcept` (fuente oficial separada del
+    camino de parseo). Confirma que no hay distorsión de unidad/FX/ADR. Reporta diferencia relativa."""
+    out = {}
+    for t in tickers:
+        cik = cikmap.get(t.upper())
+        if not cik:
+            out[t] = {"error": "sin CIK"}; continue
+        try:
+            facts = cli.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json").json()
+            time.sleep(0.12)
+            f = parse_companyfacts(facts, t, price=None)
+            cc = cli.get(f"https://data.sec.gov/api/xbrl/companyconcept/CIK{cik:010d}/us-gaap/EarningsPerShareDiluted.json")
+            time.sleep(0.12)
+            official = None
+            if cc.status_code == 200:
+                rows = cc.json().get("units", {}).get("USD/shares", [])
+                ann = [r for r in rows if str(r.get("form", "")).startswith("10-K")
+                       and r.get("start") and r.get("end")
+                       and 330 <= (_parse_date(r["end"]) - _parse_date(r["start"])).days <= 400]
+                if ann:
+                    official = max(ann, key=lambda r: r["end"])  # último anual
+            off_val = official["val"] if official else None
+            diff = (abs(f.eps_ttm - off_val) / abs(off_val)) if (f.eps_ttm is not None and off_val) else None
+            out[t] = {"eps_ttm_expuesto": f.eps_ttm, "eps_annual_expuesto": f.eps_annual,
+                      "eps_window": f.eps_ttm_window, "eps_diluido_oficial_SEC": off_val,
+                      "periodo_oficial": official["end"] if official else None,
+                      "diferencia_relativa": round(diff, 6) if diff is not None else None,
+                      "coincide": (diff is not None and diff < 0.005)}
+        except Exception as e:
+            out[t] = {"error": f"{type(e).__name__}: {str(e)[:100]}"}
+    return out
+
+
+def e32_dimensional_validation(cli, cikmap, ua, tickers):
+    """E3.2 — valida el extractor dimensional: recupera EPS/acciones diluidas por CLASE desde el 10-K
+    y reconcilia la clase principal contra la utilidad neta AGREGADA oficial (EPS×acciones ≈ NI).
+    No combina clases. Para Visa (sólo dimensional) es la prueba de que el valor es correcto."""
+    from app.core.connectors.adapters import EdgarDimensionalConnector
+    conn = EdgarDimensionalConnector(user_agent=ua)
+    out = {}
+    got = conn.fetch(tickers)
+    for t in tickers:
+        cik = cikmap.get(t.upper())
+        fm = got.get(t, {})
+        eps_bc = fm.get("eps_diluted_by_class")
+        sh_bc = fm.get("diluted_shares_by_class")
+        rec = {"eps_por_clase": eps_bc.value if eps_bc else None,
+               "acciones_por_clase": sh_bc.value if sh_bc else None,
+               "procedencia": eps_bc.provenance if eps_bc else None}
+        # Reconciliación contra NI agregado oficial (companyfacts).
+        try:
+            facts = cli.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json").json()
+            tax, ccy, M = _pick_tax(facts)
+            ni = _at(_best_annual(facts, tax, M["ni"], ccy), _ref_period(facts, tax, M, ccy))
+            rec["ni_agregado_oficial"] = ni
+            if eps_bc and sh_bc and ni:
+                # Clase principal = la de mayor número de acciones (base as-converted).
+                classes = {k: sh_bc.value[k]["value"] for k in sh_bc.value if sh_bc.value[k]["value"]}
+                if classes:
+                    main = max(classes, key=classes.get)
+                    eps_m = (eps_bc.value.get(main) or {}).get("value")
+                    sh_m = classes[main]
+                    if eps_m and sh_m:
+                        implied = eps_m * sh_m
+                        rec["clase_principal"] = main
+                        rec["implied_NI(EPS_clase×acciones_clase)"] = implied
+                        rec["reconciliacion_vs_NI"] = round(implied / ni, 4)
+                        rec["cuadra_5pct"] = abs(implied / ni - 1.0) < 0.05
+        except Exception as e:
+            rec["error_reconciliacion"] = f"{type(e).__name__}: {str(e)[:80]}"
+        out[t] = rec
+        time.sleep(0.2)
+    return out
+
+
 def run() -> dict:
     ua = os.getenv("EDGAR_USER_AGENT", "")
     if not ua or "@" not in ua:
@@ -243,6 +377,12 @@ def run() -> dict:
 
     # Probe dimensional dirigido (evidencia de recuperabilidad).
     dim = dimensional_probe(cli, cikmap, ["V", "GOOGL", "MA"])
+    # Sonda de causa del TTM faltante: fallan (AAPL/AMZN/COST/C) vs funcionan (MSFT/NVDA/META).
+    ttm_causas = ttm_cause_probe(cli, cikmap, ["AAPL", "AMZN", "COST", "C", "MSFT", "NVDA", "META"])
+    # Validación de VALOR E3.1 contra el endpoint oficial companyconcept de la SEC.
+    e31_val = e31_value_check(cli, cikmap, ["AAPL", "AMZN", "COST", "C", "WMT", "HD"])
+    # Validación E3.2: extractor dimensional por clase + reconciliación contra NI agregado.
+    e32_val = e32_dimensional_validation(cli, cikmap, ua, ["V", "GOOGL"])
 
     return {
         "n_operativas_con_fundamentales": len(op),
@@ -250,6 +390,9 @@ def run() -> dict:
         "huecos_por_campo": huecos,
         "bloqueados": {t: d.get("data_quality") for t, d in per_ticker.items() if d.get("data_quality") == "bloqueado"},
         "confirmacion_dimensional(V/GOOGL/MA)": dim,
+        "ttm_causas_muestra": ttm_causas,
+        "e31_validacion_valor_vs_SEC": e31_val,
+        "e32_validacion_dimensional": e32_val,
         "por_ticker": per_ticker,
     }
 

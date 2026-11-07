@@ -261,6 +261,27 @@ def test_ttm_equals_annual_when_no_newer_interim():
     assert t["window"] == "anual" and abs(t["ttm"] - 4.4) < 1e-9
 
 
+def test_e31_ttm_igual_a_anual_cuando_no_hay_trimestre_posterior():
+    # E3.1: sin interino posterior al cierre, el TTM debe exponerse = EPS/FCF anual reportado
+    # (idénticos por definición), con window="anual" y usando la cifra oficial, no re-derivada.
+    facts = {"facts": {"us-gaap": {
+        "Revenues": {"units": {"USD": [_row(2024, 1800), _row(2025, 2000)]}},
+        "NetIncomeLoss": {"units": {"USD": [_row(2024, 400), _row(2025, 440)]}},
+        "EarningsPerShareDiluted": {"units": {"USD/shares": [_row(2024, 4.0), _row(2025, 4.4)]}},
+        "WeightedAverageNumberOfDilutedSharesOutstanding": {"units": {"shares": [_row(2025, 100)]}},
+        "NetCashProvidedByUsedInOperatingActivities": {"units": {"USD": [_row(2024, 460), _row(2025, 500)]}},
+        "PaymentsToAcquirePropertyPlantAndEquipment": {"units": {"USD": [_row(2024, 90), _row(2025, 100)]}},
+        "StockholdersEquity": {"units": {"USD": [{"end": "2025-12-31", "val": 2200, "form": "10-K", "filed": "2026-02-15"}]}},
+        "CashAndCashEquivalentsAtCarryingValue": {"units": {"USD": [{"end": "2025-12-31", "val": 300, "form": "10-K", "filed": "2026-02-15"}]}},
+    }, "dei": {"EntityCommonStockSharesOutstanding": {"units": {"shares": [{"end": "2025-12-31", "val": 100, "form": "10-K", "filed": "2026-02-15"}]}}}}}
+    f = parse_companyfacts(facts, "QQ", price=44.0)
+    assert f.eps_ttm_window == "anual"
+    assert abs(f.eps_ttm - 4.4) < 1e-9 and abs(f.eps_ttm - f.eps_annual) < 1e-12   # = anual reportado
+    assert abs(f.ttm_vs_annual_ratio - 1.0) < 1e-9
+    assert abs(f.fcf_annual - 400.0) < 1e-9 and abs(f.fcf_ttm - 400.0) < 1e-9       # FCF TTM = anual
+    assert f.eps_basis == "ttm" and abs(f.pe_ttm - 10.0) < 1e-9
+
+
 def test_ttm_split_uses_restated_comparatives():
     from app.providers.edgar import ttm_flow
     # EPS por acción con split: el YTD previo y el anual previo vienen REEXPRESADOS (filed reciente).

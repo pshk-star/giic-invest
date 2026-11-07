@@ -218,6 +218,32 @@ def classify_instrument(instrument_type: Optional[str], sic: Optional[int] = Non
     return "indeterminado", "sin instrument_type ni SIC: tipo de instrumento no determinado"
 
 
+# --- E3.3: sector financiero y aplicabilidad de métricas industriales ---
+# Rango SIC del sector financiero (bancos, aseguradoras, casas de bolsa, inmobiliarias, holdings):
+# 6000–6799. Para estos emisores, las métricas de corte INDUSTRIAL (utilidad/margen operativo, margen
+# bruto) NO aplican por definición: un banco no reporta "OperatingIncomeLoss" ni "GrossProfit". No se
+# fuerzan (quedan 'no_aplica', distinto de 'faltante'). Ingresos, utilidad neta, EPS, OCF sí aplican.
+# Nota: procesadores de pago (V/MA, SIC 7389 'servicios') NO son sector financiero aquí y conservan
+# margen/utilidad operativa, que sí reportan.
+_INDUSTRIAL_ONLY_FIELDS = {"operating_income", "operating_margin", "gross_profit", "gross_margin"}
+
+
+def is_financial_sector(sic) -> bool:
+    try:
+        s = int(sic)
+    except (ValueError, TypeError):
+        return False
+    return 6000 <= s <= 6799
+
+
+def field_applies(field: str, sic=None) -> bool:
+    """¿Tiene sentido ECONÓMICO el campo para el emisor? False = no_aplica por sector (no es un hueco
+    a rellenar). Hoy: márgenes/utilidad operativa/margen bruto no aplican al sector financiero."""
+    if field in _INDUSTRIAL_ONLY_FIELDS and is_financial_sector(sic):
+        return False
+    return True
+
+
 def classify_field(value, *, independent: bool = False, derived: bool = False,
                    blocked: bool = False, not_applicable: bool = False) -> str:
     """Estado de UN campo. Separa DISPONIBILIDAD de EXACTITUD (E1 cond. 3): 'verificado' indica que

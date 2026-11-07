@@ -189,6 +189,9 @@ class ConnectorRegistry:
                 continue
             if s.status == ConnectorStatus.DOWN:
                 continue
+            # on_demand: sólo si se pide EXPLÍCITAMENTE uno de sus campos (nunca en barridos field=None).
+            if getattr(s, "on_demand", False) and (field is None or field not in s.coverage.fields):
+                continue
             if not s.coverage.covers(instrument_type=instrument_type, field=field, jurisdiction=jurisdiction):
                 continue
             out.append(c)
