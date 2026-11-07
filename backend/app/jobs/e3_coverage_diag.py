@@ -29,7 +29,7 @@ import time
 from datetime import date, datetime
 
 from app.core.normalize import (US_GAAP_MAP, IFRS_MAP, _at, _best_annual, _best_instant,
-                                 _currency_for, _ttm_best, _annual_points, _concept)
+                                 _currency_for, _ttm_best, _annual_points, _concept, ttm_flow)
 from app.providers.edgar import parse_companyfacts
 from app.services.identity import resolve_identity
 from app.jobs.coverage_battery import UNIVERSE, ADR_SEED, FX
@@ -183,6 +183,63 @@ def dimensional_probe(cli, cikmap, tickers):
     return out
 
 
+# ---- Sonda de CAUSA del TTM faltante (no suponer: medir) ----
+def _dur_summary(facts, tax, names, ccy):
+    """Resumen de hechos de DURACIÓN del mejor concepto: conteos anual/interino, últimos cortes,
+    y el resultado de ttm_flow (ventana). Permite ver por qué NO se cierra el TTM."""
+    best_rows, best_name = [], None
+    for n in names:
+        rows = _concept(facts, tax, n, ccy)
+        durs = [(_parse_date(r.get("start")), _parse_date(r.get("end")), r.get("val"), r.get("form"), r.get("filed"))
+                for r in rows if _parse_date(r.get("start")) and _parse_date(r.get("end")) and r.get("val") is not None]
+        if len(durs) > len(best_rows):
+            best_rows, best_name = durs, n
+    annual = [d for d in best_rows if 330 <= (d[1] - d[0]).days <= 400]
+    interim = [d for d in best_rows if 60 <= (d[1] - d[0]).days <= 300]
+    tf = ttm_flow(_concept(facts, tax, best_name, ccy)) if best_name else None
+    latest_annual = max((d[1] for d in annual), default=None)
+    latest_interim = max((d[1] for d in interim), default=None)
+    # Verdicto de causa.
+    if not best_rows:
+        causa = "ausente_en_edgar"
+    elif tf and "YTD" in tf.get("window", ""):
+        causa = "recuperable_TTM"
+    elif latest_interim is None or (latest_annual and latest_interim <= latest_annual):
+        causa = "ultimo_es_anual (TTM=anual; no expuesto por exigir ventana YTD)"
+    elif interim:
+        causa = "disponible_no_recuperado (hay interinos; la identidad rodante no cierra)"
+    else:
+        causa = "indeterminado"
+    return {"concepto": best_name, "n_anual": len(annual), "n_interino": len(interim),
+            "ultimo_anual": latest_annual.isoformat() if latest_annual else None,
+            "ultimo_interino": latest_interim.isoformat() if latest_interim else None,
+            "ttm_flow_window": (tf or {}).get("window"), "causa": causa}
+
+
+def ttm_cause_probe(cli, cikmap, tickers):
+    """Para cada ticker, clasifica por qué falta el TTM en NI/OCF/CAPEX: ausente en EDGAR vs
+    disponible-no-recuperado vs último-es-anual vs rechazado-por-calidad. NO supone la causa."""
+    out = {}
+    for t in tickers:
+        cik = cikmap.get(t.upper())
+        if not cik:
+            out[t] = {"error": "sin CIK"}
+            continue
+        try:
+            facts = cli.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json").json()
+            time.sleep(0.12)
+        except Exception as e:
+            out[t] = {"error": type(e).__name__}
+            continue
+        tax, ccy, M = _pick_tax(facts)
+        dq = parse_companyfacts(facts, t, price=None).data_quality
+        out[t] = {"taxonomy": tax, "currency": ccy, "data_quality": dq,
+                  "net_income": _dur_summary(facts, tax, M["ni"], ccy),
+                  "ocf": _dur_summary(facts, tax, M["ocf"], ccy),
+                  "capex": _dur_summary(facts, tax, M["capex"], ccy)}
+    return out
+
+
 def run() -> dict:
     ua = os.getenv("EDGAR_USER_AGENT", "")
     if not ua or "@" not in ua:
@@ -243,6 +300,8 @@ def run() -> dict:
 
     # Probe dimensional dirigido (evidencia de recuperabilidad).
     dim = dimensional_probe(cli, cikmap, ["V", "GOOGL", "MA"])
+    # Sonda de causa del TTM faltante: fallan (AAPL/AMZN/COST/C) vs funcionan (MSFT/NVDA/META).
+    ttm_causas = ttm_cause_probe(cli, cikmap, ["AAPL", "AMZN", "COST", "C", "MSFT", "NVDA", "META"])
 
     return {
         "n_operativas_con_fundamentales": len(op),
@@ -250,6 +309,7 @@ def run() -> dict:
         "huecos_por_campo": huecos,
         "bloqueados": {t: d.get("data_quality") for t, d in per_ticker.items() if d.get("data_quality") == "bloqueado"},
         "confirmacion_dimensional(V/GOOGL/MA)": dim,
+        "ttm_causas_muestra": ttm_causas,
         "por_ticker": per_ticker,
     }
 
