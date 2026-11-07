@@ -391,3 +391,54 @@ ADR/IFRS + C y SHOP (anual-como-TTM con 10-Q posterior en EDGAR).
 (ranura E3.4 tras el gate de costo); algunos interinos US rezagados en companyfacts dejan el
 anual-como-TTM desactualizado hasta que la SEC publique el XBRL del trimestre. net_debt (68%) y
 operating_income en no-financieras siguen con huecos por etiquetas no cubiertas.
+
+---
+
+## 14. E3.4 — investigación: interinos de ADR/IFRS desde fuentes oficiales gratuitas (sin conectores aún)
+
+Problema (de la evaluación §13): los 14 ADR/IFRS tienen cobertura (A 84.5%) pero **vigente B = 0%**:
+EDGAR solo taguea su **20-F anual** en XBRL; los **interinos NO** (el 6-K es un formulario de
+"furnish", no exige XBRL detallado). Objetivo: ¿qué fuente oficial GRATIS recupera trimestrales/
+semestrales, de forma automatizable y trazable?
+
+### 14.1 Fuentes evaluadas
+| Fuente | Interinos | Formato / automatización | Moneda/período/ADR | Frecuencia | Campos | Restricciones | Costo |
+|---|---|---|---|---|---|---|---|
+| EDGAR 20-F (XBRL) | No (solo anual) | companyfacts JSON (ya usado) | divisa local; EPS/acción ord. | anual | todos | UA + rate SEC | $0 |
+| **EDGAR 6-K (exhibits)** | **Sí** | HTML/PDF del press release; **sin XBRL** → parseo de tablas (heterogéneo) | local (EUR/TWD/CNY); EPS/acción ord. → ADR×FX | trimestral (TSM, BABA, SAP, ASML) o semestral (NVO/AZN/UL) | ingresos/utilidad/EPS casi siempre; OCF/CAPEX/deuda/efectivo solo si adjuntan estados completos | fair-access SEC; layout por emisor | **$0** |
+| IR corporativo (investor.tsmc.com, ourbrand.asml.com, SAP IR) | Sí | **PDF** (a veces US-GAAP, p. ej. ASML) → parseo PDF | local/USD; estados completos | trimestral | todos (estados completos) | sin API estable; formato libre | $0 |
+| filings.xbrl.org / ESEF | No (anual) | iXBRL anual (UE) | local | anual | todos | — | $0 |
+| Reguladores locales (TWSE/MOPS, HKEXnews, OAM/NSM UE) | Sí | mixto: MOPS estructurado (scraping), HKEX PDF | local | trimestral/semestral | variable | acceso heterogéneo, idioma | $0 |
+| APIs freemium (finnhub, FMP, eulerpool, roic.ai) | Sí | REST JSON (automatizable) | normalizada; ADR variable | trimestral | ingresos/utilidad/EPS; flujos variable | **tier gratis con límites + atribución**; cobertura/calidad dispar | $0 trial → **de pago** |
+
+Conclusión: **no existe una fuente gratuita, oficial, en XBRL y uniforme** para interinos ADR/IFRS.
+Lo gratuito-oficial (6-K, IR) es **no estructurado** (HTML/PDF) y exige parseo con validación estricta;
+lo estructurado-automatizable (APIs) es **freemium/de pago** (gate de costo).
+
+### 14.2 Arquitectura reutilizable propuesta (encaja en el registro E2; nada por ticker)
+Nuevo `kind = "interim_fundamentals"` con adaptadores registrados y **gate de costo**:
+- **P1 `sec_6k_interim`** (USD 0, oficial): submissions → últimos 6-K → descarga exhibit → extractor
+  robusto de tablas con **validación estricta** (acepta una cifra solo si EPS×acciones≈NI y
+  período/moneda están etiquetados; si no, `parcial` o se descarta). Emite `ProvenancedField` con
+  período, cierre, publicación, moneda, unidad, **ratio ADR aplicado** y método; la capa `recency`
+  evalúa vigencia; el merge por calidad **no** permite que un interino no validado pise un anual
+  `verificado`, pero sí actualiza la vigencia con un período más reciente validado.
+- **P2 `ir_pdf_interim`** (USD 0, oficial, menor automatización): semillas verificables de URLs de
+  estados por emisor (como las de ADR), parseo de PDF. Para quienes el 6-K no trae estados completos.
+- **P3 `vendor_api_interim`** (TRIAL/COMMERCIAL, **apagado por defecto**): adaptador genérico
+  (finnhub/FMP) habilitable solo con autorización (sube el tope de costo). No se activa en USD 0.
+
+### 14.3 Estimación de mejora de cobertura VIGENTE (B)
+- Hoy ADR/IFRS B = 0% (14 emisores).
+- P1 (6-K, titulares ingresos/utilidad/EPS validados) para los ~6–9 que publican trimestral con
+  exhibit parseable (TSM, ASML, SAP, BABA, y parcial NVO/AZN/UL semestrales) → **B de segmento
+  0 → ~35–55%** en campos núcleo; OCF/CAPEX/deuda/efectivo suelen faltar en el press release y topan
+  el resto. **B total 65% → ~72–76%.**
+- P3 (de pago) elevaría más la cobertura, pero cuesta dinero → diferido tras el gate.
+
+### 14.4 Prioridades de implementación (cuando se apruebe E3.4)
+1. **P1 `sec_6k_interim`** — mayor ganancia gratis y oficial; reutiliza EDGAR (ya en allowlist).
+2. **P2 `ir_pdf_interim`** — rellena emisores sin estados completos en el 6-K.
+3. **P3 `vendor_api_interim`** — ranura de API externa tras el gate de costo (autorización explícita).
+Exactitud sobre cobertura: todo interino recuperado se valida (reconciliación EPS×acciones≈NI,
+coherencia moneda/período) antes de marcarse mejor que `parcial`. Sin Fair Value en E3.4.
