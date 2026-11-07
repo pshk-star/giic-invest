@@ -237,3 +237,70 @@ persisten), selección multicriterio (calidad/autoridad/comparabilidad/actualida
 último desempate), relleno de `faltante`, caché TTL y "añadir proveedor comercial = sólo registrar
 + subir el tope". Pendiente (no en E2): migrar `CompositeProvider`/scan para consumir el registro;
 E3 (XBRL dimensional de Visa); Fair Value.
+
+---
+
+## 10. E3 — diagnóstico de cobertura, plan y estimación (PARA REVISIÓN; sin extractores aún)
+
+Diagnóstico medido en CI (`jobs/e3_coverage_diag.py`, solo lectura) sobre las 63 empresas
+operativas de la batería de 76 (ETF/trusts excluidos por routing; MU bloqueado).
+
+### 10.1 Cobertura actual Fair Value (% "completo", EDGAR gratuito)
+| Campo | Cobertura | | Campo | Cobertura |
+|---|---|---|---|---|
+| diluted_shares | 95.2% | | ocf | 63.5% |
+| cash | 84.1% | | revenue | 60.3% |
+| gross_debt | 84.1% | | fcf_ttm | 60.3% |
+| fcf_annual | 82.5% | | capex | 58.7% |
+| net_debt | 69.8% | | operating_income | 46.0% |
+| net_income / eps | 65.1% | | | |
+
+### 10.2 Causa raíz de los huecos (qué falta REALMENTE y qué es recuperable gratis)
+1. **TTM "solo_anual" — el hueco MÁS grande.** La mayoría de huecos de eps/ni/revenue/op_income
+   son "hay anual, falta TTM". Dos subgrupos:
+   - **Extranjeros ADR/IFRS (13: ASML, TSM, SAP, TM, NVO, AZN, BABA, SONY, UL, RIO, SE, NVS, HSBC).**
+     Presentan 20-F anual pero **no taguean interinos en XBRL de EDGAR** → el TTM por identidad
+     rodante no se puede cerrar. **NO recuperable desde EDGAR gratis.**
+   - **US con desalineación de interinos (AAPL, AMZN, COST, C).** Taguean 10-Q, pero la
+     reconstrucción TTM actual no cierra la identidad (calendario fiscal / ventanas). **Recuperable
+     gratis** mejorando el reconstructor TTM (Q4 = FY−9M, mejor emparejamiento de ventanas).
+2. **EPS/acciones SÓLO dimensional (ausente en APIs agregadas).** Confirmado parseando el XBRL
+   inline del 10-K: **Visa = 28/28 hechos de EPS diluido y de acciones diluidas son dimensionales
+   (por clase A/B/C), 0 agregados** → por eso companyfacts no los tiene. GOOGL los da agregados + por
+   clase (9/15 dim); MA sólo agregados. Candidatos adicionales con EPS ausente en agregado: XOM, BP,
+   SHEL (confirmar si dimensional o variante de concepto). **Recuperable gratis** con extractor
+   dimensional del instance (universal, sin lógica por ticker). Alcance: ~1 cierto (V) + hasta 3.
+3. **operating_income el más bajo (46%) — en parte N/A real.** Los **bancos (JPM, BAC, WFC, C, GS,
+   MS)** no reportan "OperatingIncomeLoss": es **N/A semántico**, no un hueco a rellenar. No-bancos
+   (XOM, CVX, MRK, LLY, Fox/News) usan conceptos alternos → **recuperable gratis** extendiendo mapas.
+4. **fcf_ttm (60%)** depende de OCF_TTM y CAPEX_TTM; sube con la mejora de reconstrucción TTM (#1 US).
+5. **MU** sigue **bloqueado** (1 ticker) hasta contraste con documentos oficiales.
+
+### 10.3 Plan de implementación E3 (priorizado por impacto/costo, sin excepción por ticker)
+- **E3.1 — Reconstrucción TTM robusta desde interinos de EDGAR ya presentes** (gratis, universal).
+  Q4 = FY−9M, mejor detección/emparejamiento de ventanas YTD. *Mayor palanca para filers US.*
+- **E3.2 — Extractor XBRL dimensional reutilizable** registrado como conector E2 (calidad `official`,
+  procedencia = instance del 10-K con accession). Recupera EPS/acciones por **clase** cuando el
+  agregado no existe (Visa) y como enriquecimiento (GOOGL). Sin lógica por ticker: itera hechos
+  `ix:nonFraction` y sus contextos dimensionales. Guarda **clase accionaria** y método.
+- **E3.3 — Extensión de mapas de conceptos** (operating_income/revenue variantes). Marca
+  `operating_income` como **no_aplica por campo** para bancos (restricción semántica, análoga a E1).
+- **E3.4 — Interinos de extranjeros**: **límite declarado** (no recuperable gratis) + ranura de
+  conector externo (API) **detrás del gate de costo** — sin tocar el núcleo (ya soportado por E2).
+- **Trazabilidad** (E3 en todos): documento (accession/URL), fecha, período fiscal, moneda, unidad,
+  **clase accionaria** y método de cálculo en `ProvenancedField`; no mezclar períodos/monedas/clases.
+- **Regresión**: re-correr la batería de 76 antes/después; además de cobertura, **validar cifras**
+  dimensionales contra el 10-K (p. ej. EPS por clase de Visa cuadra con el reporte). MU sigue bloqueado.
+
+### 10.4 Estimación de mejora esperada (sólo trabajo GRATIS en EDGAR)
+| Campo | Hoy | Esperado | Palanca | No recuperable gratis |
+|---|---|---|---|---|
+| eps "completo" | 65% | **73–78%** | E3.1 (AAPL/AMZN/COST/C) + E3.2 (V,+≤3) | 13 extranjeros (TTM) |
+| diluted_shares | 95% | **97–100%** | E3.2 (V, XOM, BP) | — |
+| operating_income (no-banco) | ~46% | **65–72%** | E3.3 mapas + E3.1 | bancos = N/A; extranjeros TTM |
+| fcf_ttm | 60% | **70–75%** | E3.1 (OCF/CAPEX TTM US) | extranjeros |
+| revenue/net_income TTM | 60–65% | **72–78%** | E3.1 | extranjeros |
+
+La cobertura de **extranjeros ADR/IFRS** sólo sube con un conector externo (E3.4, de pago → gate de
+costo con autorización), no con EDGAR. **No basta con subir cobertura**: cada recuperación dimensional
+se validará contra el documento oficial antes de marcarse `verificado`.
