@@ -25,12 +25,15 @@ ANNUAL_FORMS = ("10-K", "20-F", "40-F")
 
 # Conceptos por taxonomía. us-gaap (emisores domésticos) e ifrs-full (20-F).
 US_GAAP_MAP = {
-    "rev": ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"],
+    "rev": ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet",
+            "RevenueFromContractWithCustomerIncludingAssessedTax", "RevenuesNetOfInterestExpense"],
     "ni": ["NetIncomeLoss", "ProfitLoss", "NetIncomeLossAvailableToCommonStockholdersBasic"],
     "eps": ["EarningsPerShareDiluted", "EarningsPerShareBasic"],
     "equity": ["StockholdersEquity"],
     "ocf": ["NetCashProvidedByUsedInOperatingActivities"],
-    "capex": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets"],
+    "capex": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets",
+              "PaymentsToAcquireOtherPropertyPlantAndEquipment", "PaymentsForCapitalImprovements",
+              "PaymentsToAcquireMachineryAndEquipment"],
     "wdil": ["WeightedAverageNumberOfDilutedSharesOutstanding"],
     "wbas": ["WeightedAverageNumberOfSharesOutstandingBasic", "WeightedAverageNumberOfShareOutstandingBasicAndDiluted"],
     "gross_profit": ["GrossProfit"],
