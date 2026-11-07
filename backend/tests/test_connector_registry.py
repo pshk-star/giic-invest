@@ -19,14 +19,14 @@ class Fake:
 
 
 def spec(id, kind="fundamentals", priority=10, cost=CostTier.FREE, coverage=None,
-         status=ConnectorStatus.OPERATIONAL, ttl=0, enabled=True):
-    return ConnectorSpec(id=id, kind=kind, provenance=id, quality=QualityTier.OFFICIAL,
+         status=ConnectorStatus.OPERATIONAL, ttl=0, enabled=True, quality=QualityTier.OFFICIAL):
+    return ConnectorSpec(id=id, kind=kind, provenance=id, quality=quality,
                          priority=priority, cost_tier=cost, coverage=coverage or Coverage(),
                          cache_ttl_s=ttl, status=status, enabled=enabled)
 
 
-def pf(value, quality, cid):
-    return ProvenancedField(value, quality, cid, cid)
+def pf(value, quality, cid, **kw):
+    return ProvenancedField(value, quality, cid, cid, **kw)
 
 
 # --- registro ---
@@ -83,20 +83,61 @@ def test_merge_oficial_verificado_gana_a_fallback_parcial():
     assert merged["X"]["eps"].value == 5.0 and merged["X"]["eps"].connector_id == "edgar"
 
 
-def test_merge_terminal_bloquea_campo_no_lo_pisa_fallback():
-    r = ConnectorRegistry()
-    r.register(Fake(spec("edgar", priority=10), {"MU": {"eps": pf(None, "bloqueado", "edgar")}}))
-    r.register(Fake(spec("yh", priority=60), {"MU": {"eps": pf(7.6, "parcial", "yh")}}))
-    merged = r.fetch_merged("fundamentals", ["MU"])
-    assert merged["MU"]["eps"].quality == "bloqueado" and merged["MU"]["eps"].value is None
-
-
-def test_merge_no_aplica_bloquea_eps_de_trust():
+def test_no_aplica_restriccion_semantica_bloquea_aunque_haya_valor():
+    # no_aplica (de fuente con autoridad) es restricción del TIPO de instrumento: ni un verificado
+    # independiente debe poblar un fundamental corporativo de un vehículo.
     r = ConnectorRegistry()
     r.register(Fake(spec("edgar", priority=10), {"GLD": {"eps": pf(None, "no_aplica", "edgar")}}))
-    r.register(Fake(spec("yh", priority=60), {"GLD": {"eps": pf(1.1, "parcial", "yh")}}))
+    r.register(Fake(spec("vendor", priority=5), {"GLD": {"eps": pf(1.1, "verificado", "vendor")}}))
     merged = r.fetch_merged("fundamentals", ["GLD"])
-    assert merged["GLD"]["eps"].quality == "no_aplica"
+    assert merged["GLD"]["eps"].quality == "no_aplica" and merged["GLD"]["eps"].value is None
+
+
+def test_no_aplica_de_fallback_no_es_vinculante():
+    # Un fallback NO tiene autoridad para declarar un instrumento como vehículo: su no_aplica no
+    # bloquea, y un valor positivo independiente resuelve.
+    from app.core.connectors.spec import QualityTier
+    s_fb = ConnectorSpec(id="fb", kind="fundamentals", provenance="fb", quality=QualityTier.FALLBACK,
+                         priority=5)
+    r = ConnectorRegistry()
+    r.register(Fake(s_fb, {"X": {"eps": pf(None, "no_aplica", "fb")}}))
+    r.register(Fake(spec("edgar", priority=10), {"X": {"eps": pf(3.0, "verificado", "edgar")}}))
+    merged = r.fetch_merged("fundamentals", ["X"])
+    assert merged["X"]["eps"].value == 3.0
+
+
+def test_bloqueado_lo_resuelve_proveedor_independiente():
+    # bloqueado invalida la observación de ESA fuente, no el campo: otro proveedor independiente
+    # con un valor positivo lo resuelve.
+    r = ConnectorRegistry()
+    r.register(Fake(spec("edgar", priority=10), {"MU": {"eps": pf(None, "bloqueado", "edgar")}}))
+    r.register(Fake(spec("vendor", priority=50), {"MU": {"eps": pf(7.6, "verificado", "vendor")}}))
+    merged = r.fetch_merged("fundamentals", ["MU"])
+    assert merged["MU"]["eps"].value == 7.6 and merged["MU"]["eps"].connector_id == "vendor"
+
+
+def test_bloqueado_sin_alternativa_queda_bloqueado():
+    # Si nadie aporta un valor positivo, el campo queda bloqueado (no se usa el dato).
+    r = ConnectorRegistry()
+    r.register(Fake(spec("edgar", priority=10), {"MU": {"eps": pf(None, "bloqueado", "edgar")}}))
+    merged = r.fetch_merged("fundamentals", ["MU"])
+    assert merged["MU"]["eps"].quality == "bloqueado"
+
+
+def test_indeterminado_lo_resuelve_otra_fuente_sin_asumir_operativo():
+    r = ConnectorRegistry()
+    r.register(Fake(spec("edgar", priority=10), {"X": {"eps": pf(None, "indeterminado", "edgar")}}))
+    r.register(Fake(spec("vendor", priority=50), {"X": {"eps": pf(2.5, "verificado", "vendor")}}))
+    merged = r.fetch_merged("fundamentals", ["X"])
+    assert merged["X"]["eps"].value == 2.5
+
+
+def test_indeterminado_sin_alternativa_sigue_indeterminado():
+    # Sin otra fuente, NO se asume operativo: queda indeterminado.
+    r = ConnectorRegistry()
+    r.register(Fake(spec("edgar", priority=10), {"X": {"eps": pf(None, "indeterminado", "edgar")}}))
+    merged = r.fetch_merged("fundamentals", ["X"])
+    assert merged["X"]["eps"].quality == "indeterminado"
 
 
 def test_merge_faltante_se_rellena_con_fallback():
@@ -107,12 +148,66 @@ def test_merge_faltante_se_rellena_con_fallback():
     assert merged["X"]["eps"].value == 4.2 and merged["X"]["eps"].connector_id == "yh"
 
 
-def test_merge_empate_calidad_gana_prioridad():
+def test_merge_empate_total_gana_prioridad_como_ultimo_desempate():
+    # Mismos calidad/autoridad/comparabilidad/actualidad → la prioridad decide (último criterio).
     r = ConnectorRegistry()
     r.register(Fake(spec("a", priority=50), {"X": {"eps": pf(1.0, "parcial", "a")}}))
     r.register(Fake(spec("b", priority=10), {"X": {"eps": pf(2.0, "parcial", "b")}}))
     merged = r.fetch_merged("fundamentals", ["X"])
     assert merged["X"]["eps"].connector_id == "b"
+
+
+# --- selección MULTICRITERIO (no prioridad/fecha aislada) ---
+def test_calidad_vence_a_prioridad():
+    # Un verificado de baja prioridad gana a un parcial de alta prioridad (calidad > prioridad).
+    r = ConnectorRegistry()
+    r.register(Fake(spec("hi", priority=1), {"X": {"eps": pf(1.0, "parcial", "hi")}}))
+    r.register(Fake(spec("lo", priority=99), {"X": {"eps": pf(2.0, "verificado", "lo")}}))
+    assert r.fetch_merged("fundamentals", ["X"])["X"]["eps"].connector_id == "lo"
+
+
+def test_autoridad_de_fuente_vence_a_prioridad():
+    # Igual calidad: la fuente con más autoridad (official) gana al aggregator aunque tenga peor prio.
+    r = ConnectorRegistry()
+    r.register(Fake(spec("agg", priority=1, quality=QualityTier.AGGREGATOR),
+                    {"X": {"eps": pf(1.0, "parcial", "agg")}}))
+    r.register(Fake(spec("off", priority=99, quality=QualityTier.OFFICIAL),
+                    {"X": {"eps": pf(2.0, "parcial", "off")}}))
+    assert r.fetch_merged("fundamentals", ["X"])["X"]["eps"].connector_id == "off"
+
+
+def test_comparabilidad_moneda_vence_a_prioridad_y_actualidad():
+    # Dos verificados: uno en EUR más reciente y de mejor prioridad; otro en USD (moneda esperada).
+    # La comparabilidad de moneda pesa más que actualidad y prioridad.
+    r = ConnectorRegistry()
+    r.register(Fake(spec("eur", priority=1), {"X": {"eps": pf(9.0, "verificado", "eur",
+                                                              currency="EUR", as_of="2026-09-30")}}))
+    r.register(Fake(spec("usd", priority=99), {"X": {"eps": pf(8.0, "verificado", "usd",
+                                                              currency="USD", as_of="2025-12-31")}}))
+    merged = r.fetch_merged("fundamentals", ["X"], context={"X": {"expected_currency": "USD"}})
+    assert merged["X"]["eps"].connector_id == "usd"
+
+
+def test_actualidad_desempata_antes_que_prioridad():
+    # Igual calidad/autoridad/comparabilidad: gana el más reciente (actualidad > prioridad).
+    r = ConnectorRegistry()
+    r.register(Fake(spec("old", priority=1), {"X": {"eps": pf(1.0, "verificado", "old", as_of="2024-12-31")}}))
+    r.register(Fake(spec("new", priority=99), {"X": {"eps": pf(2.0, "verificado", "new", as_of="2026-09-30")}}))
+    assert r.fetch_merged("fundamentals", ["X"])["X"]["eps"].connector_id == "new"
+
+
+# --- gate de costo: IMPIDE la invocación, no sólo la declara ---
+def test_cost_gate_no_invoca_fetch_de_comercial():
+    r = ConnectorRegistry(max_cost=CostTier.FREE)
+    r.register(Fake(spec("edgar", priority=10), {"X": {"eps": pf(1.0, "parcial", "edgar")}}))
+    paid = Fake(spec("vendor", priority=5, cost=CostTier.COMMERCIAL),
+                {"X": {"eps": pf(9.0, "verificado", "vendor")}})
+    r.register(paid)
+    r.fetch_merged("fundamentals", ["X"])
+    assert paid.calls == 0            # NUNCA se invocó el conector de pago
+    r.max_cost = CostTier.COMMERCIAL  # autorización
+    r.fetch_merged("fundamentals", ["X"])
+    assert paid.calls == 1            # ahora sí se invoca
 
 
 # --- contexto por ticker afina cobertura ---

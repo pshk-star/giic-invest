@@ -198,11 +198,21 @@ Componentes:
   - *selección* por `kind` + cobertura (tipo/campo/jurisdicción) + **tope de costo** (FREE por
     defecto; TRIAL/COMMERCIAL exigen subir el tope = autorización del operador) + estado (DOWN y
     deshabilitados se excluyen), ordenada por prioridad;
-  - *merge POR CALIDAD, no por recencia*: cada campo conserva el candidato de mayor calidad; los
-    **veredictos terminales** de una fuente con autoridad (`bloqueado`/`no_aplica`/`indeterminado`)
-    van por encima de los valores positivos y **bloquean** el campo (un fallback no los pisa: MU
-    bloqueado no lo rellena Yahoo; un trust `no_aplica` no recibe EPS). `faltante` queda al fondo,
-    de modo que un complemento SÍ rellena lo que la fuente oficial no tiene. Empates → prioridad;
+  - *resolución de CONFLICTOS por campo* con semántica distinta por veredicto terminal:
+    · **`no_aplica`** — restricción SEMÁNTICA del tipo de instrumento (de una fuente con autoridad
+      ≥ aggregator): bloquea el campo; ningún proveedor, ni con `verificado`, pobla un fundamental
+      corporativo de un vehículo (un trust no recibe EPS).
+    · **`bloqueado`** — invalida la observación de ESA fuente, NO el campo: otro proveedor
+      independiente con un valor positivo lo resuelve; si nadie aporta, el campo queda `bloqueado`
+      (MU: EDGAR bloqueado puede resolverse con una fuente oficial independiente; sin ella, sigue
+      bloqueado).
+    · **`indeterminado`** — incertidumbre pendiente: otra fuente la resuelve con un valor positivo;
+      si nadie la resuelve, sigue `indeterminado` (NO se asume operativo).
+    La elección entre valores positivos es **MULTICRITERIO** y lexicográfica: (1) calidad del dato
+    (verificado>derivado>parcial>desactualizado), (2) autoridad de la fuente (official>regulatory>
+    aggregator>fallback), (3) comparabilidad (moneda esperada, período fiscal, ajuste por splits),
+    (4) actualidad, (5) **prioridad del conector sólo como último desempate** — nunca por prioridad
+    o fecha de forma aislada;
   - *caché* por conector con el `cache_ttl_s` declarado;
   - *procedencia por dato*: `ProvenancedField` = valor + calidad + conector + procedencia + fecha +
     método.
@@ -219,8 +229,11 @@ si participa.
 
 Evidencia: `jobs/connector_registry_report.py` + `.github/workflows/connectors.yml` imprimen el
 catálogo declarado (legible offline) y, con `EDGAR_USER_AGENT`, una demo en vivo del merge sobre
-AAPL (operativa), GLD (trust → `no_aplica`) y MU (bloqueado). 14 pruebas deterministas
-(`tests/test_connector_registry.py`) fijan: cost gate, cobertura, merge por calidad, terminal que
-bloquea, relleno de `faltante`, caché TTL y "añadir proveedor comercial = sólo registrar + subir el
-tope". Pendiente (no en E2): migrar `CompositeProvider`/scan para consumir el registro; E3 (XBRL
-dimensional de Visa); Fair Value.
+AAPL (operativa), GLD (trust → `no_aplica`) y MU (bloqueado). 23 pruebas deterministas
+(`tests/test_connector_registry.py`) fijan: cost gate que **impide la invocación** de conectores
+trial/commercial sin autorización, cobertura, semántica de conflicto de los 3 veredictos
+(`no_aplica` bloquea; `bloqueado`/`indeterminado` los resuelve una fuente independiente; sin ella
+persisten), selección multicriterio (calidad/autoridad/comparabilidad/actualidad, prioridad como
+último desempate), relleno de `faltante`, caché TTL y "añadir proveedor comercial = sólo registrar
++ subir el tope". Pendiente (no en E2): migrar `CompositeProvider`/scan para consumir el registro;
+E3 (XBRL dimensional de Visa); Fair Value.

@@ -31,6 +31,8 @@ def fundamentals_to_fields(f: Fundamentals, connector_id: str, provenance: str
     dq = f.data_quality
     out: Dict[str, ProvenancedField] = {}
     values = {k: getattr(f, k, None) for k in FUND_FIELDS}
+    ccy = f.currency
+    period = f.as_of
     if dq in ("no_aplica", "indeterminado"):
         for k in FUND_FIELDS:
             out[k] = ProvenancedField(None, dq, connector_id, provenance, f.as_of,
@@ -55,7 +57,10 @@ def fundamentals_to_fields(f: Fundamentals, connector_id: str, provenance: str
         if dq == "sospechoso" and q in ("verificado", "derivado"):
             q = "parcial"       # dato marcado: usable pero sin verificación independiente
         method = f.eps_source if k in _EPS_FIELDS else None
-        out[k] = ProvenancedField(v, q, connector_id, provenance, f.as_of, method)
+        # EPS/acciones: EDGAR usa comparativos reexpresados (filed más reciente) → ajustado por split.
+        adjusted = True if k in _EPS_FIELDS or k == "diluted_shares" else None
+        out[k] = ProvenancedField(v, q, connector_id, provenance, as_of=f.as_of, method=method,
+                                  period=period, currency=ccy, adjusted=adjusted)
     return out
 
 
@@ -127,10 +132,12 @@ class YahooStatsConnector:
             fm = {}
             if isinstance(s.get("eps_ttm"), (int, float)):
                 fm["eps_ttm"] = ProvenancedField(float(s["eps_ttm"]), "parcial", self.spec.id,
-                                                 self.spec.provenance, s.get("as_of"), "trailingEps")
+                                                 self.spec.provenance, as_of=s.get("as_of"),
+                                                 method="trailingEps", currency="USD")
             if isinstance(s.get("shares"), (int, float)):
                 fm["diluted_shares"] = ProvenancedField(float(s["shares"]), "parcial", self.spec.id,
-                                                        self.spec.provenance, s.get("as_of"))
+                                                        self.spec.provenance, as_of=s.get("as_of"),
+                                                        currency="USD")
             if fm:
                 out[t] = fm
         return out
