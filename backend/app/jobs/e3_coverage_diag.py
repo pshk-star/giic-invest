@@ -240,6 +240,41 @@ def ttm_cause_probe(cli, cikmap, tickers):
     return out
 
 
+def e31_value_check(cli, cikmap, tickers):
+    """Validación independiente del VALOR de E3.1: el eps_ttm (=anual) expuesto debe coincidir con el
+    EPS diluido anual que la SEC publica en su endpoint `companyconcept` (fuente oficial separada del
+    camino de parseo). Confirma que no hay distorsión de unidad/FX/ADR. Reporta diferencia relativa."""
+    out = {}
+    for t in tickers:
+        cik = cikmap.get(t.upper())
+        if not cik:
+            out[t] = {"error": "sin CIK"}; continue
+        try:
+            facts = cli.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json").json()
+            time.sleep(0.12)
+            f = parse_companyfacts(facts, t, price=None)
+            cc = cli.get(f"https://data.sec.gov/api/xbrl/companyconcept/CIK{cik:010d}/us-gaap/EarningsPerShareDiluted.json")
+            time.sleep(0.12)
+            official = None
+            if cc.status_code == 200:
+                rows = cc.json().get("units", {}).get("USD/shares", [])
+                ann = [r for r in rows if str(r.get("form", "")).startswith("10-K")
+                       and r.get("start") and r.get("end")
+                       and 330 <= (_parse_date(r["end"]) - _parse_date(r["start"])).days <= 400]
+                if ann:
+                    official = max(ann, key=lambda r: r["end"])  # último anual
+            off_val = official["val"] if official else None
+            diff = (abs(f.eps_ttm - off_val) / abs(off_val)) if (f.eps_ttm is not None and off_val) else None
+            out[t] = {"eps_ttm_expuesto": f.eps_ttm, "eps_annual_expuesto": f.eps_annual,
+                      "eps_window": f.eps_ttm_window, "eps_diluido_oficial_SEC": off_val,
+                      "periodo_oficial": official["end"] if official else None,
+                      "diferencia_relativa": round(diff, 6) if diff is not None else None,
+                      "coincide": (diff is not None and diff < 0.005)}
+        except Exception as e:
+            out[t] = {"error": f"{type(e).__name__}: {str(e)[:100]}"}
+    return out
+
+
 def run() -> dict:
     ua = os.getenv("EDGAR_USER_AGENT", "")
     if not ua or "@" not in ua:
@@ -302,6 +337,8 @@ def run() -> dict:
     dim = dimensional_probe(cli, cikmap, ["V", "GOOGL", "MA"])
     # Sonda de causa del TTM faltante: fallan (AAPL/AMZN/COST/C) vs funcionan (MSFT/NVDA/META).
     ttm_causas = ttm_cause_probe(cli, cikmap, ["AAPL", "AMZN", "COST", "C", "MSFT", "NVDA", "META"])
+    # Validación de VALOR E3.1 contra el endpoint oficial companyconcept de la SEC.
+    e31_val = e31_value_check(cli, cikmap, ["AAPL", "AMZN", "COST", "C", "WMT", "HD"])
 
     return {
         "n_operativas_con_fundamentales": len(op),
@@ -310,6 +347,7 @@ def run() -> dict:
         "bloqueados": {t: d.get("data_quality") for t, d in per_ticker.items() if d.get("data_quality") == "bloqueado"},
         "confirmacion_dimensional(V/GOOGL/MA)": dim,
         "ttm_causas_muestra": ttm_causas,
+        "e31_validacion_valor_vs_SEC": e31_val,
         "por_ticker": per_ticker,
     }
 
