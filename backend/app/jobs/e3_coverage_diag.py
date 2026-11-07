@@ -1,0 +1,255 @@
+"""E3 — DIAGNÓSTICO de cobertura para Fair Value (solo lectura). No desarrolla extractores.
+
+Mide, sobre la batería de 76 instrumentos, la presencia REAL de los campos que Fair Value necesita
+(ingresos, utilidad operativa, utilidad neta, EPS, acciones diluidas, flujo operativo, CAPEX, FCF,
+deuda, efectivo; anual y TTM) usando SÓLO EDGAR gratuito, y CLASIFICA cada hueco por causa raíz y
+recuperabilidad:
+  - dimensional_candidato : el concepto NO está en las APIs agregadas (companyfacts/companyconcept)
+                            pero el emisor es operativo y grande → probable XBRL dimensional del
+                            10-K (p. ej. EPS por clase). Recuperable con extractor dimensional (E3).
+  - interino_no_tagueado  : hay anual pero no TTM (6-K/20-F sin XBRL interino). No recuperable gratis.
+  - desactualizado        : el concepto existe pero el último corte es viejo (>400d).
+  - bloqueado             : marcado por el guard de plausibilidad (p. ej. MU). Se mantiene bloqueado.
+  - no_aplica             : vehículo (ETF/trust). El campo no corresponde.
+  - ausente               : el emisor no taguea el concepto en ninguna variante.
+
+Además hace una CONFIRMACIÓN dimensional dirigida (Visa, GOOGL) parseando el XBRL inline del último
+10-K para demostrar que EPS/acciones por CLASE existen y son recuperables — evidencia para el plan,
+no el extractor final.
+
+Uso: python -m app.jobs.e3_coverage_diag   (requiere EDGAR_USER_AGENT; httpx + pandas)
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+import time
+from datetime import date, datetime
+
+from app.core.normalize import (US_GAAP_MAP, IFRS_MAP, _at, _best_annual, _best_instant,
+                                 _currency_for, _ttm_best, _annual_points, _concept)
+from app.providers.edgar import parse_companyfacts
+from app.services.identity import resolve_identity
+from app.jobs.coverage_battery import UNIVERSE, ADR_SEED, FX
+
+# Campos Fair Value → (grupo de conceptos, tipo). "flow"=duración (anual+TTM); "instant"=balance.
+FV_FLOW = {"revenue": "rev", "operating_income": "op_income", "net_income": "ni",
+           "ocf": "ocf", "capex": "capex"}
+FV_INSTANT = {"cash": "cash"}        # efectivo; la deuda se arma aparte
+
+
+def _parse_date(s):
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
+def _pick_tax(facts):
+    """Detecta (taxonomía, moneda, mapa) con datos anuales reales (us-gaap o ifrs-full)."""
+    for tax, M in (("us-gaap", US_GAAP_MAP), ("ifrs-full", IFRS_MAP)):
+        c = _currency_for(facts, tax, M["rev"] + M["ni"] + M["equity"])
+        if not c:
+            continue
+        if _best_annual(facts, tax, M["rev"], c) or _best_annual(facts, tax, M["ni"], c):
+            return tax, c, M
+    return "us-gaap", "USD", US_GAAP_MAP
+
+
+def _ref_period(facts, tax, M, ccy):
+    eps = _best_annual(facts, tax, M["eps"], f"{ccy}/shares")
+    ni = _best_annual(facts, tax, M["ni"], ccy)
+    rev = _best_annual(facts, tax, M["rev"], ccy)
+    for pts in (eps, ni, rev):
+        if pts:
+            return pts[-1][0]
+    return None
+
+
+def _concept_present_any(facts, tax, names, unit):
+    """¿El emisor taguea el concepto en ALGUNA variante/período (aunque sea viejo)?"""
+    return bool(_best_annual(facts, tax, names, unit) or _best_instant(facts, tax, names, unit))
+
+
+def _fieldstate(annual_ok, ttm_ok, present_any, is_instant, stale):
+    if annual_ok and (is_instant or ttm_ok):
+        return "completo"
+    if annual_ok and not ttm_ok and not is_instant:
+        return "solo_anual"
+    if present_any and stale:
+        return "desactualizado"
+    if present_any:
+        return "parcial"
+    return "ausente"
+
+
+def diag_ticker(facts, ticker, sic, sic_desc, itype):
+    f = parse_companyfacts(facts, ticker, price=None, instrument_type=itype, sic=sic, sic_desc=sic_desc,
+                           adr_ratio=ADR_SEED.get(ticker.upper(), 1.0), fx_map=FX)
+    if f.data_quality in ("no_aplica", "indeterminado"):
+        return {"instrument_class": f.instrument_class, "data_quality": f.data_quality, "fields": {}}
+    tax, ccy, M = _pick_tax(facts)
+    ref = _ref_period(facts, tax, M, ccy)
+    fields = {}
+    # flujos (anual + TTM)
+    for name, key in FV_FLOW.items():
+        ann = _at(_best_annual(facts, tax, M[key], ccy), ref) is not None
+        if key == "capex":
+            ann = ann or _at(_best_annual(facts, tax, M.get("capex_alt", []), ccy), ref) is not None
+        ttmd = _ttm_best(facts, tax, M[key], ccy) or (_ttm_best(facts, tax, M.get("capex_alt", []), ccy) if key == "capex" else None)
+        ttm_ok = bool(ttmd and "YTD" in ttmd.get("window", ""))
+        present_any = _concept_present_any(facts, tax, M[key], ccy)
+        fields[name] = _fieldstate(ann, ttm_ok, present_any, False, False)
+    # EPS (unidad ccy/shares) y acciones diluidas (shares)
+    eps_ann = _at(_best_annual(facts, tax, M["eps"], f"{ccy}/shares"), ref) is not None or \
+        bool(_best_annual(facts, tax, M["eps"], "USD/shares"))
+    eps_concept_any = _concept_present_any(facts, tax, M["eps"], f"{ccy}/shares") or \
+        _concept_present_any(facts, tax, M["eps"], "USD/shares")
+    fields["eps"] = ("completo" if (f.eps_ttm is not None) else ("solo_anual" if eps_ann else
+                     ("ausente_agregado" if not eps_concept_any else "parcial")))
+    sh_ann = _at(_best_annual(facts, tax, M.get("wdil", []), "shares"), ref) is not None
+    sh_any = _concept_present_any(facts, tax, M.get("wdil", []), "shares")
+    fields["diluted_shares"] = ("completo" if sh_ann else ("ausente_agregado" if not sh_any else "parcial"))
+    # FCF (anual + TTM) y deuda neta (derivados que ya calcula el parser)
+    fields["fcf_annual"] = "completo" if f.fcf_annual is not None else "ausente"
+    fields["fcf_ttm"] = "completo" if f.fcf_ttm is not None else "ausente"
+    fields["net_debt"] = "completo" if f.net_debt is not None else ("parcial" if (f.gross_debt is not None or f.cash_and_sti is not None) else "ausente")
+    fields["cash"] = "completo" if f.cash_and_sti is not None else "ausente"
+    fields["gross_debt"] = "completo" if f.gross_debt is not None else "ausente"
+    return {"instrument_class": f.instrument_class, "data_quality": f.data_quality,
+            "taxonomy": tax, "currency": ccy, "ref": ref.isoformat() if ref else None,
+            "eps_ttm_recuperado": f.eps_ttm is not None, "fields": fields}
+
+
+# ---- Confirmación dimensional (XBRL inline del último 10-K) ----
+def _latest_10k_instance(cli, cik):
+    """URL del documento principal (inline XBRL) del último 10-K."""
+    j = cli.get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json").json()
+    recent = j.get("filings", {}).get("recent", {})
+    forms = recent.get("form", [])
+    for i, fm in enumerate(forms):
+        if fm == "10-K":
+            acc = recent["accessionNumber"][i].replace("-", "")
+            doc = recent["primaryDocument"][i]
+            return f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/{doc}"
+    return None
+
+
+def dimensional_probe(cli, cikmap, tickers):
+    """Parsea el XBRL inline del último 10-K y detecta hechos de EPS diluido / acciones diluidas
+    con DIMENSIONES (clases accionarias) → confirma recuperabilidad por extractor dimensional."""
+    out = {}
+    concepts = ("EarningsPerShareDiluted", "WeightedAverageNumberOfDilutedSharesOutstanding")
+    for t in tickers:
+        cik = cikmap.get(t.upper())
+        if not cik:
+            out[t] = {"error": "sin CIK"}
+            continue
+        try:
+            url = _latest_10k_instance(cli, cik)
+            time.sleep(0.15)
+            if not url:
+                out[t] = {"error": "sin 10-K"}
+                continue
+            html = cli.get(url).text
+            res = {}
+            for c in concepts:
+                # ix:nonFraction name="us-gaap:Concept" ... contextRef="CTX"
+                facts = re.findall(r'name="us-gaap:' + c + r'"[^>]*contextRef="([^"]+)"', html)
+                # contextos con dimensión (explicitMember) = desglose por clase/segmento
+                dim_ctx = set(re.findall(r'<[^>]*context id="([^"]+)"[^>]*>.*?explicitMember', html, re.S))
+                dim_hits = [cx for cx in facts if cx in dim_ctx]
+                res[c] = {"hechos_totales": len(facts), "con_dimension": len(dim_hits),
+                          "solo_dimensional": len(facts) > 0 and len(dim_hits) == len(facts)}
+            out[t] = {"url_10k": url, "conceptos": res}
+            time.sleep(0.2)
+        except Exception as e:
+            out[t] = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
+    return out
+
+
+def run() -> dict:
+    ua = os.getenv("EDGAR_USER_AGENT", "")
+    if not ua or "@" not in ua:
+        return {"error": "sin EDGAR_USER_AGENT"}
+    import httpx
+    cli = httpx.Client(timeout=40.0, headers={"User-Agent": ua}, follow_redirects=True)
+    tk = cli.get("https://www.sec.gov/files/company_tickers.json").json()
+    cikmap = {r["ticker"].upper(): int(r["cik_str"]) for r in tk.values()}
+
+    corp_cats = ["us_large", "us_mid_small", "multi_class", "recent_splits", "financials", "adr_ifrs", "regression"]
+    per_ticker = {}
+    cat_of = {t: c for c, ts in UNIVERSE.items() for t in ts}
+    for t in [x for ts in UNIVERSE.values() for x in ts]:
+        cik = cikmap.get(t.upper())
+        if not cik:
+            per_ticker[t] = {"category": cat_of[t], "nota": "sin CIK (ETF/fondo sin companyfacts)"}
+            continue
+        sic, sic_desc = None, None
+        try:
+            js = cli.get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json").json()
+            _s = js.get("sic"); sic = int(_s) if _s not in (None, "") else None
+            sic_desc = js.get("sicDescription")
+        except Exception:
+            pass
+        time.sleep(0.12)
+        try:
+            r = cli.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json")
+            if r.status_code != 200:
+                per_ticker[t] = {"category": cat_of[t], "nota": f"companyfacts {r.status_code}"}
+                time.sleep(0.12); continue
+            facts = r.json()
+            itype = resolve_identity(t).get("instrument_type")
+            d = diag_ticker(facts, t, sic, sic_desc, itype)
+            d["category"] = cat_of[t]
+            per_ticker[t] = d
+        except Exception as e:
+            per_ticker[t] = {"category": cat_of[t], "error": f"{type(e).__name__}: {str(e)[:100]}"}
+        time.sleep(0.12)
+
+    # Cobertura por campo sobre EMPRESAS OPERATIVAS con fundamentales.
+    op = [t for t, d in per_ticker.items() if d.get("fields") and cat_of[t] in corp_cats
+          and d.get("data_quality") not in ("no_aplica", "indeterminado")]
+    all_fields = ["revenue", "operating_income", "net_income", "eps", "diluted_shares",
+                  "ocf", "capex", "fcf_annual", "fcf_ttm", "net_debt", "cash", "gross_debt"]
+    GOOD = {"completo"}
+
+    def cov(field):
+        n = len(op) or 1
+        return round(sum(1 for t in op if per_ticker[t]["fields"].get(field) in GOOD) / n, 3)
+
+    cobertura = {f: cov(f) for f in all_fields}
+    # Huecos por campo (estado != completo) en operativas.
+    huecos = {}
+    for f in all_fields:
+        g = {t: per_ticker[t]["fields"].get(f) for t in op if per_ticker[t]["fields"].get(f) not in GOOD}
+        if g:
+            huecos[f] = g
+
+    # Probe dimensional dirigido (evidencia de recuperabilidad).
+    dim = dimensional_probe(cli, cikmap, ["V", "GOOGL", "MA"])
+
+    return {
+        "n_operativas_con_fundamentales": len(op),
+        "cobertura_fair_value(operativas)": cobertura,
+        "huecos_por_campo": huecos,
+        "bloqueados": {t: d.get("data_quality") for t, d in per_ticker.items() if d.get("data_quality") == "bloqueado"},
+        "confirmacion_dimensional(V/GOOGL/MA)": dim,
+        "por_ticker": per_ticker,
+    }
+
+
+def main(argv=None):
+    try:
+        print(json.dumps(run(), indent=2, default=str, ensure_ascii=False))
+        return 0
+    except Exception as e:
+        import traceback
+        print(json.dumps({"error": type(e).__name__, "message": str(e)[:300], "tb": traceback.format_exc()[-900:]}))
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
