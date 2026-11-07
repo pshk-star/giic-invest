@@ -210,6 +210,97 @@ class PricesConnector:
         return out
 
 
+class EdgarDimensionalConnector:
+    """E3.2 — EPS/acciones diluidas POR CLASE desde el XBRL dimensional del último 10-K (fuente
+    oficial). On-demand (descarga el 10-K sólo cuando se piden sus campos). NO combina clases ni
+    fabrica un EPS consolidado: devuelve un mapa {clase: {value, period_end, unit}} con procedencia
+    (accession/URL). Universal: sin lógica por ticker."""
+    CONCEPTS = ("EarningsPerShareDiluted", "WeightedAverageNumberOfDilutedSharesOutstanding")
+    spec = ConnectorSpec(
+        id="edgar_xbrl_dimensional", kind="fundamentals", provenance="SEC EDGAR 10-K (XBRL dimensional)",
+        quality=QualityTier.OFFICIAL, priority=15, cost_tier=CostTier.FREE,
+        coverage=Coverage(fields=("eps_diluted_by_class", "diluted_shares_by_class")),
+        cache_ttl_s=24 * 3600, rate_limit_per_s=8.0, frequency="anual (10-K)",
+        limitations=("requiere XBRL inline en el 10-K", "sólo conceptos con desglose dimensional"),
+        status=ConnectorStatus.OPERATIONAL, on_demand=True,
+    )
+    _FIELD_CONCEPT = {"eps_diluted_by_class": "EarningsPerShareDiluted",
+                      "diluted_shares_by_class": "WeightedAverageNumberOfDilutedSharesOutstanding"}
+
+    def __init__(self, user_agent: Optional[str] = None):
+        self._ua = user_agent
+        self._cik = None
+
+    def _client(self):
+        import httpx
+        return httpx.Client(timeout=40.0, headers={"User-Agent": self._ua or ""}, follow_redirects=True)
+
+    def _cikmap(self, cli):
+        if self._cik is None:
+            tk = cli.get("https://www.sec.gov/files/company_tickers.json").json()
+            self._cik = {r["ticker"].upper(): int(r["cik_str"]) for r in tk.values()}
+        return self._cik
+
+    def _latest_10k(self, cli, cik):
+        j = cli.get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json").json()
+        recent = j.get("filings", {}).get("recent", {})
+        forms = recent.get("form", [])
+        for i, fm in enumerate(forms):
+            if fm == "10-K":
+                acc = recent["accessionNumber"][i].replace("-", "")
+                doc = recent["primaryDocument"][i]
+                rpt = recent.get("reportDate", [None] * len(forms))[i]
+                return (f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/{doc}", rpt)
+        return (None, None)
+
+    def fetch(self, tickers: List[str], fields: Optional[List[str]] = None,
+              context: Optional[Dict[str, dict]] = None) -> Dict[str, Dict[str, ProvenancedField]]:
+        from ..xbrl_dimensional import extract_dimensional_facts, latest_annual_by_class
+        want = set(fields or self._FIELD_CONCEPT.keys())
+        out: Dict[str, Dict[str, ProvenancedField]] = {}
+        try:
+            cli = self._client()
+            cikmap = self._cikmap(cli)
+        except Exception:
+            return out
+        for t in tickers:
+            cik = cikmap.get(t.upper())
+            if not cik:
+                continue
+            try:
+                url, rpt = self._latest_10k(cli, cik)
+                if not url:
+                    continue
+                html = cli.get(url).text
+                facts = extract_dimensional_facts(html, list(self.CONCEPTS))
+            except Exception:
+                continue
+            fm: Dict[str, ProvenancedField] = {}
+            for field_name in want:
+                concept = self._FIELD_CONCEPT.get(field_name)
+                if not concept:
+                    continue
+                by_class = latest_annual_by_class(facts, concept)
+                # SÓLO exponer si hay desglose dimensional (clase); si no, no es trabajo de este conector.
+                dim = {k: v for k, v in by_class.items() if k != "__sin_clase__"}
+                if not dim:
+                    continue
+                value = {cls: {"value": f.value, "period_end": f.period_end.isoformat() if f.period_end else None,
+                               "unit": f.unit} for cls, f in dim.items()}
+                any_end = max((f.period_end for f in dim.values() if f.period_end), default=None)
+                unit0 = next(iter(dim.values())).unit
+                ccy = unit0.split("/")[0] if unit0 and "/" in unit0 else None
+                fm[field_name] = ProvenancedField(
+                    value=value, quality="verificado", connector_id=self.spec.id,
+                    provenance=f"SEC EDGAR 10-K XBRL dimensional ({url})",
+                    as_of=rpt, period=any_end.isoformat() if any_end else None,
+                    method="dimensional:StatementClassOfStockAxis (por clase, sin combinar)",
+                    currency=ccy)
+            if fm:
+                out[t] = fm
+        return out
+
+
 def build_default_registry(edgar_user_agent: Optional[str] = None,
                            max_cost: CostTier = CostTier.FREE) -> ConnectorRegistry:
     """Registro por defecto de la arquitectura $0. Los conectores se construyen perezosamente;
@@ -217,6 +308,7 @@ def build_default_registry(edgar_user_agent: Optional[str] = None,
     COMMERCIAL habilita conectores de pago (requiere autorización explícita del operador)."""
     reg = ConnectorRegistry(max_cost=max_cost)
     reg.register(EdgarFundamentalsConnector(user_agent=edgar_user_agent))
+    reg.register(EdgarDimensionalConnector(user_agent=edgar_user_agent))
     reg.register(YahooStatsConnector())
     reg.register(FrankfurterFxConnector())
     reg.register(PricesConnector())

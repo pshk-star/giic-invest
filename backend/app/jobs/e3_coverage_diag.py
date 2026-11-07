@@ -275,6 +275,48 @@ def e31_value_check(cli, cikmap, tickers):
     return out
 
 
+def e32_dimensional_validation(cli, cikmap, ua, tickers):
+    """E3.2 — valida el extractor dimensional: recupera EPS/acciones diluidas por CLASE desde el 10-K
+    y reconcilia la clase principal contra la utilidad neta AGREGADA oficial (EPS×acciones ≈ NI).
+    No combina clases. Para Visa (sólo dimensional) es la prueba de que el valor es correcto."""
+    from app.core.connectors.adapters import EdgarDimensionalConnector
+    conn = EdgarDimensionalConnector(user_agent=ua)
+    out = {}
+    got = conn.fetch(tickers)
+    for t in tickers:
+        cik = cikmap.get(t.upper())
+        fm = got.get(t, {})
+        eps_bc = fm.get("eps_diluted_by_class")
+        sh_bc = fm.get("diluted_shares_by_class")
+        rec = {"eps_por_clase": eps_bc.value if eps_bc else None,
+               "acciones_por_clase": sh_bc.value if sh_bc else None,
+               "procedencia": eps_bc.provenance if eps_bc else None}
+        # Reconciliación contra NI agregado oficial (companyfacts).
+        try:
+            facts = cli.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json").json()
+            tax, ccy, M = _pick_tax(facts)
+            ni = _at(_best_annual(facts, tax, M["ni"], ccy), _ref_period(facts, tax, M, ccy))
+            rec["ni_agregado_oficial"] = ni
+            if eps_bc and sh_bc and ni:
+                # Clase principal = la de mayor número de acciones (base as-converted).
+                classes = {k: sh_bc.value[k]["value"] for k in sh_bc.value if sh_bc.value[k]["value"]}
+                if classes:
+                    main = max(classes, key=classes.get)
+                    eps_m = (eps_bc.value.get(main) or {}).get("value")
+                    sh_m = classes[main]
+                    if eps_m and sh_m:
+                        implied = eps_m * sh_m
+                        rec["clase_principal"] = main
+                        rec["implied_NI(EPS_clase×acciones_clase)"] = implied
+                        rec["reconciliacion_vs_NI"] = round(implied / ni, 4)
+                        rec["cuadra_5pct"] = abs(implied / ni - 1.0) < 0.05
+        except Exception as e:
+            rec["error_reconciliacion"] = f"{type(e).__name__}: {str(e)[:80]}"
+        out[t] = rec
+        time.sleep(0.2)
+    return out
+
+
 def run() -> dict:
     ua = os.getenv("EDGAR_USER_AGENT", "")
     if not ua or "@" not in ua:
@@ -339,6 +381,8 @@ def run() -> dict:
     ttm_causas = ttm_cause_probe(cli, cikmap, ["AAPL", "AMZN", "COST", "C", "MSFT", "NVDA", "META"])
     # Validación de VALOR E3.1 contra el endpoint oficial companyconcept de la SEC.
     e31_val = e31_value_check(cli, cikmap, ["AAPL", "AMZN", "COST", "C", "WMT", "HD"])
+    # Validación E3.2: extractor dimensional por clase + reconciliación contra NI agregado.
+    e32_val = e32_dimensional_validation(cli, cikmap, ua, ["V", "GOOGL"])
 
     return {
         "n_operativas_con_fundamentales": len(op),
@@ -348,6 +392,7 @@ def run() -> dict:
         "confirmacion_dimensional(V/GOOGL/MA)": dim,
         "ttm_causas_muestra": ttm_causas,
         "e31_validacion_valor_vs_SEC": e31_val,
+        "e32_validacion_dimensional": e32_val,
         "por_ticker": per_ticker,
     }
 

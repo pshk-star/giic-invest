@@ -78,6 +78,8 @@ class ConnectorSpec:
     limitations: Tuple[str, ...] = ()
     status: ConnectorStatus = ConnectorStatus.UNKNOWN
     enabled: bool = True
+    on_demand: bool = False         # sólo se invoca cuando se pide explícitamente un campo suyo
+                                    # (p. ej. descargar el 10-K para XBRL dimensional); nunca en barridos
 
     def as_dict(self) -> dict:
         return {
@@ -91,5 +93,5 @@ class ConnectorSpec:
             },
             "cache_ttl_s": self.cache_ttl_s, "rate_limit_per_s": self.rate_limit_per_s,
             "frequency": self.frequency, "limitations": list(self.limitations),
-            "status": self.status.value, "enabled": self.enabled,
+            "status": self.status.value, "enabled": self.enabled, "on_demand": self.on_demand,
         }
