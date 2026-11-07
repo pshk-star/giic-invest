@@ -146,12 +146,25 @@ Regresión antes(main)/después(fde-e1) sobre la misma batería de 76 instrument
 - **Cobertura corporativa idéntica campo por campo** (eps_annual 93.7%, eps_ttm 65.1%, fcf_annual
   82.5%, fcf_ttm 60.3%, net_debt 69.8%, diluted_shares 95.2%, márgenes/roe sin cambio).
 
+Señal de routing (jerarquía, verificación pre-merge): **`instrument_type` de la capa de identidad
+(`services/identity.py`) es la señal PRIMARIA; el código SIC de la SEC es COMPLEMENTO**, no
+clasificación universal. `classify_instrument` resuelve: (a) identidad vehículo → `etf_o_trust`
+aunque el SIC calle; (b) identidad operativa + SIC de vehículo (contradicción) → `indeterminado`
+sin habilitar métricas; (c) sin identidad → el SIC rescata, y sin ninguna señal → `indeterminado`
+(no se asume operativa). El parser usa un centinela: si el caller no aporta señal, conserva el
+comportamiento legado (operativa) para no romper fixtures.
+
 Cambios INTENCIONALES (documentados por separado, E1 cond. 1):
-1. **Routing de trusts de materias primas a `no_aplica`** — GLD, IAU, SLV, PPLT, PALL, todos
-   **SIC 6221 (Commodity Contracts Brokers & Dealers)**. Antes recibían métricas corporativas
-   espurias (3 bloqueados, 1 sospechoso, 1 "ok"); ahora se identifican como vehículos y NO se les
-   calcula EPS/ROE/márgenes/deuda (no tienen significado económico). Señal UNIVERSAL por SIC, sin
-   lista de tickers. Conteo de calidad: `{ok 60→59, sospechoso 4→3, bloqueado 4→1, +no_aplica 5}`.
+1. **Routing de trusts de materias primas a `no_aplica`** — GLD, IAU, SLV, PPLT, PALL. Se rutean
+   por **`instrument_type=commodity_etf`** (señal primaria de identidad), confirmado por **SIC 6221
+   (Commodity Contracts Brokers & Dealers)** como complemento. Antes recibían métricas corporativas
+   espurias (3 bloqueados, 1 sospechoso, 1 "ok"); ahora NO se les calcula EPS/ROE/márgenes/deuda (no
+   tienen significado económico). Las equities con identidad aún `unknown` en la batería (sin ymeta
+   de Yahoo) las clasifica el SIC operativo como complemento. Conteo de calidad:
+   `{ok 60→59, sospechoso 4→3, bloqueado 4→1, +no_aplica 5}`; clase: `empresa_operativa 63, etf_o_trust 5`.
+   El `no_aplica`/`indeterminado` afecta ÚNICAMENTE fundamentales corporativos: precios, históricos,
+   forecast estadístico y métricas de riesgo salen de pipelines separados y quedan intactos
+   (verificado: ningún consumidor de `data_quality` los condiciona).
 2. **MU sigue `bloqueado`** (estado sin cambio) pero la razón se re-redactó para NO imputar la
    anomalía al emisor ni al 10-K (E1 cond. 5): de "…multiplicador distinto → probable error de
    origen; verificar 10-K original…" a "…multiplicador distinto; anomalía no resuelta — bloqueado
