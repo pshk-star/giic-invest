@@ -108,7 +108,7 @@ Cada etapa es segura, compatible con Supabase/Cloudflare, sin tocar A/B/C (309) 
 - **E1 — Extraer `core/normalize.py` y `core/quality.py`** desde `edgar.py` sin cambiar resultados.
   *Aceptación*: salidas idénticas en la batería (diff 0) + 200 pruebas verdes. **✅ HECHO (ver §8).**
 - **E2 — Registro de conectores** con metadatos declarados y merge por calidad.
-  *Aceptación*: añadir/retirar un conector no rompe la batería; procedencia trazable.
+  *Aceptación*: añadir/retirar un conector no rompe la batería; procedencia trazable. **✅ IMPLEMENTADO en rama `fde-e2` (ver §9).**
 - **E3 — Conector XBRL dimensional** (EPS/acciones de Visa y multiclase). *Aceptación*: Visa pasa de
   faltante→verificado con cifra que cuadra contra su 10-K; sin romper otros.
 - **E4 — Interinos IFRS / IR** (TSM 2025, ASML si hay fuente estable) o registro de límite si no.
@@ -180,3 +180,60 @@ lo que NO equivale a auditar su cifra exacta. La batería no valida independient
 Arquitectura sin parches por empresa (E1 cond. 6): incorporar un conector/instrumento nuevo usa la
 señal de tipo (SIC) y los mapas canónicos; no requiere código específico por ticker. No se avanza a
 E3 (XBRL dimensional de Visa) ni a Fair Value.
+
+---
+
+## 9. E2 — registro universal de conectores (diseño implementado, rama `fde-e2`)
+
+Capa **aditiva**: no toca `emit_predictions` ni las 309 predicciones A/B/C, no avanza a Fair Value
+ni UI, y mantiene USD 0. Vive en `core/connectors/` (puro; sin red ni pandas en spec/registry).
+
+Componentes:
+- **`ConnectorSpec`** (declarado por cada conector): `id`, `kind` (fundamentals/prices/fx/stats/
+  holdings/identity), `provenance`, `quality` (official/regulatory/aggregator/fallback/sample),
+  `priority`, `cost_tier` (free/trial/commercial), `Coverage` (tipos de instrumento, campos,
+  jurisdicciones), `cache_ttl_s`, `rate_limit_per_s`, `frequency`, `limitations`, `status`
+  (operational/degraded/down), `enabled`.
+- **`ConnectorRegistry`**:
+  - *selección* por `kind` + cobertura (tipo/campo/jurisdicción) + **tope de costo** (FREE por
+    defecto; TRIAL/COMMERCIAL exigen subir el tope = autorización del operador) + estado (DOWN y
+    deshabilitados se excluyen), ordenada por prioridad;
+  - *resolución de CONFLICTOS por campo* con semántica distinta por veredicto terminal:
+    · **`no_aplica`** — restricción SEMÁNTICA del tipo de instrumento (de una fuente con autoridad
+      ≥ aggregator): bloquea el campo; ningún proveedor, ni con `verificado`, pobla un fundamental
+      corporativo de un vehículo (un trust no recibe EPS).
+    · **`bloqueado`** — invalida la observación de ESA fuente, NO el campo: otro proveedor
+      independiente con un valor positivo lo resuelve; si nadie aporta, el campo queda `bloqueado`
+      (MU: EDGAR bloqueado puede resolverse con una fuente oficial independiente; sin ella, sigue
+      bloqueado).
+    · **`indeterminado`** — incertidumbre pendiente: otra fuente la resuelve con un valor positivo;
+      si nadie la resuelve, sigue `indeterminado` (NO se asume operativo).
+    La elección entre valores positivos es **MULTICRITERIO** y lexicográfica: (1) calidad del dato
+    (verificado>derivado>parcial>desactualizado), (2) autoridad de la fuente (official>regulatory>
+    aggregator>fallback), (3) comparabilidad (moneda esperada, período fiscal, ajuste por splits),
+    (4) actualidad, (5) **prioridad del conector sólo como último desempate** — nunca por prioridad
+    o fecha de forma aislada;
+  - *caché* por conector con el `cache_ttl_s` declarado;
+  - *procedencia por dato*: `ProvenancedField` = valor + calidad + conector + procedencia + fecha +
+    método.
+- **Adaptadores** (envuelven proveedores existentes SIN cambiar su lógica; construcción perezosa →
+  catálogo legible offline): `edgar_companyfacts` (oficial, prio 10), `prices_yahoo_stooq`
+  (agregador), `frankfurter_fx` (regulatorio), `yahoo_stats` (fallback, declarado **DOWN** por el
+  401 del endpoint público). `build_default_registry()` arma la arquitectura $0.
+
+**Sin conectores por empresa** (no hay nada de Visa): el routing y la cobertura son por metadatos.
+Incorporar cualquier proveedor futuro (API gratuita, trial o comercial) = adaptador fino que
+implementa `fetch(tickers, fields, context) -> {ticker:{campo:ProvenancedField}}` + declarar su
+spec + `register(...)`. No se modifica el registro ni la lógica consumidora; el tope de costo decide
+si participa.
+
+Evidencia: `jobs/connector_registry_report.py` + `.github/workflows/connectors.yml` imprimen el
+catálogo declarado (legible offline) y, con `EDGAR_USER_AGENT`, una demo en vivo del merge sobre
+AAPL (operativa), GLD (trust → `no_aplica`) y MU (bloqueado). 23 pruebas deterministas
+(`tests/test_connector_registry.py`) fijan: cost gate que **impide la invocación** de conectores
+trial/commercial sin autorización, cobertura, semántica de conflicto de los 3 veredictos
+(`no_aplica` bloquea; `bloqueado`/`indeterminado` los resuelve una fuente independiente; sin ella
+persisten), selección multicriterio (calidad/autoridad/comparabilidad/actualidad, prioridad como
+último desempate), relleno de `faltante`, caché TTL y "añadir proveedor comercial = sólo registrar
++ subir el tope". Pendiente (no en E2): migrar `CompositeProvider`/scan para consumir el registro;
+E3 (XBRL dimensional de Visa); Fair Value.

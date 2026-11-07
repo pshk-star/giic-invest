@@ -1,0 +1,221 @@
+"""E2 — adaptadores que registran los proveedores EXISTENTES como conectores, SIN cambiar su
+lógica interna. Cada adaptador sólo declara su spec y traduce la salida del proveedor a
+{campo: ProvenancedField}. El proveedor subyacente se construye de forma PEREZOSA (en el primer
+fetch), para que el catálogo/health del registro sea legible sin red ni User-Agent.
+
+Incorporar un proveedor nuevo = añadir un adaptador análogo + registrarlo. No se toca el registro
+ni la lógica consumidora. Aquí NO hay conectores específicos por empresa (p. ej. Visa): el routing
+y la cobertura son por metadatos.
+"""
+from __future__ import annotations
+
+from typing import Dict, List, Optional
+
+from ..types import Fundamentals
+from .registry import ConnectorRegistry, ProvenancedField
+from .spec import ConnectorSpec, ConnectorStatus, Coverage, CostTier, QualityTier
+
+# Campos fundamentales normalizados que expone el conector EDGAR.
+FUND_FIELDS = ("eps", "eps_annual", "eps_ttm", "net_margin", "roe", "gross_margin",
+               "operating_margin", "fcf_annual", "fcf_ttm", "net_debt", "gross_debt",
+               "diluted_shares")
+_EPS_FIELDS = {"eps", "eps_annual", "eps_ttm"}
+_RATIO_FIELDS = {"net_margin", "roe", "gross_margin", "operating_margin"}
+
+
+def fundamentals_to_fields(f: Fundamentals, connector_id: str, provenance: str
+                           ) -> Dict[str, ProvenancedField]:
+    """Traduce un Fundamentals a campos con calidad+procedencia. Los veredictos de calidad del
+    motor (no_aplica/indeterminado/bloqueado) se propagan como TERMINALES autoritativos para que
+    un fallback no los sobrescriba."""
+    dq = f.data_quality
+    out: Dict[str, ProvenancedField] = {}
+    values = {k: getattr(f, k, None) for k in FUND_FIELDS}
+    ccy = f.currency
+    period = f.as_of
+    if dq in ("no_aplica", "indeterminado"):
+        for k in FUND_FIELDS:
+            out[k] = ProvenancedField(None, dq, connector_id, provenance, f.as_of,
+                                      method=f.instrument_class)
+        return out
+    for k, v in values.items():
+        if v is None:
+            q = "faltante"
+        elif dq == "bloqueado":
+            q = "bloqueado"
+        elif k in _EPS_FIELDS:
+            if f.consistency_independent and not f.ni_reconstructed:
+                q = "verificado"
+            elif f.ni_reconstructed:
+                q = "derivado"
+            else:
+                q = "derivado"
+        elif k in _RATIO_FIELDS:
+            q = "derivado"
+        else:
+            q = "parcial"
+        if dq == "sospechoso" and q in ("verificado", "derivado"):
+            q = "parcial"       # dato marcado: usable pero sin verificación independiente
+        method = f.eps_source if k in _EPS_FIELDS else None
+        # EPS/acciones: EDGAR usa comparativos reexpresados (filed más reciente) → ajustado por split.
+        adjusted = True if k in _EPS_FIELDS or k == "diluted_shares" else None
+        out[k] = ProvenancedField(v, q, connector_id, provenance, as_of=f.as_of, method=method,
+                                  period=period, currency=ccy, adjusted=adjusted)
+    return out
+
+
+class EdgarFundamentalsConnector:
+    """Conector OFICIAL de fundamentales (SEC EDGAR companyfacts + submissions para SIC)."""
+    spec = ConnectorSpec(
+        id="edgar_companyfacts", kind="fundamentals", provenance="SEC EDGAR (companyfacts)",
+        quality=QualityTier.OFFICIAL, priority=10, cost_tier=CostTier.FREE,
+        coverage=Coverage(instrument_types=("stock", "adr", "gdr", "common", "equity", "unknown"),
+                          fields=FUND_FIELDS, jurisdictions=()),
+        cache_ttl_s=6 * 3600, rate_limit_per_s=8.0, frequency="trimestral/anual (10-Q/10-K/20-F)",
+        limitations=("sólo emisores con presentaciones XBRL en EDGAR",
+                     "no expone XBRL dimensional (p. ej. EPS por clase accionaria)"),
+        status=ConnectorStatus.OPERATIONAL,
+    )
+
+    def __init__(self, user_agent: Optional[str] = None):
+        self._ua = user_agent
+        self._prov = None
+
+    def _provider(self):
+        if self._prov is None:
+            from ...providers.edgar import EDGARProvider
+            self._prov = EDGARProvider(user_agent=self._ua)
+        return self._prov
+
+    def fetch(self, tickers: List[str], fields: Optional[List[str]] = None,
+              context: Optional[Dict[str, dict]] = None) -> Dict[str, Dict[str, ProvenancedField]]:
+        context = context or {}
+        itypes = {t: (context.get(t) or {}).get("instrument_type") for t in tickers}
+        itypes = {k: v for k, v in itypes.items() if v}
+        funds = self._provider().get_fundamentals(tickers, instrument_types=itypes or None)
+        out: Dict[str, Dict[str, ProvenancedField]] = {}
+        for t, f in funds.items():
+            out[t] = fundamentals_to_fields(f, self.spec.id, self.spec.provenance)
+        return out
+
+
+class YahooStatsConnector:
+    """Fallback de estadísticas (EPS TTM / acciones) vía Yahoo. Declarado DOWN: el endpoint público
+    v7/quote responde 401 sin autenticación (registrado como límite, no como dato)."""
+    spec = ConnectorSpec(
+        id="yahoo_stats", kind="fundamentals", provenance="Yahoo Finance (quote)",
+        quality=QualityTier.FALLBACK, priority=60, cost_tier=CostTier.FREE,
+        coverage=Coverage(fields=("eps_ttm", "diluted_shares")),
+        cache_ttl_s=3600, frequency="diaria",
+        limitations=("endpoint público v7/quote devuelve 401 sin sesión",),
+        status=ConnectorStatus.DOWN,
+    )
+
+    def __init__(self):
+        self._prov = None
+
+    def _provider(self):
+        if self._prov is None:
+            from ...providers.yahoo import YahooProvider
+            self._prov = YahooProvider()
+        return self._prov
+
+    def fetch(self, tickers, fields=None, context=None):
+        out: Dict[str, Dict[str, ProvenancedField]] = {}
+        try:
+            stats = self._provider().get_stats(tickers) or {}
+        except Exception:
+            return out
+        for t, s in stats.items():
+            if (s.get("currency") or "USD").upper() != "USD":
+                continue
+            fm = {}
+            if isinstance(s.get("eps_ttm"), (int, float)):
+                fm["eps_ttm"] = ProvenancedField(float(s["eps_ttm"]), "parcial", self.spec.id,
+                                                 self.spec.provenance, as_of=s.get("as_of"),
+                                                 method="trailingEps", currency="USD")
+            if isinstance(s.get("shares"), (int, float)):
+                fm["diluted_shares"] = ProvenancedField(float(s["shares"]), "parcial", self.spec.id,
+                                                        self.spec.provenance, as_of=s.get("as_of"),
+                                                        currency="USD")
+            if fm:
+                out[t] = fm
+        return out
+
+
+class FrankfurterFxConnector:
+    """FX oficial (BCE vía Frankfurter). kind='fx'."""
+    spec = ConnectorSpec(
+        id="frankfurter_fx", kind="fx", provenance="Frankfurter / BCE",
+        quality=QualityTier.REGULATORY, priority=10, cost_tier=CostTier.FREE,
+        cache_ttl_s=12 * 3600, frequency="diaria (días hábiles BCE)",
+        limitations=("sin intradía", "sólo divisas publicadas por el BCE"),
+        status=ConnectorStatus.OPERATIONAL,
+    )
+
+    def __init__(self):
+        self._prov = None
+
+    def _provider(self):
+        if self._prov is None:
+            from ...providers.frankfurter import FrankfurterProvider
+            self._prov = FrankfurterProvider()
+        return self._prov
+
+    def fetch(self, tickers, fields=None, context=None):
+        # Para FX, `tickers` son códigos de divisa; se consulta USD por 1 unidad.
+        try:
+            rates = self._provider().get_fx_rates("USD", list(tickers)) or {}
+        except Exception:
+            rates = {}
+        return {c: {"fx_usd_per_unit": ProvenancedField(r, "verificado", self.spec.id,
+                                                         self.spec.provenance)}
+                for c, r in rates.items()}
+
+
+class PricesConnector:
+    """Precios/cotizaciones (Yahoo primario, respaldo Stooq). kind='prices'."""
+    spec = ConnectorSpec(
+        id="prices_yahoo_stooq", kind="prices", provenance="Yahoo Finance / Stooq",
+        quality=QualityTier.AGGREGATOR, priority=20, cost_tier=CostTier.FREE,
+        cache_ttl_s=900, frequency="diaria/intradía",
+        limitations=("Stooq bloquea IPs de datacenter", "ajustes por dividendos según fuente"),
+        status=ConnectorStatus.OPERATIONAL,
+    )
+
+    def __init__(self):
+        self._prov = None
+
+    def _provider(self):
+        if self._prov is None:
+            from ...providers.composite import FallbackPrices
+            from ...providers.yahoo import YahooProvider
+            from ...providers.stooq import StooqProvider
+            self._prov = FallbackPrices([YahooProvider(), StooqProvider()])
+        return self._prov
+
+    def fetch(self, tickers, fields=None, context=None):
+        out: Dict[str, Dict[str, ProvenancedField]] = {}
+        try:
+            quotes = self._provider().get_quotes(list(tickers)) or {}
+        except Exception:
+            return out
+        for t, q in quotes.items():
+            px = getattr(q, "price", None)
+            if px is not None:
+                out[t] = {"price": ProvenancedField(px, "parcial", self.spec.id, self.spec.provenance,
+                                                    getattr(q, "as_of", None))}
+        return out
+
+
+def build_default_registry(edgar_user_agent: Optional[str] = None,
+                           max_cost: CostTier = CostTier.FREE) -> ConnectorRegistry:
+    """Registro por defecto de la arquitectura $0. Los conectores se construyen perezosamente;
+    el catálogo/health es legible sin red. `max_cost` por defecto FREE (USD 0); subirlo a TRIAL/
+    COMMERCIAL habilita conectores de pago (requiere autorización explícita del operador)."""
+    reg = ConnectorRegistry(max_cost=max_cost)
+    reg.register(EdgarFundamentalsConnector(user_agent=edgar_user_agent))
+    reg.register(YahooStatsConnector())
+    reg.register(FrankfurterFxConnector())
+    reg.register(PricesConnector())
+    return reg
