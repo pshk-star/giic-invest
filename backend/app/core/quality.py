@@ -174,6 +174,50 @@ def is_non_operating(sic: Optional[int], sic_desc: Optional[str] = None) -> bool
     return False
 
 
+# Tipos de instrumento de la capa de IDENTIDAD (services/identity.py) que NO son empresas
+# operativas (no se les calculan EPS/ROE/márgenes) y los que SÍ lo son.
+_NON_OP_ITYPES = {"etf", "commodity_etf", "commodity_trust", "fund", "trust",
+                  "closed_end_fund", "unit_investment_trust", "etn"}
+_OP_ITYPES = {"stock", "common", "common_stock", "equity", "adr", "gdr"}
+
+
+def classify_instrument(instrument_type: Optional[str], sic: Optional[int] = None,
+                        sic_desc: Optional[str] = None) -> Tuple[str, Optional[str]]:
+    """Clasifica el instrumento → (instrument_class, nota).
+
+    instrument_class ∈ {empresa_operativa, etf_o_trust, indeterminado}.
+
+    `instrument_type` de la capa de IDENTIDAD es la señal PRIMARIA; el SIC de la SEC es
+    COMPLEMENTO, no clasificación universal (E1, verificación pre-merge). Reglas:
+      1. Identidad dice vehículo (ETF/trust/fondo) → etf_o_trust (aunque el SIC calle).
+      2. Identidad dice operativa:
+         - si el SIC contradice (indica vehículo) → indeterminado (NO habilitar métricas).
+         - si no → empresa_operativa.
+      3. Identidad ausente/unknown → apoyarse en SIC SIN asumir operativa:
+         - SIC indica vehículo → etf_o_trust.
+         - SIC conocido y operativo → empresa_operativa.
+         - sin SIC → indeterminado (no se asume operativa sin ninguna señal).
+    """
+    it = (instrument_type or "").strip().lower()
+    sic_nonop = is_non_operating(sic, sic_desc)
+    sic_known = (sic is not None and str(sic).strip() != "") or bool(sic_desc)
+
+    if it in _NON_OP_ITYPES:
+        return "etf_o_trust", f"identidad={instrument_type} (vehículo); métricas corporativas no aplican"
+    if it in _OP_ITYPES:
+        if sic_nonop:
+            return "indeterminado", (f"contradicción: identidad={instrument_type} (operativa) vs "
+                                     f"SIC={sic} ({sic_desc}) sugiere vehículo; no se habilitan "
+                                     "métricas corporativas hasta resolver")
+        return "empresa_operativa", None
+    # Identidad ausente o 'unknown': el SIC es complemento, no se asume operativa.
+    if sic_nonop:
+        return "etf_o_trust", f"sin instrument_type; SIC={sic} ({sic_desc}) indica vehículo"
+    if sic_known:
+        return "empresa_operativa", f"sin instrument_type; SIC={sic} ({sic_desc}) indica empresa operativa"
+    return "indeterminado", "sin instrument_type ni SIC: tipo de instrumento no determinado"
+
+
 def classify_field(value, *, independent: bool = False, derived: bool = False,
                    blocked: bool = False, not_applicable: bool = False) -> str:
     """Estado de UN campo. Separa DISPONIBILIDAD de EXACTITUD (E1 cond. 3): 'verificado' indica que

@@ -4,7 +4,8 @@ Fijan como regresión: (1) el guard de plausibilidad conserva umbrales y la raz�
 NEUTRAL (no atribuye la anomalía al emisor), (2) el routing por SIC cortocircuita fondos/trusts
 sin métricas corporativas y NO toca empresas operativas (incluidas financieras/pagos).
 """
-from app.core.quality import assess_plausibility, is_non_operating, classify_field, FUND_TRUST_SIC
+from app.core.quality import (assess_plausibility, is_non_operating, classify_field,
+                               classify_instrument, FUND_TRUST_SIC)
 from app.providers.edgar import parse_companyfacts
 
 
@@ -70,11 +71,54 @@ def test_parse_companyfacts_cortocircuita_fondo():
     assert "no tienen significado económico" in f.quality_reason
 
 
-def test_parse_companyfacts_empresa_operativa_sin_sic_igual_que_antes():
-    # Sin SIC, el comportamiento es el de empresa operativa (no cortocircuita).
+def test_parse_companyfacts_sin_ninguna_senal_es_legado_operativo():
+    # Centinela: si el caller NO aporta señal de clasificación, comportamiento LEGADO (operativa).
     f = parse_companyfacts({"facts": {}}, "XX", price=None)
     assert f.data_quality == "ok"
     assert f.instrument_class == "empresa_operativa"
+
+
+def test_parse_companyfacts_senales_ausentes_explicitas_es_indeterminado():
+    # Si el caller SÍ intenta clasificar pero ambas señales llegan vacías → indeterminado,
+    # NO se asume empresa operativa (E1, verificación pre-merge, punto 2).
+    f = parse_companyfacts({"facts": {}}, "XX", price=None, instrument_type=None, sic=None)
+    assert f.data_quality == "indeterminado"
+    assert f.instrument_class == "indeterminado"
+    assert f.eps is None and f.roe is None
+
+
+def test_parse_companyfacts_instrument_type_primario_rutea_trust_sin_sic():
+    # instrument_type de identidad es PRIMARIO: rutea el trust aunque el SIC no esté.
+    f = parse_companyfacts({"facts": {}}, "GLD", price=180.0, instrument_type="commodity_etf", sic=None)
+    assert f.data_quality == "no_aplica" and f.instrument_class == "etf_o_trust"
+
+
+def test_parse_companyfacts_contradiccion_identidad_vs_sic_es_indeterminado():
+    # Identidad dice operativa pero el SIC dice vehículo → indeterminado (no habilitar métricas).
+    f = parse_companyfacts({"facts": {}}, "XX", price=10.0, instrument_type="stock", sic=6221)
+    assert f.data_quality == "indeterminado" and f.instrument_class == "indeterminado"
+
+
+# --- classify_instrument: identidad primaria, SIC complementario ---
+def test_classify_identidad_primaria_vehiculo():
+    assert classify_instrument("commodity_etf", sic=None)[0] == "etf_o_trust"
+    assert classify_instrument("etf", sic=2834)[0] == "etf_o_trust"  # identidad manda sobre SIC op.
+
+
+def test_classify_identidad_operativa():
+    assert classify_instrument("stock", sic=3571)[0] == "empresa_operativa"
+    assert classify_instrument("adr", sic=None)[0] == "empresa_operativa"
+
+
+def test_classify_contradiccion():
+    cls, note = classify_instrument("stock", sic=6221, sic_desc="Commodity Contracts")
+    assert cls == "indeterminado" and "contradicción" in note
+
+
+def test_classify_sin_identidad_usa_sic_complemento():
+    assert classify_instrument(None, sic=6221)[0] == "etf_o_trust"       # SIC rescata
+    assert classify_instrument("unknown", sic=2834)[0] == "empresa_operativa"
+    assert classify_instrument(None, sic=None)[0] == "indeterminado"      # sin señal → no asume
 
 
 # --- clasificación por campo ---

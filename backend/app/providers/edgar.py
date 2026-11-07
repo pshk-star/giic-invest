@@ -26,7 +26,7 @@ from ..core.normalize import (  # noqa: F401  (re-export para pruebas/consumidor
     _latest_dur, _annual_points, _instant_points, _concept, _first_concept,
     _best_annual, _best_instant, _currency_for,
 )
-from ..core.quality import assess_plausibility, is_non_operating
+from ..core.quality import assess_plausibility, classify_instrument
 from ..core.types import ETFHolding, Fundamentals, Instrument, Quote
 from .base import MarketDataProvider
 
@@ -37,6 +37,10 @@ SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
 # ADR: 1 ADR = N acciones ordinarias (hechos verificables, no estimaciones).
 ADR_RATIO = {"TSM": 5.0, "ASML": 1.0}
 
+# Centinela: distingue "el caller NO aportó señal de clasificación" (comportamiento legado:
+# empresa operativa) de "aportó la señal y es None" (clasificar, y None → indeterminado).
+_UNSET = object()
+
 
 def parse_companyfacts(facts: dict, ticker: str,
                        price: Optional[float] = None,
@@ -44,8 +48,9 @@ def parse_companyfacts(facts: dict, ticker: str,
                        fx_map: Optional[Dict[str, float]] = None,
                        adr_ratio: Optional[float] = None,
                        fallback: Optional[dict] = None,
-                       sic: Optional[int] = None,
-                       sic_desc: Optional[str] = None) -> Fundamentals:
+                       instrument_type=_UNSET,
+                       sic=_UNSET,
+                       sic_desc=_UNSET) -> Fundamentals:
     """Construye Fundamentals desde company facts de EDGAR. Campos ausentes => None.
 
     Cubre us-gaap (USD) e ifrs-full (emisores 20-F; divisa detectada, p. ej. EUR/TWD).
@@ -55,26 +60,39 @@ def parse_companyfacts(facts: dict, ticker: str,
       ordinarias por ADR). Sin FX disponible para una divisa != USD => quedan en None
       (no se fabrican).
 
-    Routing por tipo de instrumento (E1): si el SIC identifica un vehículo (ETF/trust/fondo),
-    NO se calculan métricas corporativas (no tienen significado económico) y se devuelve un
-    registro `no_aplica` con el instrumento clasificado. `sic`/`sic_desc` son opcionales: sin
-    ellos el comportamiento es IDÉNTICO al anterior (empresa operativa por defecto).
+    Routing por tipo de instrumento (E1): `instrument_type` de la capa de identidad es la señal
+    PRIMARIA; `sic`/`sic_desc` son COMPLEMENTO. Si el caller aporta alguna señal, se clasifica con
+    `classify_instrument`: vehículos (ETF/trust) → registro `no_aplica` sin métricas corporativas;
+    señal ausente o contradictoria → registro `indeterminado` (NO se asume empresa operativa). Si el
+    caller NO aporta señal alguna (ambos sin especificar), el comportamiento es IDÉNTICO al anterior
+    (empresa operativa), para no romper llamadas/fixtures existentes.
     """
-    # --- Routing por tipo de instrumento (señal universal por SIC) ---
-    if is_non_operating(sic, sic_desc):
-        return Fundamentals(
-            ticker=ticker,
-            currency=None,
-            taxonomy=None,
-            data_quality="no_aplica",
-            quality_reason=("instrumento no operativo (ETF/trust/fondo"
-                            + (f", SIC {sic}" if sic else "")
-                            + "): las métricas corporativas (EPS, ROE, márgenes, deuda neta) no "
-                              "tienen significado económico; analizar como vehículo + subyacente, "
-                              "no con fundamentales de empresa"),
-            instrument_class="etf_o_trust",
-            is_sample=False,
-        )
+    # --- Routing por tipo de instrumento (identidad primaria, SIC complementario) ---
+    if not (instrument_type is _UNSET and sic is _UNSET):
+        it = None if instrument_type is _UNSET else instrument_type
+        s = None if sic is _UNSET else sic
+        sd = None if sic_desc is _UNSET else sic_desc
+        instrument_class, class_note = classify_instrument(it, s, sd)
+        if instrument_class == "etf_o_trust":
+            return Fundamentals(
+                ticker=ticker, currency=None, taxonomy=None,
+                data_quality="no_aplica",
+                quality_reason=("instrumento no operativo (ETF/trust/fondo): las métricas "
+                                "corporativas (EPS, ROE, márgenes, deuda neta) no tienen "
+                                "significado económico; analizar como vehículo + subyacente. "
+                                + (class_note or "")),
+                instrument_class="etf_o_trust", is_sample=False,
+            )
+        if instrument_class == "indeterminado":
+            return Fundamentals(
+                ticker=ticker, currency=None, taxonomy=None,
+                data_quality="indeterminado",
+                quality_reason=("tipo de instrumento no determinado con certeza; no se habilitan "
+                                "métricas corporativas sin clasificación. " + (class_note or "")),
+                instrument_class="indeterminado", is_sample=False,
+            )
+    else:
+        instrument_class = "empresa_operativa"
 
     fx_map = fx_map or {}
 
@@ -317,7 +335,7 @@ def parse_companyfacts(facts: dict, ticker: str,
         eps_ttm_pershare_check=eps_ttm_pershare_check,
         data_quality=data_quality,
         quality_reason=quality_reason,
-        instrument_class="empresa_operativa",
+        instrument_class=instrument_class,
         pe_forward=None,            # no disponible gratis en EDGAR
         ev_ebitda=None,             # requiere deuda/caja + EBITDA fiables
         fcf_yield=fcf_yield,
@@ -394,20 +412,26 @@ class EDGARProvider(MarketDataProvider):
 
     def get_fundamentals(self, tickers: List[str], prices: Optional[Dict[str, float]] = None,
                          fx_map: Optional[Dict[str, float]] = None,
-                         fallback_stats: Optional[Dict[str, dict]] = None) -> Dict[str, Fundamentals]:
+                         fallback_stats: Optional[Dict[str, dict]] = None,
+                         instrument_types: Optional[Dict[str, str]] = None) -> Dict[str, Fundamentals]:
+        """`instrument_types` (ticker→tipo de la capa de identidad) es la señal PRIMARIA de routing;
+        el SIC de submissions es el COMPLEMENTO. Si el orquestador no aporta identidad, se clasifica
+        con el SIC; sólo si faltan ambos se marca `indeterminado` (no se asume operativa)."""
         prices = prices or {}
         fx_map = fx_map or {}
         fallback_stats = fallback_stats or {}
+        instrument_types = instrument_types or {}
         out = {}
         for t in tickers:
             facts = self._facts(t)
             if facts is None:
                 continue
             sic, sic_desc = self._sic(t)
+            it = instrument_types.get(t.upper()) or instrument_types.get(t)
             out[t] = parse_companyfacts(facts, t, price=prices.get(t), fx_map=fx_map,
                                         adr_ratio=ADR_RATIO.get(t.upper(), 1.0),
                                         fallback=fallback_stats.get(t.upper()) or fallback_stats.get(t),
-                                        sic=sic, sic_desc=sic_desc)
+                                        instrument_type=it, sic=sic, sic_desc=sic_desc)
         return out
 
     # EDGAR no da precios/FX/holdings
