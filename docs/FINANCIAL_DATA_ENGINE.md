@@ -304,3 +304,34 @@ operativas de la batería de 76 (ETF/trusts excluidos por routing; MU bloqueado)
 La cobertura de **extranjeros ADR/IFRS** sólo sube con un conector externo (E3.4, de pago → gate de
 costo con autorización), no con EDGAR. **No basta con subir cobertura**: cada recuperación dimensional
 se validará contra el documento oficial antes de marcarse `verificado`.
+
+---
+
+## 11. E3.1 — reconstrucción TTM (resultados medidos)
+
+**Causa verificada (no supuesta)** con sonda de solo lectura sobre muestra representativa: en AAPL,
+AMZN, COST, C los interinos SÍ están en EDGAR (266–300 hechos), pero su período COMPLETO más reciente
+es el anual (10-K; aún sin 10-Q posterior) → la identidad rodante devuelve `window="anual"` y el
+parser lo descartaba por exigir ventana YTD. Es **disponible-no-recuperado por gating**, no ausencia
+ni rechazo por calidad. Contraste: MSFT/NVDA/META sí tienen YTD fresco y ya funcionaban. (Hallazgo
+lateral: NVDA CAPEX sale de un concepto viejo → E3.3.)
+
+**Fix (universal, en `parse_companyfacts`):** cuando no hay TTM rodante pero el período completo más
+reciente es el anual, `eps_ttm = EPS anual diluido REPORTADO` y `fcf_ttm = FCF anual` (idénticos por
+definición), usando la cifra OFICIAL (no re-derivada), con `window="anual"` para trazabilidad. Sólo
+rellena cuando antes era `None`; el camino YTD no se toca.
+
+**Cobertura antes→después (63 operativas, batería de 76, medido en CI):**
+| Campo | Antes | Después | | Campo | Antes | Después |
+|---|---|---|---|---|---|---|
+| eps_ttm | 65.1% | **93.7%** | | fcf_ttm | 60.3% | **85.7%** |
+
+18 tickers ganan eps_ttm (incluidos extranjeros ASML/TSM/SAP/AZN/BABA/HSBC/NVO/NVS/RIO/SE/SONY/TM/UL,
+cuyo último período completo es el 20-F anual), 16 ganan fcf_ttm. **0 regresiones**: ningún campo
+perdido, ningún otro cambio de presencia; márgenes/ROE/net_debt/eps_annual idénticos; MU sigue
+**bloqueado**; no_aplica 5.
+
+**Validación de valor (independiente, vs endpoint oficial `companyconcept` de la SEC):** los cuatro
+casos anual-como-TTM coinciden EXACTO con el EPS diluido oficial — AAPL 8.98, AMZN 7.17, COST 20.76,
+C 6.99 (diferencia relativa 0.0). Los casos YTD (WMT, HD) difieren ~1% del último anual, como debe
+ser (un TTM rodante a mitad de año ≠ EPS del ejercicio previo). Exactitud confirmada, sin estimación.
