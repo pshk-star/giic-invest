@@ -154,16 +154,29 @@ def dimensional_probe(cli, cikmap, tickers):
                 out[t] = {"error": "sin 10-K"}
                 continue
             html = cli.get(url).text
+            # Contextos con dimensión (explicitMember) = desglose por clase/segmento.
+            dim_ctx = set()
+            for cid, body in re.findall(r'<(?:xbrli:)?context\s+id="([^"]+)"[^>]*>(.*?)</(?:xbrli:)?context>',
+                                        html, re.S | re.I):
+                if "explicitmember" in body.lower():
+                    dim_ctx.add(cid)
+            # Hechos ix:nonFraction por concepto (atributos en cualquier orden, case-insensitive).
+            tags = re.findall(r'<ix:nonfraction\b[^>]*>', html, re.I)
             res = {}
             for c in concepts:
-                # ix:nonFraction name="us-gaap:Concept" ... contextRef="CTX"
-                facts = re.findall(r'name="us-gaap:' + c + r'"[^>]*contextRef="([^"]+)"', html)
-                # contextos con dimensión (explicitMember) = desglose por clase/segmento
-                dim_ctx = set(re.findall(r'<[^>]*context id="([^"]+)"[^>]*>.*?explicitMember', html, re.S))
-                dim_hits = [cx for cx in facts if cx in dim_ctx]
-                res[c] = {"hechos_totales": len(facts), "con_dimension": len(dim_hits),
-                          "solo_dimensional": len(facts) > 0 and len(dim_hits) == len(facts)}
-            out[t] = {"url_10k": url, "conceptos": res}
+                ctxrefs = []
+                for tag in tags:
+                    nm = re.search(r'name="([^"]+)"', tag, re.I)
+                    if not nm or not nm.group(1).lower().endswith(c.lower()):
+                        continue
+                    cx = re.search(r'contextref="([^"]+)"', tag, re.I)
+                    if cx:
+                        ctxrefs.append(cx.group(1))
+                dim_hits = [cx for cx in ctxrefs if cx in dim_ctx]
+                res[c] = {"hechos_totales": len(ctxrefs), "con_dimension": len(dim_hits),
+                          "solo_dimensional": len(ctxrefs) > 0 and len(dim_hits) == len(ctxrefs),
+                          "clases_dimension_ejemplo": sorted(set(dim_hits))[:4]}
+            out[t] = {"url_10k": url, "n_contextos_dimensionales": len(dim_ctx), "conceptos": res}
             time.sleep(0.2)
         except Exception as e:
             out[t] = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
