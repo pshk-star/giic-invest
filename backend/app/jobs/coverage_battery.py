@@ -14,6 +14,7 @@ import sys
 import time
 
 from app.providers.edgar import parse_companyfacts, ADR_RATIO
+from app.services.identity import resolve_identity
 
 # Universo representativo (sectores, tamaños, US-GAAP/IFRS, ADR, multiclase, splits, ETF, trusts,
 # y casos de regresión V/MU/ASML/TSM). Las categorías fijan la EXPECTATIVA (p. ej. ETF no debe
@@ -69,11 +70,23 @@ def run() -> dict:
             per_ticker[t] = {"category": cat, "resolved": False,
                              "note": "sin CIK en SEC (típico de ETF/fondo: no presenta companyfacts)"}
             continue
+        # SIC (señal universal de tipo de instrumento) desde submissions — para el routing.
+        sic, sic_desc = None, None
+        try:
+            rs = cli.get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json")
+            if rs.status_code == 200:
+                js = rs.json()
+                _s = js.get("sic")
+                sic = int(_s) if _s not in (None, "") else None
+                sic_desc = js.get("sicDescription")
+        except Exception:
+            pass
+        time.sleep(0.12)
         try:
             r = cli.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json")
             if r.status_code != 200:
                 per_ticker[t] = {"category": cat, "resolved": True, "companyfacts": False,
-                                 "http_status": r.status_code}
+                                 "http_status": r.status_code, "sic": sic, "sic_desc": sic_desc}
                 time.sleep(0.12)
                 continue
             facts = r.json()
@@ -81,11 +94,22 @@ def run() -> dict:
             per_ticker[t] = {"category": cat, "resolved": True, "error": type(e).__name__}
             time.sleep(0.12)
             continue
+        # instrument_type de la capa de IDENTIDAD = señal PRIMARIA de routing (SIC = complemento).
+        # Sin ymeta de Yahoo, los trusts se resuelven por la semilla COMMODITY_ETFS; el resto queda
+        # 'unknown' y lo clasifica el SIC (complemento). Demuestra la prioridad pedida.
         try:
-            f = parse_companyfacts(facts, t, price=None, adr_ratio=ADR_SEED.get(t.upper(), ADR_RATIO.get(t.upper(), 1.0)), fx_map=FX)
+            itype = resolve_identity(t).get("instrument_type")
+        except Exception:
+            itype = None
+        try:
+            f = parse_companyfacts(facts, t, price=None,
+                                   adr_ratio=ADR_SEED.get(t.upper(), ADR_RATIO.get(t.upper(), 1.0)),
+                                   fx_map=FX, instrument_type=itype, sic=sic, sic_desc=sic_desc)
             present = {k: (getattr(f, k) not in (None, "")) for k in FIELDS}
             per_ticker[t] = {
                 "category": cat, "resolved": True, "companyfacts": True,
+                "sic": sic, "sic_desc": sic_desc, "instrument_type": itype,
+                "instrument_class": f.instrument_class,
                 "taxonomy": f.taxonomy, "currency": f.currency, "period_as_of": f.as_of,
                 "data_quality": f.data_quality, "quality_reason": f.quality_reason,
                 "eps_source": f.eps_source, "consistency_independent": f.consistency_independent,
@@ -99,20 +123,38 @@ def run() -> dict:
 
     # Agregados: cobertura por campo global y por categoría; conteo por estado de calidad.
     corp_cats = ["us_large", "us_mid_small", "multi_class", "recent_splits", "financials", "adr_ifrs", "regression"]
-    corp = [t for t, d in per_ticker.items() if d.get("companyfacts") and d.get("present") and cat_of[t] in corp_cats]
+    # Empresas operativas: con companyfacts, con campos y NO ruteadas a no_aplica (vehículos).
+    corp = [t for t, d in per_ticker.items() if d.get("companyfacts") and d.get("present")
+            and cat_of[t] in corp_cats and d.get("data_quality") not in ("no_aplica", "indeterminado")]
     def field_cov(tickers):
         n = len(tickers) or 1
         return {k: round(sum(per_ticker[t]["present"][k] for t in tickers) / n, 3) for k in FIELDS}
     by_cat = {}
     for cat in UNIVERSE:
-        ts = [t for t in UNIVERSE[cat] if per_ticker.get(t, {}).get("present")]
+        # "con fundamentales" = tiene campos Y no fue ruteado a no_aplica (vehículo).
+        ts = [t for t in UNIVERSE[cat] if per_ticker.get(t, {}).get("present")
+              and per_ticker.get(t, {}).get("data_quality") not in ("no_aplica", "indeterminado")]
+        n_no_aplica = sum(1 for t in UNIVERSE[cat] if per_ticker.get(t, {}).get("data_quality") == "no_aplica")
         by_cat[cat] = {"n_con_fundamentales": len(ts), "n_total": len(UNIVERSE[cat]),
+                       "n_no_aplica": n_no_aplica,
                        "cobertura_campos": field_cov(ts) if ts else {}}
     quality_counts = {}
     for d in per_ticker.values():
         q = d.get("data_quality", "sin_companyfacts")
         quality_counts[q] = quality_counts.get(q, 0) + 1
     blocked = {t: d.get("quality_reason") for t, d in per_ticker.items() if d.get("data_quality") in ("bloqueado", "sospechoso")}
+    # Routing por tipo de instrumento (E1): vehículos ruteados a no_aplica, con su SIC (evidencia).
+    no_operativos = {t: {"sic": d.get("sic"), "sic_desc": d.get("sic_desc"),
+                         "instrument_type": d.get("instrument_type"), "categoria": d.get("category")}
+                     for t, d in per_ticker.items() if d.get("data_quality") == "no_aplica"}
+    indeterminados = {t: {"sic": d.get("sic"), "instrument_type": d.get("instrument_type"),
+                          "categoria": d.get("category"), "motivo": d.get("quality_reason")}
+                      for t, d in per_ticker.items() if d.get("data_quality") == "indeterminado"}
+    instrument_class_counts = {}
+    for d in per_ticker.values():
+        ic = d.get("instrument_class")
+        if ic:
+            instrument_class_counts[ic] = instrument_class_counts.get(ic, 0) + 1
 
     return {
         "n_universo": len(all_tickers),
@@ -121,6 +163,9 @@ def run() -> dict:
         "cobertura_campos_corporativos(US+ADR)": field_cov(corp),
         "cobertura_por_categoria": by_cat,
         "estado_calidad_conteo": quality_counts,
+        "clase_instrumento_conteo": instrument_class_counts,
+        "routed_no_aplica(ETF/trust)": no_operativos,
+        "routed_indeterminado(señal ausente/contradictoria)": indeterminados,
         "marcados_sospechoso_o_bloqueado": blocked,
         "por_ticker": per_ticker,
     }

@@ -106,7 +106,7 @@ Cada etapa es segura, compatible con Supabase/Cloudflare, sin tocar A/B/C (309) 
   representativos usando el motor ACTUAL. *Aceptación*: matriz de cobertura por campo y tipo,
   errores materiales detectados, falsos positivos de bloqueo. *Regresión*: V/MU/ASML/TSM como casos.
 - **E1 — Extraer `core/normalize.py` y `core/quality.py`** desde `edgar.py` sin cambiar resultados.
-  *Aceptación*: salidas idénticas en la batería (diff 0) + 200 pruebas verdes.
+  *Aceptación*: salidas idénticas en la batería (diff 0) + 200 pruebas verdes. **✅ HECHO (ver §8).**
 - **E2 — Registro de conectores** con metadatos declarados y merge por calidad.
   *Aceptación*: añadir/retirar un conector no rompe la batería; procedencia trazable.
 - **E3 — Conector XBRL dimensional** (EPS/acciones de Visa y multiclase). *Aceptación*: Visa pasa de
@@ -125,3 +125,58 @@ sumo, semillas verificables de identidad/ADR), y cada campo llega etiquetado con
 - **Micron FY2026**: error del dato de origen (10-K XBRL); correcto sólo desde IR de Micron.
 - **ASML interinos/TTM**: 6-K sin XBRL en EDGAR; IR no estructurado estable → límite declarado.
 - **TSM**: anual stale 2024 + algunos interinos 2025; TTM completo requiere IR no estructurado.
+
+---
+
+## 8. E1 — resultados y cambios intencionales (medidos, no sintéticos)
+
+Qué cambió en el código (sin reescritura):
+- `core/normalize.py`: mapas US-GAAP/IFRS + helpers de período/duración/TTM, **extraídos verbatim**
+  de `edgar.py`. Parser puro, sin pandas ni red. Reutilizable por cualquier conector companyfacts.
+- `core/quality.py`: al saneo por rangos existente se suman (a) `assess_plausibility` (guard de
+  plausibilidad movido), (b) `is_non_operating`/`FUND_TRUST_SIC` (routing por SIC), (c)
+  `classify_field` (estado por campo: verificado/derivado/parcial/bloqueado/no_aplica).
+- `edgar.py`: **orquesta** normalize+quality; `parse_companyfacts` acepta `sic`/`sic_desc` y
+  cortocircuita vehículos a un registro `no_aplica`. Sin SIC → comportamiento idéntico al anterior.
+- `types.py`: campo `instrument_class` (empresa_operativa | etf_o_trust).
+
+Regresión antes(main)/después(fde-e1) sobre la misma batería de 76 instrumentos (CI, solo lectura):
+- **71 instrumentos idénticos** (diff-0 en data_quality, campos presentes, taxonomía, moneda,
+  período, procedencia del EPS y consistencia). **0 regresiones inesperadas.**
+- **Cobertura corporativa idéntica campo por campo** (eps_annual 93.7%, eps_ttm 65.1%, fcf_annual
+  82.5%, fcf_ttm 60.3%, net_debt 69.8%, diluted_shares 95.2%, márgenes/roe sin cambio).
+
+Señal de routing (jerarquía, verificación pre-merge): **`instrument_type` de la capa de identidad
+(`services/identity.py`) es la señal PRIMARIA; el código SIC de la SEC es COMPLEMENTO**, no
+clasificación universal. `classify_instrument` resuelve: (a) identidad vehículo → `etf_o_trust`
+aunque el SIC calle; (b) identidad operativa + SIC de vehículo (contradicción) → `indeterminado`
+sin habilitar métricas; (c) sin identidad → el SIC rescata, y sin ninguna señal → `indeterminado`
+(no se asume operativa). El parser usa un centinela: si el caller no aporta señal, conserva el
+comportamiento legado (operativa) para no romper fixtures.
+
+Cambios INTENCIONALES (documentados por separado, E1 cond. 1):
+1. **Routing de trusts de materias primas a `no_aplica`** — GLD, IAU, SLV, PPLT, PALL. Se rutean
+   por **`instrument_type=commodity_etf`** (señal primaria de identidad), confirmado por **SIC 6221
+   (Commodity Contracts Brokers & Dealers)** como complemento. Antes recibían métricas corporativas
+   espurias (3 bloqueados, 1 sospechoso, 1 "ok"); ahora NO se les calcula EPS/ROE/márgenes/deuda (no
+   tienen significado económico). Las equities con identidad aún `unknown` en la batería (sin ymeta
+   de Yahoo) las clasifica el SIC operativo como complemento. Conteo de calidad:
+   `{ok 60→59, sospechoso 4→3, bloqueado 4→1, +no_aplica 5}`; clase: `empresa_operativa 63, etf_o_trust 5`.
+   El `no_aplica`/`indeterminado` afecta ÚNICAMENTE fundamentales corporativos: precios, históricos,
+   forecast estadístico y métricas de riesgo salen de pipelines separados y quedan intactos
+   (verificado: ningún consumidor de `data_quality` los condiciona).
+2. **MU sigue `bloqueado`** (estado sin cambio) pero la razón se re-redactó para NO imputar la
+   anomalía al emisor ni al 10-K (E1 cond. 5): de "…multiplicador distinto → probable error de
+   origen; verificar 10-K original…" a "…multiplicador distinto; anomalía no resuelta — bloqueado
+   hasta contrastar con documentos financieros oficiales". Queda fuera de cualquier valoración.
+
+Financieras (bancos, V/MA como procesadores de pago, SIC 602x/7389): **sin cambios** — son empresas
+operativas con EPS/ingresos con significado económico; se excluyen del routing a propósito.
+
+Disponibilidad ≠ exactitud (E1 cond. 3): la batería demuestra COBERTURA y funcionamiento a escala;
+`classify_field` marca "verificado" cuando el dato es directo y consistente de forma independiente,
+lo que NO equivale a auditar su cifra exacta. La batería no valida independientemente todas las cifras.
+
+Arquitectura sin parches por empresa (E1 cond. 6): incorporar un conector/instrumento nuevo usa la
+señal de tipo (SIC) y los mapas canónicos; no requiere código específico por ticker. No se avanza a
+E3 (XBRL dimensional de Visa) ni a Fair Value.
