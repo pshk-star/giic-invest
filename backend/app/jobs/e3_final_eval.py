@@ -17,7 +17,7 @@ import sys
 import time
 from datetime import date, datetime
 
-from app.core.normalize import (_at, _best_annual, _best_instant, _ttm_best)
+from app.core.normalize import (_at, _best_annual, _best_instant, _ttm_best, _concept)
 from app.core.quality import field_applies, is_financial_sector
 from app.core.recency import reporting_cadence_days, typical_filing_lag_days, assess_recency
 from app.providers.edgar import parse_companyfacts
@@ -33,11 +33,14 @@ EVAL_DATE = date(2026, 11, 7)
 
 
 def _submissions_recency(cli, cik):
-    """Cadencia de reporte, retardo típico y el reportDate más reciente del emisor (formas periódicas)."""
+    """Del calendario de presentaciones (submissions): retardo típico de publicación y el reportDate
+    (cierre fiscal) MÁS RECIENTE entre formas periódicas → para detectar reportes POSTERIORES. La
+    CADENCIA NO se deriva de aquí (los 6-K agrupan fechas y la distorsionan); se calcula aparte de los
+    períodos fiscales reales. Distingue reportDate (cierre) de filingDate (publicación)."""
     try:
         j = cli.get(f"https://data.sec.gov/submissions/CIK{cik:010d}.json").json()
     except Exception:
-        return None, None, None, None
+        return None, None, None
     rec = j.get("filings", {}).get("recent", {})
     forms = rec.get("form", []); fdates = rec.get("filingDate", []); rdates = rec.get("reportDate", [])
     ends, pairs = [], []
@@ -50,7 +53,6 @@ def _submissions_recency(cli, cik):
             ends.append(rd)
             if fd:
                 pairs.append((rd, fd))
-    cadence = reporting_cadence_days(ends)
     lag = typical_filing_lag_days(pairs)
     latest_report = max(ends) if ends else None
     sic = j.get("sic")
@@ -58,7 +60,19 @@ def _submissions_recency(cli, cik):
         sic = int(sic) if sic not in (None, "") else None
     except (ValueError, TypeError):
         sic = None
-    return cadence, lag, latest_report, sic
+    return lag, latest_report, sic
+
+
+def _fiscal_cadence(facts, tax, M, ccy):
+    """Cadencia REAL del emisor desde los cierres de sus períodos fiscales tagueados (duration facts
+    de utilidad neta): ~91 trimestral, ~182 semestral, ~365 anual. Evita el ruido de fechas de 6-K."""
+    ends = []
+    for n in M["ni"]:
+        for r in _concept(facts, tax, n, ccy):
+            s, e = _parse_date(r.get("start")), _parse_date(r.get("end"))
+            if s and e and 60 <= (e - s).days <= 400:
+                ends.append(e)
+    return reporting_cadence_days(ends)
 
 
 def _present(facts, tax, M, ref, f, field):
@@ -117,7 +131,7 @@ def run() -> dict:
         cik = cikmap.get(t.upper())
         if not cik:
             continue
-        cadence, lag, latest_report, sic = _submissions_recency(cli, cik)
+        lag, latest_report, sic = _submissions_recency(cli, cik)
         time.sleep(0.12)
         try:
             r = cli.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json")
@@ -137,6 +151,7 @@ def run() -> dict:
             continue
         tax, ccy, M = _pick_tax(facts)
         ref = _ref_period(facts, tax, M, ccy)
+        cadence = _fiscal_cadence(facts, tax, M, ccy)
         # Fin del dato REALMENTE reflejado: para TTM rodante es el corte interino; para anual-como-TTM
         # es el cierre anual. NO el ancla de referencia (que suele ser el último anual). Esto evita
         # marcar como "no vigente" a quien ya incorporó su trimestre más reciente.
@@ -149,12 +164,16 @@ def run() -> dict:
         blocked = f.data_quality == "bloqueado"
         states = {}
         for fld in FV_FIELDS:
-            if not field_applies(fld, sic):
-                states[fld] = "no_aplica"
-            elif blocked:
+            present = _present(facts, tax, M, ref, f, fld)
+            # PRESENCIA antes que sector: si el emisor SÍ reporta la métrica, cuenta (aunque sea una
+            # financiera diversificada). Sólo se marca no_aplica una métrica industrial AUSENTE en una
+            # financiera (no es un hueco a rellenar). Bloqueado nunca cuenta como válido.
+            if blocked:
                 states[fld] = "bloqueado"
-            elif _present(facts, tax, M, ref, f, fld):
+            elif present:
                 states[fld] = "vigente" if recency["estado"] == "vigente" else "presente_no_vigente"
+            elif not field_applies(fld, sic):
+                states[fld] = "no_aplica"
             else:
                 states[fld] = "faltante"
         per[t] = {"segmento": _segment(cat_of[t], sic), "sic": sic, "data_quality": f.data_quality,
