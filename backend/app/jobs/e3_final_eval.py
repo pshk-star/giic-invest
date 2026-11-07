@@ -137,9 +137,14 @@ def run() -> dict:
             continue
         tax, ccy, M = _pick_tax(facts)
         ref = _ref_period(facts, tax, M, ccy)
-        period_end = _parse_date(f.as_of) if f.as_of else None
-        later = bool(latest_report and period_end and latest_report > period_end)
-        recency = assess_recency(period_end, EVAL_DATE, cadence_days=cadence, lag_days=lag,
+        # Fin del dato REALMENTE reflejado: para TTM rodante es el corte interino; para anual-como-TTM
+        # es el cierre anual. NO el ancla de referencia (que suele ser el último anual). Esto evita
+        # marcar como "no vigente" a quien ya incorporó su trimestre más reciente.
+        ni_ttm = _ttm_best(facts, tax, M["ni"], ccy)
+        data_end = _parse_date(ni_ttm["end"]) if (ni_ttm and ni_ttm.get("end")) else (_parse_date(f.as_of) if f.as_of else None)
+        # Reporte POSTERIOR no incorporado = un reportDate materialmente más nuevo que el fin del dato.
+        later = bool(latest_report and data_end and (latest_report - data_end).days > 20)
+        recency = assess_recency(data_end, EVAL_DATE, cadence_days=cadence, lag_days=lag,
                                  later_report_exists=later, window=f.eps_ttm_window)
         blocked = f.data_quality == "bloqueado"
         states = {}
@@ -153,7 +158,8 @@ def run() -> dict:
             else:
                 states[fld] = "faltante"
         per[t] = {"segmento": _segment(cat_of[t], sic), "sic": sic, "data_quality": f.data_quality,
-                  "period_end": f.as_of, "window": f.eps_ttm_window, "recency": recency["estado"],
+                  "period_end": f.as_of, "data_end": data_end.isoformat() if data_end else None,
+                  "window": f.eps_ttm_window, "recency": recency["estado"],
                   "recency_razon": recency.get("razon"), "cadencia_dias": cadence,
                   "latest_report": latest_report.isoformat() if latest_report else None,
                   "states": states}
