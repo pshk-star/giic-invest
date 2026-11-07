@@ -8,322 +8,34 @@ Campos derivados de EDGAR: net_margin, roe, rev_growth_yoy, eps_growth_yoy, fcf_
 (si hay precio y acciones), market_cap (precio × acciones), pe_ttm (precio / EPS).
 No disponibles de forma fiable y gratuita aquí: pe_forward, ev_ebitda, roic => None
 (documentado). El parser `parse_companyfacts` es puro y se prueba con fixtures.
+
+E1: la NORMALIZACIÓN (mapas de conceptos + helpers de período/TTM) vive ahora en
+`core/normalize.py` y el motor de CALIDAD (plausibilidad, routing por tipo de instrumento)
+en `core/quality.py`. Este conector los ORQUESTA; no reimplementa su lógica. Los helpers
+públicos (ttm_flow, eps_ttm_from_quarterly_ni, detect_eps_split_mixing) se re-exportan aquí
+para compatibilidad con pruebas y consumidores existentes.
 """
 from __future__ import annotations
 
-from datetime import date, datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
-
+from ..core.normalize import (  # noqa: F401  (re-export para pruebas/consumidores)
+    ANNUAL_FORMS, US_GAAP_MAP, IFRS_MAP,
+    _parse_date, _at, _concept_at, quarterly_3m_points, eps_ttm_from_quarterly_ni,
+    detect_eps_split_mixing, _q3m, _sum_last4_3m, _duration_rows, ttm_flow, _ttm_best,
+    _latest_dur, _annual_points, _instant_points, _concept, _first_concept,
+    _best_annual, _best_instant, _currency_for,
+)
+from ..core.quality import assess_plausibility, is_non_operating
 from ..core.types import ETFHolding, Fundamentals, Instrument, Quote
 from .base import MarketDataProvider
 
 FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
 
-
-def _parse_date(s: str) -> Optional[date]:
-    try:
-        return datetime.strptime(s, "%Y-%m-%d").date()
-    except (ValueError, TypeError):
-        return None
-
-
-# Formularios anuales: 10-K (US), 20-F / 40-F (emisores extranjeros). Más enmiendas (/A).
-ANNUAL_FORMS = ("10-K", "20-F", "40-F")
-
-# Conceptos por taxonomía. us-gaap (emisores domésticos) e ifrs-full (20-F).
-US_GAAP_MAP = {
-    "rev": ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"],
-    "ni": ["NetIncomeLoss", "ProfitLoss", "NetIncomeLossAvailableToCommonStockholdersBasic"],
-    "eps": ["EarningsPerShareDiluted", "EarningsPerShareBasic"],
-    "equity": ["StockholdersEquity"],
-    "ocf": ["NetCashProvidedByUsedInOperatingActivities"],
-    "capex": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets"],
-    "wdil": ["WeightedAverageNumberOfDilutedSharesOutstanding"],
-    "wbas": ["WeightedAverageNumberOfSharesOutstandingBasic", "WeightedAverageNumberOfShareOutstandingBasicAndDiluted"],
-    "gross_profit": ["GrossProfit"],
-    "op_income": ["OperatingIncomeLoss"],
-    "cash": ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsAndShortTermInvestments",
-             "CashAndCashEquivalentsAndShortTermInvestments"],
-    "sti": ["ShortTermInvestments"],
-    "debt_lt": ["LongTermDebtNoncurrent", "LongTermDebt", "LongTermDebtAndCapitalLeaseObligations"],
-    "debt_cur": ["LongTermDebtCurrent", "DebtCurrent", "ShortTermBorrowings",
-                 "LongTermDebtAndCapitalLeaseObligationsCurrent", "ShortTermBorrowingsAndCurrentPortionOfLongTermDebt"],
-    "debt_combined": ["DebtLongtermAndShorttermCombinedAmount"],
-    "capex_alt": ["PaymentsToAcquireProductiveAssets", "PaymentsForProceedsFromProductiveAssets",
-                  "PaymentsToAcquireOtherProductiveAssets", "PaymentsForCapitalImprovements"],
-}
-IFRS_MAP = {
-    "rev": ["RevenueFromContractsWithCustomers", "Revenue"],
-    "ni": ["ProfitLoss", "ProfitLossAttributableToOwnersOfParent"],
-    "eps": ["DilutedEarningsLossPerShare", "BasicEarningsLossPerShare",
-            "DilutedEarningsPerShare", "BasicEarningsPerShare"],
-    "equity": ["Equity", "EquityAttributableToOwnersOfParent"],
-    "ocf": ["CashFlowsFromUsedInOperatingActivities"],
-    "capex": ["PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities"],
-    "wdil": ["WeightedAverageShares", "AdjustedWeightedAverageShares"],
-    "wbas": ["WeightedAverageShares"],
-    "gross_profit": ["GrossProfit"],
-    "op_income": ["ProfitLossFromOperatingActivities", "OperatingIncomeLoss"],
-    "cash": ["CashAndCashEquivalents"],
-    "sti": ["ShorttermInvestments", "CurrentInvestments"],
-    "debt_lt": ["NoncurrentPortionOfNoncurrentBorrowings", "NoncurrentBorrowings", "Borrowings"],
-    "debt_cur": ["CurrentBorrowings", "ShorttermBorrowings"],
-    "debt_combined": ["Borrowings"],
-    "capex_alt": ["PurchaseOfPropertyPlantAndEquipmentIntangibleAssetsOtherThanGoodwillAndInvestmentProperty"],
-}
-
-
-def _at(points: List[Tuple[date, float]], ref: Optional[date], tol_days: int = 20) -> Optional[float]:
-    """Valor cuyo fin coincide con el período de referencia (±tol). Evita MEZCLAR períodos
-    (p. ej. tomar la utilidad neta de 2013 con el EPS de 2025). None si no hay en ese período."""
-    if not points or ref is None:
-        return None
-    best = None
-    for d, v in points:
-        gap = abs((d - ref).days)
-        if gap <= tol_days and (best is None or gap < best[0]):
-            best = (gap, v)
-    return best[1] if best else None
-
-
-def _concept_at(facts, taxonomy, names, unit, ref) -> Tuple[Optional[float], Optional[str]]:
-    """Primer concepto de la lista con valor ANUAL en el período de referencia → (valor, concepto).
-    Permite registrar la PROCEDENCIA exacta de la utilidad neta reportada (no reconstruida)."""
-    for n in names:
-        v = _at(_annual_points(_concept(facts, taxonomy, n, unit)), ref)
-        if v is not None:
-            return v, n
-    return None, None
-
-
-# --- EPS TTM a prueba de splits (Control 2) ---------------------------------------
-# El EPS por acción NO es sumable entre trimestres con bases de acciones distintas (p. ej.
-# antes/después de un split 10:1). La forma correcta y split-INVARIANTE es sumar la UTILIDAD
-# NETA trimestral (montos absolutos, invariantes al split) de 4 trimestres de 3 MESES (no YTD)
-# y dividir por las acciones diluidas VIGENTES. Así el split no contamina el resultado.
-def quarterly_3m_points(unit_rows: list) -> List[Tuple[date, date, float, date]]:
-    """Puntos TRIMESTRALES de 3 meses (start,end,val,filed); filed más reciente gana por período."""
-    out = {}
-    for r in unit_rows or []:
-        s, e, v = _parse_date(r.get("start")), _parse_date(r.get("end")), r.get("val")
-        if v is None or not s or not e:
-            continue
-        if 80 <= (e - s).days <= 100:
-            filed = _parse_date(r.get("filed")) or date.min
-            if e not in out or filed >= out[e][3]:
-                out[e] = (s, e, float(v), filed)
-    return [out[k][:3] + (out[k][3],) for k in sorted(out)]
-
-
-def eps_ttm_from_quarterly_ni(ni_3m_points: List[Tuple[date, date, float, date]],
-                              diluted_shares: Optional[float], n: int = 4) -> Optional[dict]:
-    """EPS TTM split-invariante = Σ(utilidad neta de los últimos 4 trimestres de 3m) / acciones
-    diluidas vigentes. Exige 4 trimestres CONSECUTIVOS y sin solapamiento (no YTD). None si faltan."""
-    if not ni_3m_points or not diluted_shares or diluted_shares <= 0 or len(ni_3m_points) < n:
-        return None
-    last = ni_3m_points[-n:]
-    # sin solapamiento: cada inicio ~ fin del anterior (trimestres contiguos)
-    for i in range(1, len(last)):
-        gap = (last[i][0] - last[i - 1][1]).days
-        if gap > 10:            # hueco entre trimestres -> serie incompleta
-            return None
-    ni_ttm = sum(p[2] for p in last)
-    return {"eps_ttm": ni_ttm / diluted_shares, "ni_ttm": ni_ttm,
-            "start": last[0][0].isoformat(), "end": last[-1][1].isoformat(), "n_quarters": n}
-
-
-def detect_eps_split_mixing(eps_quarterly_points: List[Tuple[date, float]],
-                            split_dates: List[date]) -> bool:
-    """True si una serie de EPS POR ACCIÓN trimestral cruza una fecha de split (bases no homogéneas).
-    Señala que NO se deben sumar esos EPS por acción directamente."""
-    if not eps_quarterly_points or not split_dates:
-        return False
-    ends = [d for d, _ in eps_quarterly_points]
-    lo, hi = min(ends), max(ends)
-    return any(lo < sd <= hi for sd in split_dates)
-
-
-def _q3m(facts, taxonomy, names, unit) -> List[Tuple[date, date, float, date]]:
-    """Mejor serie TRIMESTRAL de 3 meses (variante de concepto con más puntos recientes)."""
-    best: List[Tuple[date, date, float, date]] = []
-    for n in names:
-        pts = quarterly_3m_points(_concept(facts, taxonomy, n, unit))
-        if pts and (not best or pts[-1][1] > best[-1][1] or len(pts) > len(best)):
-            best = pts
-    return best
-
-
-def _sum_last4_3m(qpts: List[Tuple[date, date, float, date]]) -> Optional[Tuple[float, date, date]]:
-    """Suma de 4 trimestres de 3m CONSECUTIVOS (sin YTD, sin huecos). None si no hay 4 contiguos."""
-    if not qpts or len(qpts) < 4:
-        return None
-    last = qpts[-4:]
-    for i in range(1, 4):
-        if (last[i][0] - last[i - 1][1]).days > 10:      # hueco entre trimestres
-            return None
-    return sum(p[2] for p in last), last[0][0], last[-1][1]
-
-
-def _duration_rows(unit_rows: list) -> List[Tuple[date, date, float, int, date]]:
-    """(start,end,val,días,filed) de hechos de DURACIÓN, con filed más reciente por (start,end)."""
-    out = {}
-    for r in unit_rows or []:
-        s, e, v = _parse_date(r.get("start")), _parse_date(r.get("end")), r.get("val")
-        if v is None or not s or not e:
-            continue
-        days = (e - s).days
-        if days < 60:
-            continue
-        filed = _parse_date(r.get("filed")) or date.min
-        k = (s, e)
-        if k not in out or filed >= out[k][4]:
-            out[k] = (s, e, float(v), days, filed)
-    return sorted(out.values(), key=lambda x: x[1])
-
-
-def ttm_flow(unit_rows: list) -> Optional[dict]:
-    """TTM de un FLUJO (utilidad, EPS por acción, OCF, CAPEX) por la identidad rodante:
-    TTM = acumulado del ejercicio en curso + ejercicio anterior completo − acumulado del año
-    anterior al mismo corte. Usa YTD + anual (etiquetas fiables), NO exige 4 trimestres sueltos,
-    y es consistente ante splits porque usa los COMPARATIVOS REEXPRESADOS (filed más reciente).
-    Si el último dato es el anual, TTM = anual (equivale al ejercicio)."""
-    dur = _duration_rows(unit_rows)
-    if not dur:
-        return None
-    annual = [(s, e, v) for (s, e, v, d, _f) in dur if 330 <= d <= 400]
-    interim = [(s, e, v, d) for (s, e, v, d, _f) in dur if 60 <= d <= 300]
-    if not annual:
-        return None
-    latest_annual = max(annual, key=lambda x: x[1])
-    latest_interim = max(interim, key=lambda x: x[1]) if interim else None
-    # Sin interino más reciente que el anual → TTM = anual (ejercicio completo).
-    if latest_interim is None or latest_interim[1] <= latest_annual[1]:
-        return {"ttm": latest_annual[2], "end": latest_annual[1].isoformat(), "window": "anual"}
-    s, e, y, L = latest_interim
-    import datetime as _dt
-    prior_annual = [a for a in annual if abs((a[1] - (s - _dt.timedelta(days=1))).days) <= 45]
-    prior_ytd = [it for it in interim if abs((it[1] - (e - _dt.timedelta(days=365))).days) <= 25
-                 and abs(it[3] - L) <= 25]
-    if prior_annual and prior_ytd:
-        ttm = y + prior_annual[0][2] - prior_ytd[0][2]
-        return {"ttm": ttm, "end": e.isoformat(), "window": f"YTD({L}d)+anual−YTD_prev"}
-    # Sin comparativos para cerrar la identidad: no se fabrica un TTM parcial.
-    return {"ttm": latest_annual[2], "end": latest_annual[1].isoformat(), "window": "anual(sin_comparativos_TTM)"}
-
-
-def _ttm_best(facts, taxonomy, names, unit) -> Optional[dict]:
-    """TTM del mejor concepto-variante disponible (el de corte más reciente)."""
-    best = None
-    for n in names:
-        t = ttm_flow(_concept(facts, taxonomy, n, unit))
-        if t and (best is None or t["end"] > best["end"]):
-            best = t
-    return best
-
-
-def _latest_dur(facts, taxonomy, names, unit) -> Optional[Tuple[date, float]]:
-    """Valor de DURACIÓN (p. ej. acciones ponderadas diluidas) con la fecha de corte más reciente,
-    entre variantes de concepto. Sirve de denominador diluido CONSISTENTE y reciente para EPS TTM."""
-    best = None
-    for n in names:
-        for (s, e, v, _d, _f) in _duration_rows(_concept(facts, taxonomy, n, unit)):
-            if best is None or e > best[0]:
-                best = (e, v)
-    return best
 # ADR: 1 ADR = N acciones ordinarias (hechos verificables, no estimaciones).
 ADR_RATIO = {"TSM": 5.0, "ASML": 1.0}
-
-
-def _annual_points(unit_rows: list, forms: Tuple[str, ...] = ANNUAL_FORMS) -> List[Tuple[date, float]]:
-    """Valores anuales (duración ~365d, formulario anual) ordenados por fecha fin.
-
-    Dedup por fecha fin con GANA EL DE PRESENTACIÓN MÁS RECIENTE (filed), para que un
-    valor REEXPRESADO (p. ej. EPS post-split de Netflix) sustituya al original. Si no hay
-    filed, gana el último en orden de aparición.
-    """
-    out = {}  # end_date -> (val, filed)
-    for r in unit_rows or []:
-        start, end, val, form = r.get("start"), r.get("end"), r.get("val"), str(r.get("form", ""))
-        if val is None or not start or not end or not any(form.startswith(p) for p in forms):
-            continue
-        d0, d1 = _parse_date(start), _parse_date(end)
-        if not d0 or not d1:
-            continue
-        if 330 <= (d1 - d0).days <= 400:        # ~1 año fiscal
-            filed = _parse_date(r.get("filed")) or date.min
-            if d1 not in out or filed >= out[d1][1]:
-                out[d1] = (float(val), filed)
-    return sorted((d, v) for d, (v, _f) in out.items())
-
-
-def _instant_points(unit_rows: list, forms: Tuple[str, ...] = ANNUAL_FORMS) -> List[Tuple[date, float]]:
-    """Valores de balance (instantáneos) de formularios anuales; filed más reciente gana."""
-    out = {}  # end_date -> (val, filed)
-    for r in unit_rows or []:
-        end, val, form = r.get("end"), r.get("val"), str(r.get("form", ""))
-        if val is None or not end or not any(form.startswith(p) for p in forms):
-            continue
-        d = _parse_date(end)
-        if not d:
-            continue
-        filed = _parse_date(r.get("filed")) or date.min
-        if d not in out or filed >= out[d][1]:
-            out[d] = (float(val), filed)
-    return sorted((d, v) for d, (v, _f) in out.items())
-
-
-def _concept(facts: dict, taxonomy: str, name: str, unit: str) -> list:
-    try:
-        return facts["facts"][taxonomy][name]["units"][unit]
-    except (KeyError, TypeError):
-        return []
-
-
-def _first_concept(facts, taxonomy, names, unit):
-    for n in names:
-        rows = _concept(facts, taxonomy, n, unit)
-        if rows:
-            return rows
-    return []
-
-
-def _best_annual(facts, taxonomy, names, unit) -> List[Tuple[date, float]]:
-    """Entre variantes de concepto, usa la que tenga datos ANUALES más RECIENTES.
-
-    Evita series obsoletas cuando el emisor migró de etiqueta (p. ej. META:
-    'Revenues' hasta 2017 vs 'RevenueFromContractWithCustomerExcludingAssessedTax').
-    """
-    best: List[Tuple[date, float]] = []
-    for n in names:
-        pts = _annual_points(_concept(facts, taxonomy, n, unit))
-        if pts and (not best or pts[-1][0] > best[-1][0]):
-            best = pts
-    return best
-
-
-def _best_instant(facts, taxonomy, names, unit) -> List[Tuple[date, float]]:
-    best: List[Tuple[date, float]] = []
-    for n in names:
-        pts = _instant_points(_concept(facts, taxonomy, n, unit))
-        if pts and (not best or pts[-1][0] > best[-1][0]):
-            best = pts
-    return best
-
-
-def _currency_for(facts, taxonomy, names) -> Optional[str]:
-    """Divisa de reporte: primera unidad monetaria (3 letras, sin '/') con datos."""
-    try:
-        node = facts["facts"][taxonomy]
-    except (KeyError, TypeError):
-        return None
-    for n in names:
-        units = (node.get(n, {}) or {}).get("units", {}) or {}
-        for u in units:
-            if "/" not in u and len(u) == 3 and u.isalpha():
-                return u.upper()
-    return None
 
 
 def parse_companyfacts(facts: dict, ticker: str,
@@ -331,7 +43,9 @@ def parse_companyfacts(facts: dict, ticker: str,
                        shares: Optional[float] = None,
                        fx_map: Optional[Dict[str, float]] = None,
                        adr_ratio: Optional[float] = None,
-                       fallback: Optional[dict] = None) -> Fundamentals:
+                       fallback: Optional[dict] = None,
+                       sic: Optional[int] = None,
+                       sic_desc: Optional[str] = None) -> Fundamentals:
     """Construye Fundamentals desde company facts de EDGAR. Campos ausentes => None.
 
     Cubre us-gaap (USD) e ifrs-full (emisores 20-F; divisa detectada, p. ej. EUR/TWD).
@@ -340,7 +54,28 @@ def parse_companyfacts(facts: dict, ticker: str,
       se convierten con `fx_map` (USD por 1 unidad de divisa) y el `adr_ratio` (acciones
       ordinarias por ADR). Sin FX disponible para una divisa != USD => quedan en None
       (no se fabrican).
+
+    Routing por tipo de instrumento (E1): si el SIC identifica un vehículo (ETF/trust/fondo),
+    NO se calculan métricas corporativas (no tienen significado económico) y se devuelve un
+    registro `no_aplica` con el instrumento clasificado. `sic`/`sic_desc` son opcionales: sin
+    ellos el comportamiento es IDÉNTICO al anterior (empresa operativa por defecto).
     """
+    # --- Routing por tipo de instrumento (señal universal por SIC) ---
+    if is_non_operating(sic, sic_desc):
+        return Fundamentals(
+            ticker=ticker,
+            currency=None,
+            taxonomy=None,
+            data_quality="no_aplica",
+            quality_reason=("instrumento no operativo (ETF/trust/fondo"
+                            + (f", SIC {sic}" if sic else "")
+                            + "): las métricas corporativas (EPS, ROE, márgenes, deuda neta) no "
+                              "tienen significado económico; analizar como vehículo + subyacente, "
+                              "no con fundamentales de empresa"),
+            instrument_class="etf_o_trust",
+            is_sample=False,
+        )
+
     fx_map = fx_map or {}
 
     # Taxonomía + DIVISA DE REPORTE, data-driven. Muchos emisores extranjeros usan
@@ -425,25 +160,12 @@ def parse_companyfacts(facts: dict, ticker: str,
     net_margin = (ni_l / rev_l) if (ni_l is not None and rev_l) else None
     roe = (ni_l / eq_l) if (ni_l is not None and eq_l) else None
 
-    # GUARD DE PLAUSIBILIDAD (Control 2): detecta magnitudes imposibles (p. ej. MU FY2026 con NI
-    # mayor que los ingresos). Marca el dato y evita que se use a ciegas en valoración.
+    # GUARD DE PLAUSIBILIDAD (motor de calidad, core/quality.py): detecta magnitudes imposibles
+    # (p. ej. MU FY2026 con NI mayor que ingresos) y saltos interanuales implausibles. Marca el
+    # dato para que no se use a ciegas en valoración.
     eg_raw = yoy(eps)
     rg_raw = yoy(rev)
-    data_quality, quality_reason = "ok", None
-    if ni_l is not None and rev_l and ni_l > rev_l:
-        data_quality = "bloqueado"
-        quality_reason = f"utilidad neta ({ni_l:.4g}) > ingresos ({rev_l:.4g}) — magnitud imposible; verificar documento original"
-    elif eg_raw is not None and abs(eg_raw) > 3.0:
-        data_quality = "bloqueado"
-        quality_reason = (f"salto de EPS interanual {eg_raw*100:.0f}% implausible"
-                          + (f" (ingresos {rg_raw*100:.0f}% con multiplicador distinto → probable error de origen)" if rg_raw is not None else "")
-                          + "; verificar 10-K original antes de usar")
-    elif net_margin is not None and net_margin > 0.6:
-        data_quality = "sospechoso"
-        quality_reason = f"margen neto {net_margin*100:.0f}% inusualmente alto; posible dato extraordinario o erróneo (verificar sector)"
-    elif eg_raw is not None and abs(eg_raw) > 1.5:
-        data_quality = "sospechoso"
-        quality_reason = f"salto de EPS interanual {eg_raw*100:.0f}% — posible ciclicidad extrema o error; verificar"
+    data_quality, quality_reason = assess_plausibility(ni_l, rev_l, eg_raw, rg_raw)
 
     # Acciones vigentes para market cap: portada si es reciente; si es obsoleta (>400d que la
     # referencia) se usa el promedio diluido reciente como proxy (marcado); si no, lo que haya.
@@ -595,6 +317,7 @@ def parse_companyfacts(facts: dict, ticker: str,
         eps_ttm_pershare_check=eps_ttm_pershare_check,
         data_quality=data_quality,
         quality_reason=quality_reason,
+        instrument_class="empresa_operativa",
         pe_forward=None,            # no disponible gratis en EDGAR
         ev_ebitda=None,             # requiere deuda/caja + EBITDA fiables
         fcf_yield=fcf_yield,
@@ -652,6 +375,23 @@ class EDGARProvider(MarketDataProvider):
             return None
         return r.json()
 
+    def _sic(self, ticker: str):
+        """(sic, sicDescription) del emisor desde submissions; (None, None) si no disponible.
+        Señal UNIVERSAL para el routing por tipo de instrumento (no por ticker)."""
+        self._load_ciks()
+        cik = self._cik.get(ticker.upper())
+        if cik is None:
+            return None, None
+        try:
+            r = self._fetch(SUBMISSIONS_URL.format(cik=cik))
+            if r.status_code != 200:
+                return None, None
+            j = r.json()
+            sic = j.get("sic")
+            return (int(sic) if sic not in (None, "") else None), j.get("sicDescription")
+        except Exception:
+            return None, None
+
     def get_fundamentals(self, tickers: List[str], prices: Optional[Dict[str, float]] = None,
                          fx_map: Optional[Dict[str, float]] = None,
                          fallback_stats: Optional[Dict[str, dict]] = None) -> Dict[str, Fundamentals]:
@@ -663,9 +403,11 @@ class EDGARProvider(MarketDataProvider):
             facts = self._facts(t)
             if facts is None:
                 continue
+            sic, sic_desc = self._sic(t)
             out[t] = parse_companyfacts(facts, t, price=prices.get(t), fx_map=fx_map,
                                         adr_ratio=ADR_RATIO.get(t.upper(), 1.0),
-                                        fallback=fallback_stats.get(t.upper()) or fallback_stats.get(t))
+                                        fallback=fallback_stats.get(t.upper()) or fallback_stats.get(t),
+                                        sic=sic, sic_desc=sic_desc)
         return out
 
     # EDGAR no da precios/FX/holdings

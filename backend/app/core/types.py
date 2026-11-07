@@ -83,8 +83,9 @@ class Fundamentals:
     operating_margin: Optional[float] = None  # resultado operativo / ingresos
     eps_ttm_denominator: Optional[float] = None  # acciones diluidas usadas en EPS_TTM (y su período)
     eps_ttm_pershare_check: Optional[float] = None  # EPS_TTM(NI/acciones) / EPS_TTM(identidad por-acción) ≈1
-    data_quality: str = "ok"              # ok | sospechoso | bloqueado (guard de plausibilidad)
-    quality_reason: Optional[str] = None  # por qué se marcó sospechoso/bloqueado
+    data_quality: str = "ok"              # ok | sospechoso | bloqueado | no_aplica (guard/routing)
+    quality_reason: Optional[str] = None  # por qué se marcó sospechoso/bloqueado/no_aplica
+    instrument_class: Optional[str] = None  # empresa_operativa | etf_o_trust (routing por SIC); None=sin clasificar
     pe_forward: Optional[float] = None
     ev_ebitda: Optional[float] = None
     fcf_yield: Optional[float] = None     # free cash flow / market cap
