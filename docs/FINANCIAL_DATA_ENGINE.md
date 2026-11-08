@@ -442,3 +442,55 @@ Nuevo `kind = "interim_fundamentals"` con adaptadores registrados y **gate de co
 3. **P3 `vendor_api_interim`** — ranura de API externa tras el gate de costo (autorización explícita).
 Exactitud sobre cobertura: todo interino recuperado se valida (reconciliación EPS×acciones≈NI,
 coherencia moneda/período) antes de marcarse mejor que `parcial`. Sin Fair Value en E3.4.
+
+---
+
+## 15. E3.4 — evaluación de compra de API profesional (investigación; sin contratar)
+
+Alternativa a construir extractores propios: comprar fundamentales normalizados. Evaluados EODHD,
+FMP, Finnhub, Financial Datasets. **Importante:** no fue posible verificar cobertura EN VIVO (los
+endpoints de las APIs no están en el allowlist y no hay credenciales bajo USD 0). Toda la cobertura
+abajo es **documentada**, no comprobada empíricamente — ver protocolo de verificación §15.3.
+
+### 15.1 Matriz comparativa
+| Criterio | **EODHD** | **FMP** | **Finnhub** | **Financial Datasets** |
+|---|---|---|---|---|
+| Plan con intl anual+trimestral | Fundamentals Data Feed **$59.99/mo** ($49.99 anual) | **Ultimate $99/mo** anual ($139 lista mensual) | **All-In-One $3,500/mo** (único self-serve global) | Build **$200/mo** |
+| Cobertura 9 prioritarios (ASML/TSM/SAP/NVO/AZN/BABA/V/MA/MU) | Documentada: 70+ exchanges (Amsterdam/Taiwan/XETRA/Copenhague/LSE/HKEX) + US | Documentada: global (solo Ultimate); la propia guía dice "probar, no asumir" | Global solo en All-In-One | **NO** EU/Taiwan/China; solo US + UK/Francia (anual) → falla prioridad |
+| Campos (rev/NI/EPS/dil.shares/OCF/CAPEX/FCF/cash/deuda) | **Todos** (lista confirmada) | 3 estados → todos | 3 estados → todos | US sí; intl no |
+| Trimestral + histórico | Sí, no-US desde 2000; **date + filing_date por estado** | 30+ años; TTM solo Ultimate | Sí (intl en enterprise) | US trimestral; intl anual |
+| Moneda / ADR | moneda por estado (local; confirmar); ADR subyacente | a menudo normaliza a USD (ADR opaco) | reporte global | US |
+| Calidad / actualidad | aceptable; disclaimer "no necesariamente exacta"; filing_date ayuda | reseñas señalan inexactitudes; amplia pero variable | buena; intl tras enterprise | US alta (SEC); intl mínima |
+| Límites API | 100k/día, 1k/min; fundamentals=10 llamadas | Ultimate 3,000/min | 300/min fundamentals | 100k/mes (Build) |
+| Licencia / display | B2B/comercial en página aparte (revisar ToS) | **display/redistribución exige acuerdo de licencia** | comercial en All-In-One | redistribución solo en Scale $2,000/mo |
+| Compat. E2/E3 | REST JSON → adaptador `vendor_api`; filing_date mapea a `recency`; reconcilia vs EDGAR | igual; normalización USD a vigilar | igual | igual pero cobertura insuficiente |
+
+### 15.2 Lectura y recomendación
+- **Finnhub**: descartado por costo — el único self-serve con fundamentales globales es $3,500/mo.
+- **Financial Datasets**: descartado por cobertura — no cubre ASML/TSM/SAP/NVO/BABA (solo US+UK/FR).
+  Su fortaleza (US derivado de SEC) ya la tenemos gratis con EDGAR.
+- **FMP Ultimate ($99/mo)**: cubre global y trimestral (documentado), pero exige acuerdo de licencia
+  para mostrar datos y arrastra dudas de exactitud; cobertura por ticker sin verificar.
+- **EODHD Fundamentals Data Feed ($59.99/mo)**: mejor ajuste — todos los campos FV, trimestral,
+  **date + filing_date** (encaja directo con la capa de actualidad E3), 70+ exchanges que incluyen
+  todos nuestros mercados prioritarios, el más barato.
+
+**Recomendación: principal EODHD; alternativa FMP Ultimate.** EDGAR se conserva como fuente oficial
+INDEPENDIENTE de contraste (reconciliación EPS×acciones≈NI; el proveedor entra como `aggregator`,
+nunca sobrescribe el anual `verificado` de EDGAR; rellena interinos/internacional).
+
+### 15.3 Protocolo de verificación (antes de comprar; con clave gratuita = sigue USD 0)
+Documentado ≠ comprobado. Antes de contratar, verificar empíricamente con la prueba/clave gratuita:
+1. Pedir income/balance/cashflow TRIMESTRAL de los 9 prioritarios; confirmar que devuelven datos
+   (no vacíos) y los 9 campos FV.
+2. Confirmar moneda de reporte (local vs USD) y manejo de ADR (EPS por acción ordinaria vs por ADR).
+3. Contrastar el ÚLTIMO anual del proveedor contra EDGAR (debe cuadrar) — descarta errores de escala.
+4. Medir actualidad: ¿tienen el trimestre 2026 que falta en EDGAR para ASML/TSM/SAP?
+5. Revisar la licencia de display para uso en GIIC.
+Solo si pasa 1–5 para la mayoría de los 9, conviene el plan de pago.
+
+### 15.4 Compatibilidad E2/E3 (sin implementar)
+Cualquiera entra como adaptador `vendor_api_fundamentals` en el registro E2 con `cost_tier=COMMERCIAL`
+(apagado hasta autorización), prioridad por debajo de EDGAR. `filing_date`/fecha de período →
+`core/recency`; guard de plausibilidad y `classify_field` aplican; el merge por calidad mantiene a
+EDGAR como ancla oficial y usa el proveedor para interinos/internacional. Sin cambios al núcleo.
