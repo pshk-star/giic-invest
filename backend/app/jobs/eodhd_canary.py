@@ -62,9 +62,11 @@ def run(commit: bool = False, tickers=None) -> dict:
     eval_date = date.today()
 
     # 1) RESPALDO de los payloads actuales (los que existan).
+    # fundamentals se indexa por ticker (sin columna 'id'): se filtra por ticker y se ordena por ticker.
+    read_params = {"order": "ticker", "ticker": f"in.({','.join(tickers)})"}
     existing = {}
     try:
-        rows = writer.select_rows("fundamentals", select="ticker,payload")
+        rows = writer.select_rows("fundamentals", select="ticker,payload", params=read_params)
         existing = {r["ticker"].upper(): r.get("payload") for r in rows if r.get("ticker", "").upper() in set(tickers)}
     except Exception as e:
         return {"error": f"no se pudo leer fundamentals para respaldo: {type(e).__name__}: {str(e)[:80]}"}
@@ -123,7 +125,7 @@ def run(commit: bool = False, tickers=None) -> dict:
             writer.upsert("fundamentals", safe, on_conflict="ticker")
             report["escritos"] = [w["ticker"] for w in safe]
             # Reverificación post-escritura.
-            rows = writer.select_rows("fundamentals", select="ticker,payload")
+            rows = writer.select_rows("fundamentals", select="ticker,payload", params=read_params)
             post = {r["ticker"].upper(): r.get("payload") for r in rows if r.get("ticker", "").upper() in set(tickers)}
             report["post_verificacion"] = {
                 t: {"tiene_enrichment": "enrichment" in (post.get(t) or {}),
