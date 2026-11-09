@@ -17,6 +17,7 @@ para compatibilidad con pruebas y consumidores existentes.
 """
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Dict, List, Optional
 
@@ -444,19 +445,30 @@ class EDGARProvider(MarketDataProvider):
             return None
         return j
 
+    def _cik_from_filings(self, ticker: str) -> Optional[int]:
+        """Fallback UNIVERSAL ticker→CIK por el filer con 10-K reales (browse-edgar ?ticker=).
+        company_tickers.json puede apuntar a una entidad sin series anuales (XOM → 2115436, una
+        entidad sin datos; el 10-K de Exxon está bajo 34088). Sin lógica por ticker."""
+        try:
+            r = self._fetch("https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
+                            f"&ticker={ticker}&type=10-K&count=1&output=atom")
+            if r.status_code != 200:
+                return None
+            m = re.search(r"<cik>\s*(\d+)\s*</cik>", r.text or "")
+            return int(m.group(1)) if m else None
+        except Exception:
+            return None
+
     def _facts(self, ticker: str) -> Optional[dict]:
-        """Resuelve ticker→CIK y devuelve companyfacts. Una sigla puede mapear a varias
-        entidades en company_tickers.json (p. ej. XOM → Exxon 34088 y una CIK reciente sin
-        datos); en ese caso se elige la candidata con series oficiales anuales reales, con
-        fallback a la primera con hechos us-gaap/ifrs. La CIK elegida queda cacheada para
-        que `_sic` y los consumidores de `self._cik` usen la entidad correcta."""
+        """Resuelve ticker→CIK y devuelve companyfacts, priorizando la entidad con DATOS oficiales
+        reales. (1) Candidatas de company_tickers.json: se elige la que tiene serie anual de
+        ingresos/beneficio (una sigla puede colisionar con una entidad homónima vacía). (2) Si
+        ninguna candidata tiene serie anual, fallback al filer con 10-K reales (browse-edgar) —
+        cubre el caso XOM, donde tickers.json apunta a 2115436 (sin datos) y el 10-K está bajo
+        34088. La CIK elegida queda cacheada para `_sic` y los consumidores de `self._cik`."""
         self._load_ciks()
         key = ticker.upper()
-        if key in self._cik:                 # ya resuelta (sin colisión o colisión previa)
-            return self._facts_for(self._cik[key])
-        cands = self._cik_cands.get(key)
-        if not cands:
-            return None
+        cands = [self._cik[key]] if key in self._cik else (self._cik_cands.get(key) or [])
         chosen = chosen_facts = fb = fb_facts = None
         for c in cands:
             j = self._facts_for(c)
@@ -464,14 +476,20 @@ class EDGARProvider(MarketDataProvider):
                 continue
             if fb is None:
                 fb, fb_facts = c, j
-            if _has_annual_core(j):          # criterio material: existe dato oficial anual
+            if _has_annual_core(j):              # criterio material: existe dato oficial anual
                 chosen, chosen_facts = c, j
                 break
+        if chosen is None:                       # ninguna candidata con serie anual → filer real
+            alt = self._cik_from_filings(ticker)
+            if alt and alt not in cands:
+                j = self._facts_for(alt)
+                if j is not None and _has_annual_core(j):
+                    chosen, chosen_facts = alt, j
         if chosen is None:
-            chosen, chosen_facts = fb, fb_facts
+            chosen, chosen_facts = fb, fb_facts  # último recurso: lo que haya (parcial)
         if chosen is None:
             return None
-        self._cik[key] = chosen
+        self._cik[key] = chosen                  # cachea la entidad corregida
         return chosen_facts
 
     def _sic(self, ticker: str):

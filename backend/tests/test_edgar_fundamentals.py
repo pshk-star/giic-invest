@@ -361,3 +361,38 @@ def test_facts_resuelve_colision_ticker_cik_elige_emisor_con_datos():
     facts = prov._facts("XOM")
     assert facts is facts_real                       # eligió el emisor real, no la 'última gana'
     assert prov._cik["XOM"] == REAL_CIK              # CIK corregida y cacheada (la usan _sic/edgar_pit)
+
+
+def test_facts_fallback_browse_edgar_cuando_tickers_json_apunta_a_entidad_vacia():
+    """XOM real: tickers.json mapea XOM→2115436 (sin serie anual); el filer con 10-K es 34088."""
+    from app.providers.edgar import EDGARProvider
+    EMPTY_CIK, REAL_CIK = 2115436, 34088
+    tickers_json = {"0": {"cik_str": EMPTY_CIK, "ticker": "XOM", "title": "Entidad sin datos"}}
+    facts_empty = {"facts": {"us-gaap": {"NetIncomeLoss": {"units": {"USD": [
+        {"start": "2024-07-01", "end": "2024-09-30", "val": 5, "form": "10-Q"}]}}}}}
+    facts_real = {"entityName": "Exxon Mobil Corporation", "facts": {"us-gaap": {
+        "Revenues": {"units": _annual("USD", [(2024, 340000), (2025, 345000)], "10-K")},
+        "NetIncomeLoss": {"units": _annual("USD", [(2024, 33000), (2025, 34000)], "10-K")}}}}
+    atom = f"<feed><company-info><cik>{REAL_CIK}</cik></company-info></feed>"
+
+    class _Resp:
+        def __init__(self, code, payload=None, text=""): self.status_code = code; self._p = payload; self.text = text
+        def json(self): return self._p
+        def raise_for_status(self):
+            if self.status_code != 200: raise RuntimeError(self.status_code)
+
+    class _Client:
+        def get(self, url):
+            if "company_tickers" in url: return _Resp(200, tickers_json)
+            if "browse-edgar" in url: return _Resp(200, text=atom)
+            if f"CIK{REAL_CIK:010d}" in url: return _Resp(200, facts_real)
+            if f"CIK{EMPTY_CIK:010d}" in url: return _Resp(200, facts_empty)
+            return _Resp(404, {})
+
+    prov = EDGARProvider.__new__(EDGARProvider)
+    prov.retries = 1
+    prov._cik, prov._cik_cands = {}, {}
+    prov._client = _Client()
+    facts = prov._facts("XOM")
+    assert facts is facts_real                      # usó el filer real 34088, no la entidad vacía
+    assert prov._cik["XOM"] == REAL_CIK             # CIK corregida y cacheada

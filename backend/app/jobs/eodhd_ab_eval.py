@@ -113,6 +113,25 @@ def run() -> dict:
                 cik, facts = fallback
         if facts is None:
             continue
+        # Fallback de IDENTIFICACIÓN (mismo criterio que EDGARProvider): si la entidad resuelta por
+        # company_tickers.json no tiene serie anual, usar el filer con 10-K reales (browse-edgar).
+        # Corrige XOM (tickers.json → 2115436 sin datos; el 10-K de Exxon está bajo 34088).
+        from app.providers.edgar import _has_annual_core
+        cik_tickersjson = cik
+        cik_corregida = False
+        if not _has_annual_core(facts):
+            try:
+                ae = cli.get("https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
+                             f"&ticker={t}&type=10-K&count=1&output=atom")
+                mm = re.search(r"<cik>\s*(\d+)\s*</cik>", ae.text or "")
+                alt = int(mm.group(1)) if mm else None
+                if alt and alt != cik:
+                    jj = _fetch_facts(cli, alt)
+                    if jj is not None and _has_annual_core(jj):
+                        facts, cik, cik_corregida = jj, alt, True
+                time.sleep(0.12)
+            except Exception:
+                pass
         lag, latest_report, sic = _submissions_recency(cli, cik)
         time.sleep(0.12)
         itype = None
@@ -135,9 +154,10 @@ def run() -> dict:
                       "ultimo_net_income": (max(series["net_income"]) if series["net_income"] else None),
                       "n_usgaap_concepts": len((facts.get("facts", {}) or {}).get("us-gaap", {})),
                       "has_NetIncomeLoss": "NetIncomeLoss" in (facts.get("facts", {}) or {}).get("us-gaap", {}),
-                      "cik": cik, "cik_candidatas": cik_cands.get(t.upper(), [])}
-        # Si la serie de ingresos quedó vacía en un filer us-gaap/USD, probar companyconcept (endpoint
-        # distinto) para distinguir companyfacts PARCIAL (dato existe allí) de ausencia real.
+                      "cik": cik, "cik_tickersjson": cik_tickersjson, "cik_corregida": cik_corregida,
+                      "cik_candidatas": cik_cands.get(t.upper(), [])}
+        # Si tras el fallback de identificación la serie sigue vacía (us-gaap/USD), probar
+        # companyconcept para distinguir companyfacts PARCIAL de ausencia real (cobertura).
         if not series["revenue"] and tax == "us-gaap":
             try:
                 cc = cli.get(f"https://data.sec.gov/api/xbrl/companyconcept/CIK{cik:010d}/us-gaap/NetIncomeLoss.json")
@@ -145,36 +165,9 @@ def run() -> dict:
                     rows = [r for r in cc.json().get("units", {}).get("USD", [])
                             if str(r.get("form", "")).startswith("10-K") and r.get("start")]
                     edgar_diag["companyconcept_NI_ultimo"] = max((r["end"] for r in rows), default=None)
-                    edgar_diag["companyconcept_NI_n"] = len(rows)
-                else:
-                    edgar_diag["companyconcept_NI_ultimo"] = f"HTTP {cc.status_code}"
                 time.sleep(0.12)
             except Exception as e:
                 edgar_diag["companyconcept_NI_ultimo"] = type(e).__name__
-        # Diagnóstico de identificación: si la serie EDGAR quedó vacía, ¿el ticker resuelve a OTRA
-        # CIK (filer con 10-K reales) distinta de la de company_tickers.json? browse-edgar?ticker=
-        # devuelve el emisor con presentaciones efectivas; si esa CIK sí tiene serie anual, el fallo
-        # es de IDENTIFICACIÓN (tickers.json apunta a entidad equivocada), no cobertura real.
-        if not series["revenue"]:
-            try:
-                ae = cli.get("https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
-                             f"&ticker={t}&type=10-K&count=1&output=atom")
-                mm = re.search(r"<cik>\s*(\d+)\s*</cik>", ae.text or "")
-                alt = int(mm.group(1)) if mm else None
-                edgar_diag["browse_edgar_cik"] = alt
-                if alt and alt != cik:
-                    jj = _fetch_facts(cli, alt)
-                    if jj is not None:
-                        tax2, ccy2, M2 = _pick_tax(jj)
-                        s2 = edgar_annual_series(jj, tax2, M2, ccy2)
-                        edgar_diag["alt_cik_n_revenue"] = len(s2["revenue"])
-                        edgar_diag["alt_cik_ultimo_revenue"] = max(s2["revenue"]) if s2["revenue"] else None
-                        edgar_diag["alt_cik_entityName"] = (jj.get("entityName") or "")[:60]
-                    else:
-                        edgar_diag["alt_cik_n_revenue"] = "sin_facts"
-                time.sleep(0.12)
-            except Exception as e:
-                edgar_diag["browse_edgar_cik"] = type(e).__name__
         later = bool(latest_report and data_end and (latest_report - data_end).days > 20)
         rec = assess_recency(data_end, EVAL_DATE, cadence_days=cadence, lag_days=lag,
                              later_report_exists=later, window=f.eps_ttm_window)
