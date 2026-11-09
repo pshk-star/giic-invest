@@ -169,7 +169,7 @@ def dump_prices(tickers, cap=1300) -> dict:
                 for b in bars if b.get("close")]
         if cap and len(bars) > cap:
             bars = bars[-cap:]
-        pr = w.select_rows("prices", select="ticker,close,as_of", params={"ticker": f"eq.{t}"})
+        pr = w.select_rows("prices", select="ticker,close,as_of", params={"ticker": f"eq.{t}", "order": "ticker"})
         out[t] = {"price": (pr[0].get("close") if pr else None),
                   "price_as_of": (pr[0].get("as_of") if pr else None), "bars": bars}
     return out
