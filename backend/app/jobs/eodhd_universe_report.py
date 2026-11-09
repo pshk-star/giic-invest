@@ -138,10 +138,11 @@ def dump_payloads(tickers) -> dict:
                          params={"order": "ticker", "ticker": f"in.({','.join(tu)})"})
     pay = {r["ticker"].upper(): (r.get("payload") or {}) for r in rows}
     # Campos que lee FinancialFiche.tsx (más enrichment/history completos).
-    KEEP = ("pe_ttm", "eps", "eps_annual", "eps_ttm", "fcf_annual", "fcf_ttm",
+    KEEP = ("pe_ttm", "eps", "eps_annual", "eps_ttm", "eps_basis", "fcf_annual", "fcf_ttm",
             "net_debt", "gross_debt", "cash_and_sti", "operating_margin", "gross_margin",
             "net_margin", "rev_growth_yoy", "roe", "roic", "fcf_yield", "ev_ebitda",
-            "market_cap", "currency", "as_of", "taxonomy", "source_kind")
+            "diluted_shares", "debt_to_equity", "market_cap", "currency", "as_of",
+            "taxonomy", "source_kind")
     out = {}
     for t in tu:
         p = pay.get(t)
