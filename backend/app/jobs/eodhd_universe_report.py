@@ -189,7 +189,23 @@ def dump_advisor() -> dict:
     prices = w.select_rows("prices", select="ticker,close,as_of", params={"order": "ticker", "ticker": inq}) if held else []
     inst = w.select_rows("instruments", select="ticker,name,asset_class,currency,sector", params={"order": "ticker", "ticker": inq}) if held else []
     scan = w.select_rows("v_latest_scan", select="*", params={"order": "rank"})
-    funds = w.select_rows("fundamentals", select="ticker,payload", params={"order": "ticker", "ticker": inq}) if held else []
+    # Candidatas de oportunidad: top no-tenencias del scanner (para evaluarlas por Fair Value).
+    heldset = set(held)
+    cand = []
+    for r in scan:
+        tk = (r.get("ticker") or "").upper()
+        if tk and tk not in heldset and tk not in cand:
+            cand.append(tk)
+        if len(cand) >= 15:
+            break
+    allf = sorted(set(held) | set(cand))
+    finq = f"in.({','.join(allf)})" if allf else "in.()"
+    cinq = f"in.({','.join(cand)})" if cand else "in.()"
+    cprices = w.select_rows("prices", select="ticker,close,as_of", params={"order": "ticker", "ticker": cinq}) if cand else []
+    cinst = w.select_rows("instruments", select="ticker,name,asset_class,currency,sector", params={"order": "ticker", "ticker": cinq}) if cand else []
+    prices = prices + cprices
+    inst = inst + cinst
+    funds = w.select_rows("fundamentals", select="ticker,payload", params={"order": "ticker", "ticker": finq}) if allf else []
     settings = w.select_rows("settings", select="capital_available,max_weight_per_asset,max_weight_per_sector", params={"order": "user_id"})
     FKEEP = ("pe_ttm", "eps", "eps_annual", "eps_ttm", "fcf_annual", "fcf_ttm", "net_debt",
              "cash_and_sti", "operating_margin", "net_margin", "rev_growth_yoy", "roe", "roic",
