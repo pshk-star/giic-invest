@@ -48,21 +48,33 @@ function Kpi({ label, value, help, period, source, quality, eligible }: {
 }
 
 // Mini-gráfico SVG de líneas (serie temporal corta). Sin dependencias; colores de la paleta de datos.
-function MiniChart({ series, height = 90, bars = false }: {
-  series: { name: string; color: string; points: Array<{ x: string; y: number | null }> }[]; height?: number; bars?: boolean;
+// Muestra referencias numéricas: máximo y mínimo del eje Y y el valor del último punto.
+function MiniChart({ series, height = 104, bars = false, fmt }: {
+  series: { name: string; color: string; points: Array<{ x: string; y: number | null }> }[];
+  height?: number; bars?: boolean; fmt?: (n: number) => string;
 }) {
-  const W = 320, H = height, pad = 6;
+  const W = 320, H = height, padT = 12, padB = 14, padX = 34;
   const xs = series[0]?.points.map((p) => p.x) ?? [];
   const vals = series.flatMap((s) => s.points.map((p) => p.y).filter((y): y is number => y !== null && isFinite(y)));
-  if (!vals.length || xs.length < 2) return <div className="text-[11px] text-term-faint py-6 text-center">Sin serie suficiente</div>;
+  if (!vals.length || xs.length < 2) return <div className="text-[11px] text-term-muted py-6 text-center">Sin serie suficiente</div>;
   let lo = Math.min(...vals, 0), hi = Math.max(...vals, 0);
   if (lo === hi) { hi = lo + 1; }
-  const x = (i: number) => pad + (i * (W - 2 * pad)) / Math.max(1, xs.length - 1);
-  const y = (v: number) => H - pad - ((v - lo) / (hi - lo)) * (H - 2 * pad);
+  const x = (i: number) => padX + (i * (W - padX - 8)) / Math.max(1, xs.length - 1);
+  const y = (v: number) => H - padB - ((v - lo) / (hi - lo)) * (H - padT - padB);
   const zeroY = y(0);
+  const f = fmt ?? ((n: number) => `${n}`);
+  // Último valor de la serie primaria (referencia numérica del punto final).
+  const prim = series[0].points;
+  let lastI = -1;
+  for (let i = prim.length - 1; i >= 0; i--) { if (prim[i].y !== null && isFinite(prim[i].y as number)) { lastI = i; break; } }
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height }}>
-      {lo < 0 && hi > 0 && <line x1={pad} x2={W - pad} y1={zeroY} y2={zeroY} stroke="#263142" strokeWidth={1} />}
+      {/* rejilla y etiquetas de eje Y: máximo y mínimo */}
+      <line x1={padX} x2={W - 8} y1={y(hi)} y2={y(hi)} stroke="#263142" strokeWidth={1} strokeDasharray="2 3" />
+      <line x1={padX} x2={W - 8} y1={y(lo)} y2={y(lo)} stroke="#263142" strokeWidth={1} strokeDasharray="2 3" />
+      <text x={padX - 4} y={y(hi) + 3} fontSize={8} fill="#8b95a5" textAnchor="end">{f(hi)}</text>
+      <text x={padX - 4} y={y(lo) + 3} fontSize={8} fill="#8b95a5" textAnchor="end">{f(lo)}</text>
+      {lo < 0 && hi > 0 && <line x1={padX} x2={W - 8} y1={zeroY} y2={zeroY} stroke="#36425a" strokeWidth={1} />}
       {series.map((s, si) => bars ? (
         <g key={si}>{s.points.map((p, i) => p.y === null ? null : (
           <rect key={i} x={x(i) - 4 + si * 4} y={Math.min(y(p.y), zeroY)} width={4}
@@ -72,19 +84,26 @@ function MiniChart({ series, height = 90, bars = false }: {
         <polyline key={si} fill="none" stroke={s.color} strokeWidth={1.75}
                   points={s.points.map((p, i) => p.y === null ? "" : `${x(i)},${y(p.y)}`).filter(Boolean).join(" ")} />
       ))}
+      {/* marcador y etiqueta del último punto de la serie primaria */}
+      {lastI >= 0 && (() => { const v = prim[lastI].y as number; const yy = y(v); const near = yy < padT + 8;
+        return <g>
+          <circle cx={x(lastI)} cy={yy} r={2.4} fill={series[0].color} />
+          <text x={Math.min(x(lastI) + 4, W - 8)} y={near ? yy + 10 : yy - 4} fontSize={8.5} fill="#e6eaf0" textAnchor="end">{f(v)}</text>
+        </g>; })()}
       {xs.map((xl, i) => (i === 0 || i === xs.length - 1) && (
-        <text key={i} x={x(i)} y={H - 1} fontSize={8} fill="#5c6676" textAnchor={i === 0 ? "start" : "end"}>{xl.slice(0, 4)}</text>
+        <text key={i} x={x(i)} y={H - 2} fontSize={8} fill="#8b95a5" textAnchor={i === 0 ? "start" : "end"}>{xl.slice(0, 4)}</text>
       ))}
     </svg>
   );
 }
 
-function ChartCard({ title, children, legend }: { title: string; children: ReactNode; legend?: ReactNode }) {
+function ChartCard({ title, children, legend, value }: { title: string; children: ReactNode; legend?: ReactNode; value?: string }) {
   return (
     <div className="border border-term-border rounded bg-term-panel2/30 p-3">
-      <div className="flex items-center justify-between mb-1">
+      <div className="flex items-center justify-between mb-1 gap-2">
         <div className="text-[11px] text-term-muted font-head tracking-wide uppercase">{title}</div>
-        <div className="flex gap-2 text-[10px] text-term-faint">{legend}</div>
+        {value && <div className="text-xs font-mono text-term-fg tabnum ml-auto">{value}</div>}
+        <div className="flex gap-2 text-[10px] text-term-muted">{legend}</div>
       </div>
       {children}
     </div>
@@ -170,24 +189,39 @@ export function FinancialFiche({ fund }: { fund: FundamentalsPayload }) {
       {hasHistory && (
         <Panel title="Evolución histórica (anual · SEC EDGAR)">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <ChartCard title={`Ingresos (${reportCcy})`}>
-              <MiniChart bars series={[{ name: "Ingresos", color: "#4ea1d3", points: hist.map((h) => ({ x: h.period_end, y: h.revenue })) }]} />
-            </ChartCard>
-            <ChartCard title="Márgenes" legend={<><span className="text-term-good">● neto</span><span className="text-term-info">● operativo</span></>}>
-              <MiniChart series={[
-                { name: "op", color: "#4ea1d3", points: hist.map((h) => ({ x: h.period_end, y: h.op_margin != null ? h.op_margin * 100 : null })) },
-                { name: "net", color: "#35c07a", points: hist.map((h) => ({ x: h.period_end, y: h.net_margin != null ? h.net_margin * 100 : null })) },
-              ]} />
-            </ChartCard>
-            <ChartCard title={`Free Cash Flow (${reportCcy})`}>
-              <MiniChart bars series={[{ name: "FCF", color: "#48c9b0", points: hist.map((h) => ({ x: h.period_end, y: h.fcf })) }]} />
-            </ChartCard>
-            <ChartCard title={`Caja vs deuda neta (${reportCcy})`} legend={<><span className="text-term-good">● caja</span><span className="text-term-crit">● deuda neta</span></>}>
-              <MiniChart series={[
-                { name: "caja", color: "#35c07a", points: hist.map((h) => ({ x: h.period_end, y: h.cash })) },
-                { name: "deuda", color: "#e5604d", points: hist.map((h) => ({ x: h.period_end, y: h.net_debt })) },
-              ]} />
-            </ChartCard>
+            {(() => {
+              const fMoney = (n: number) => scaleNative(n, reportCcy);
+              const fPct = (n: number) => `${n.toFixed(0)}%`;
+              const lastOf = (key: keyof HistoryRecord) => {
+                for (let i = hist.length - 1; i >= 0; i--) { const v = hist[i][key]; if (typeof v === "number" && isFinite(v)) return v as number; }
+                return null;
+              };
+              const lo = lastOf("op_margin"), ln = lastOf("net_margin");
+              return <>
+                <ChartCard title={`Ingresos (${reportCcy})`} value={scaleNative(lastOf("revenue"), reportCcy)}>
+                  <MiniChart bars fmt={fMoney} series={[{ name: "Ingresos", color: "#4ea1d3", points: hist.map((h) => ({ x: h.period_end, y: h.revenue })) }]} />
+                </ChartCard>
+                <ChartCard title="Márgenes (%)"
+                  value={`neto ${ln != null ? (ln * 100).toFixed(1) : "—"}% · op ${lo != null ? (lo * 100).toFixed(1) : "—"}%`}
+                  legend={<><span className="text-term-good">● neto</span><span className="text-term-info">● operativo</span></>}>
+                  <MiniChart fmt={fPct} series={[
+                    { name: "op", color: "#4ea1d3", points: hist.map((h) => ({ x: h.period_end, y: h.op_margin != null ? h.op_margin * 100 : null })) },
+                    { name: "net", color: "#35c07a", points: hist.map((h) => ({ x: h.period_end, y: h.net_margin != null ? h.net_margin * 100 : null })) },
+                  ]} />
+                </ChartCard>
+                <ChartCard title={`Free Cash Flow (${reportCcy})`} value={scaleNative(lastOf("fcf"), reportCcy)}>
+                  <MiniChart bars fmt={fMoney} series={[{ name: "FCF", color: "#48c9b0", points: hist.map((h) => ({ x: h.period_end, y: h.fcf })) }]} />
+                </ChartCard>
+                <ChartCard title={`Caja vs deuda neta (${reportCcy})`}
+                  value={`caja ${scaleNative(lastOf("cash"), reportCcy)}`}
+                  legend={<><span className="text-term-good">● caja</span><span className="text-term-crit">● deuda neta</span></>}>
+                  <MiniChart fmt={fMoney} series={[
+                    { name: "caja", color: "#35c07a", points: hist.map((h) => ({ x: h.period_end, y: h.cash })) },
+                    { name: "deuda", color: "#e5604d", points: hist.map((h) => ({ x: h.period_end, y: h.net_debt })) },
+                  ]} />
+                </ChartCard>
+              </>;
+            })()}
           </div>
         </Panel>
       )}

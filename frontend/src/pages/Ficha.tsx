@@ -9,6 +9,7 @@ import {
 import { QuoteView } from "../components/Quote";
 import { PriceChart } from "../components/PriceChart";
 import { FinancialFiche } from "../components/FinancialFiche";
+import { FairValue } from "../components/FairValue";
 import { derivePositions, portfolioTotals } from "../core/portfolio-tx";
 import { buildAssets, forecast, hasMixedAdjustment } from "../core/forecast";
 import {
@@ -402,7 +403,9 @@ export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: st
             {fund.currency && fund.currency !== "USD" && " Márgenes/ROE/crecimientos son adimensionales; P/E y market cap en USD."}
           </div>
 
-          <Panel title="Valoración relativa (comparables del sector · supuestos transparentes)">
+          <FairValue fund={fund} price={price} priceCcy={quoteCcy} priceAsOf={priceAsOf} />
+
+          <Panel title="Valoración relativa por múltiplos (complementaria · comparables del sector)">
             {peerCount === 0 ? (
               <p className="text-sm text-term-muted">Sin pares en el universo del scanner para este sector: no se puede comparar.</p>
             ) : (

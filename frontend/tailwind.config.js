@@ -11,7 +11,7 @@ export default {
           border: "#263142",
           fg: "#e6eaf0",
           muted: "#8b95a5",
-          faint: "#5c6676",   // 3er nivel de texto (antes indefinido → clases inertes): jerarquía
+          faint: "#78889c",   // 3er nivel de texto: subido para mejor contraste sobre el fondo oscuro
           accent: "#e0a93c",  // ámbar: selección / acento de marca
           good: "#35c07a",    // verde: positivo / verificado
           warn: "#d8863a",    // naranja: atención (distinto del acento, antes idéntico)

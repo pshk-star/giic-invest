@@ -180,6 +180,179 @@ export function riskFlags(f: FundamentalsPayload, peerPE: number | null, scan: S
   return out;
 }
 
+// ───────────────────────────── Fair Value V1 — DCF (FCFF, determinístico) ─────────────────────────────
+// Valor intrínseco por DESCUENTO DE FLUJOS (FCF = OCF − CAPEX), en MONEDA DE REPORTE.
+// Consistencia: un único flujo (OCF−CAPEX) y una única tasa; EV = Σ PV(FCF) + PV(terminal);
+// Equity = EV − deuda neta; valor/acción = Equity / acciones diluidas. No mezcla FCFF con FCFE.
+// NADA se inventa: si faltan datos fiables devuelve {available:false, reason}.
+
+export interface DcfAssumptions {
+  years: number;        // horizonte explícito
+  g1: number;           // crecimiento de FCF del primer año
+  gTerminal: number;    // crecimiento terminal (conservador, < tasa)
+  discount: number;     // tasa de descuento (coste de capital)
+}
+export interface DcfRun {
+  pvExplicit: number; pvTerminal: number; ev: number;
+  equity: number; perShare: number; terminalWeight: number;
+}
+// Un DCF determinístico. El crecimiento decae linealmente de g1 a gTerminal durante el horizonte.
+export function runDcf(baseFcf: number, netDebt: number, shares: number, a: DcfAssumptions): DcfRun | null {
+  if (!(baseFcf > 0) || !(shares > 0) || !(a.discount > a.gTerminal) || a.years < 1) return null;
+  let pv = 0, fcf = baseFcf;
+  for (let t = 1; t <= a.years; t++) {
+    const g = a.g1 + (a.gTerminal - a.g1) * (t - 1) / Math.max(1, a.years - 1);
+    fcf = fcf * (1 + g);
+    pv += fcf / Math.pow(1 + a.discount, t);
+  }
+  const tv = (fcf * (1 + a.gTerminal)) / (a.discount - a.gTerminal);
+  const pvTerminal = tv / Math.pow(1 + a.discount, a.years);
+  const ev = pv + pvTerminal;
+  const equity = ev - netDebt;              // netDebt<0 (caja neta) ⇒ suma
+  return { pvExplicit: pv, pvTerminal, ev, equity, perShare: equity / shares, terminalWeight: pvTerminal / ev };
+}
+
+export interface DcfScenario { name: string; a: DcfAssumptions; run: DcfRun; marginVsPrice: number | null; }
+export interface DcfInputs {
+  baseFcf: number; baseFcfMethod: string; lastFcf: number | null;
+  netDebt: number; netDebtKnown: boolean; shares: number; currency: string;
+  histYears: number; baseGrowth: number;
+}
+export interface SensitivityCell { discount: number; gTerminal: number; perShare: number | null; }
+export interface FairValueDCF {
+  available: boolean; reason?: string;
+  inputs?: DcfInputs;
+  scenarios?: DcfScenario[];        // [conservador, base, optimista]
+  base?: DcfScenario;
+  sensitivity?: SensitivityCell[];  // rejilla tasa × crecimiento terminal (escenario base)
+  impliedGrowth?: number | null;    // crecimiento de FCF implícito en el precio (DCF inverso)
+  priceComparable?: boolean;        // precio en misma moneda que el valor intrínseco
+  confidence?: "Alta" | "Media" | "Baja";
+  confidenceNotes?: string[];
+}
+
+// Base FCF NORMALIZADO: margen FCF medio (últimos ≤4 años) × ingresos del último ejercicio.
+// Suaviza la volatilidad de CAPEX sin descartar la escala actual. Alternativa: mediana de FCF.
+function normalizedBaseFcf(hist: HistoryRecord[]): { base: number | null; method: string; lastFcf: number | null } {
+  const rows = hist.filter((h) => typeof h.fcf === "number" && isFinite(h.fcf as number));
+  if (rows.length < 3) return { base: null, method: "insuficiente", lastFcf: rows.length ? rows[rows.length - 1].fcf! : null };
+  const lastFcf = rows[rows.length - 1].fcf!;
+  const withRev = rows.filter((h) => typeof h.revenue === "number" && (h.revenue as number) > 0);
+  const recent = withRev.slice(-4);
+  if (recent.length >= 3) {
+    const margins = recent.map((h) => (h.fcf as number) / (h.revenue as number));
+    const avgMargin = margins.reduce((s, m) => s + m, 0) / margins.length;
+    const lastRev = withRev[withRev.length - 1].revenue as number;
+    return { base: lastRev * avgMargin, method: `margen FCF medio ${(avgMargin * 100).toFixed(1)}% × ingresos`, lastFcf };
+  }
+  const last3 = rows.slice(-3).map((h) => h.fcf as number).sort((a, b) => a - b);
+  return { base: last3[1], method: "mediana FCF 3 años", lastFcf };
+}
+
+// Crecimiento base de referencia: CAGR de ingresos (≤5 años), acotado [0, 18%].
+function revenueCagr(hist: HistoryRecord[]): number {
+  const rows = hist.filter((h) => typeof h.revenue === "number" && (h.revenue as number) > 0).slice(-6);
+  if (rows.length < 2) return 0.05;
+  const first = rows[0].revenue as number, last = rows[rows.length - 1].revenue as number, n = rows.length - 1;
+  if (first <= 0 || last <= 0) return 0.05;
+  return Math.min(0.18, Math.max(0, Math.pow(last / first, 1 / n) - 1));
+}
+
+const RF = 0.04, ERP = 0.05, BETA = 1.1;        // supuestos de tasa (editables, documentados)
+export const DISCOUNT_BASE = RF + BETA * ERP;   // 9.5% coste de capital base
+
+// DCF inverso: crecimiento de FCF constante implícito en el precio (equity objetivo), por bisección.
+function impliedGrowthFor(targetEquity: number, baseFcf: number, netDebt: number, shares: number,
+                          discount: number, gTerminal: number, years: number): number | null {
+  if (!(baseFcf > 0) || !(shares > 0) || targetEquity <= 0) return null;
+  const equityAt = (g: number) => {
+    const r = runDcf(baseFcf, netDebt, shares, { years, g1: g, gTerminal, discount });
+    return r ? r.equity : null;
+  };
+  // g1 (tramo explícito) puede superar la tasa de descuento; sólo gTerminal<tasa importa.
+  let lo = -0.15, hi = 0.60;
+  const eLo = equityAt(lo), eHi = equityAt(hi);
+  if (eLo === null || eHi === null) return null;
+  if (targetEquity <= eLo) return lo;
+  if (targetEquity >= eHi) return hi;
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2, e = equityAt(mid);
+    if (e === null) return null;
+    if (e < targetEquity) lo = mid; else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
+// Punto de entrada: construye inputs, 3 escenarios, sensibilidad, DCF inverso y confianza.
+export function fairValueDCF(fund: FundamentalsPayload, price: number | null, priceCcy: string | null): FairValueDCF {
+  const hist = (fund.history?.annual ?? []).filter((h) => h && h.period_end) as HistoryRecord[];
+  const ccy = fund.history?.currency ?? fund.currency ?? "USD";
+  const nb = normalizedBaseFcf(hist);
+  const shares = typeof fund.diluted_shares === "number" && fund.diluted_shares > 0 ? fund.diluted_shares : null;
+
+  if (nb.base === null)
+    return { available: false, reason: "Sin FCF histórico suficiente (≥3 años anuales). El DCF industrial no aplica — probable entidad financiera o datos insuficientes." };
+  if (nb.base <= 0)
+    return { available: false, reason: "FCF base normalizado no positivo: un DCF forzaría un valor no defendible. Valoración no disponible." };
+  if (shares === null)
+    return { available: false, reason: "Acciones diluidas no disponibles: no es posible convertir a valor por acción." };
+
+  const netDebt = typeof fund.net_debt === "number" && isFinite(fund.net_debt) ? fund.net_debt
+    : (hist.length && typeof hist[hist.length - 1].net_debt === "number" ? hist[hist.length - 1].net_debt as number : 0);
+  const netDebtKnown = typeof fund.net_debt === "number" || (hist.length > 0 && typeof hist[hist.length - 1].net_debt === "number");
+  const baseG = revenueCagr(hist);
+  const inputs: DcfInputs = {
+    baseFcf: nb.base, baseFcfMethod: nb.method, lastFcf: nb.lastFcf,
+    netDebt, netDebtKnown, shares, currency: ccy, histYears: hist.length, baseGrowth: baseG,
+  };
+
+  const priceComparable = price != null && price > 0 && !!priceCcy && priceCcy.toUpperCase() === ccy.toUpperCase();
+  const mcap = priceComparable ? price! * shares : null;    // equity de mercado en moneda de reporte
+
+  const defs: Array<{ name: string; g1: number; gT: number; disc: number }> = [
+    { name: "Conservador", g1: Math.max(0, baseG * 0.5), gT: 0.020, disc: DISCOUNT_BASE + 0.010 },
+    { name: "Base",        g1: baseG,                      gT: 0.025, disc: DISCOUNT_BASE },
+    { name: "Optimista",   g1: Math.min(0.25, baseG * 1.3 + 0.02), gT: 0.030, disc: DISCOUNT_BASE - 0.010 },
+  ];
+  const scenarios: DcfScenario[] = [];
+  for (const d of defs) {
+    const a: DcfAssumptions = { years: 10, g1: d.g1, gTerminal: d.gT, discount: d.disc };
+    const run = runDcf(nb.base, netDebt, shares, a);
+    if (!run) continue;
+    const marginVsPrice = mcap != null ? run.equity / mcap - 1 : null;
+    scenarios.push({ name: d.name, a, run, marginVsPrice });
+  }
+  if (scenarios.length < 3)
+    return { available: false, reason: "No fue posible construir el DCF con supuestos consistentes (tasa ≤ crecimiento terminal)." };
+  const base = scenarios[1];
+
+  // Sensibilidad: tasa (±1pp) × crecimiento terminal (±0.5pp) sobre el escenario base.
+  const sensitivity: SensitivityCell[] = [];
+  for (const dd of [-0.01, 0, 0.01]) for (const dg of [-0.005, 0, 0.005]) {
+    const a: DcfAssumptions = { years: 10, g1: base.a.g1, gTerminal: base.a.gTerminal + dg, discount: base.a.discount + dd };
+    const r = runDcf(nb.base, netDebt, shares, a);
+    sensitivity.push({ discount: a.discount, gTerminal: a.gTerminal, perShare: r ? r.perShare : null });
+  }
+
+  const impliedGrowth = mcap != null
+    ? impliedGrowthFor(mcap, nb.base, netDebt, shares, base.a.discount, base.a.gTerminal, 10) : null;
+
+  // Confianza
+  const notes: string[] = [];
+  let score = 0;
+  if (hist.length < 5) { score += 1; notes.push(`Solo ${hist.length} años de histórico FCF.`); }
+  const fcfs = hist.map((h) => h.fcf).filter((x): x is number => typeof x === "number");
+  const mean = fcfs.reduce((s, x) => s + x, 0) / Math.max(1, fcfs.length);
+  const cv = mean > 0 ? Math.sqrt(fcfs.reduce((s, x) => s + (x - mean) ** 2, 0) / fcfs.length) / mean : 1;
+  if (cv > 0.5) { score += 1; notes.push(`FCF volátil (CV ${cv.toFixed(2)}): base normalizada sensible al año.`); }
+  if (!netDebtKnown) { score += 1; notes.push("Deuda neta no disponible: asumida 0."); }
+  if (base.run.terminalWeight > 0.75) { score += 1; notes.push(`${(base.run.terminalWeight * 100).toFixed(0)}% del valor procede del valor terminal.`); }
+  if (!priceComparable) notes.push(`Precio en ${priceCcy ?? "s/d"} y valor en ${ccy}: margen vs. precio requiere FX fechado (no calculado).`);
+  const confidence: "Alta" | "Media" | "Baja" = score >= 3 ? "Baja" : score >= 1 ? "Media" : "Alta";
+
+  return { available: true, inputs, scenarios, base, sensitivity, impliedGrowth, priceComparable, confidence, confidenceNotes: notes };
+}
+
 // Datos faltantes, nombrados explícitamente.
 export function missingFundamentals(f: FundamentalsPayload): string[] {
   const labels: Array<[keyof FundamentalsPayload, string]> = [
