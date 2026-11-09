@@ -131,6 +131,20 @@ def run(commit: bool = False, tickers=None, mode: str = "enrich") -> dict:
         "resultados": resultados,
     }
 
+    # Estado del sistema (evidencia real de BD): nº de predicciones de producción (deben ser 309) y
+    # la última corrida de scan completada (integridad de ranking). Sólo lectura.
+    try:
+        preds = writer.select_rows("predictions", select="id", params={"order": "id", "origin": "eq.production"})
+        report["predicciones_produccion"] = len(preds)
+    except Exception as e:
+        report["predicciones_produccion"] = f"error: {type(e).__name__}"
+    try:
+        runs = writer.select_rows("scan_runs", select="id,as_of,status",
+                                  params={"order": "as_of.desc", "status": "eq.completed", "limit": "1"})
+        report["ultimo_scan_completado"] = runs[0] if runs else None
+    except Exception as e:
+        report["ultimo_scan_completado"] = f"error: {type(e).__name__}"
+
     # 3) ESCRITURA (sólo con doble candado), limitada al set.
     if will_write:
         safe = [w for w in to_write if w["ticker"] in CANARY_SET]
