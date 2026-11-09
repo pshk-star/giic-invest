@@ -73,6 +73,43 @@ def is_materially_fresher(eodhd_period: Optional[date], edgar_data_end: Optional
     return (eodhd_period - edgar_data_end).days > min_days
 
 
+_PERIOD_TOL = 0.10   # ±10% para clasificar un flujo contra su ejercicio anual
+
+# Elegibilidad para valoración por tipo de período. Un flujo de UN trimestre o un YTD acumulado NO
+# es base de valoración (se necesita anual o TTM); un saldo de balance (caja/deuda) sí es insumo
+# (último stock). EPS de EODHD es base ambigua → nunca apto (regla 2). 'indeterminado' → no apto.
+_VALUATION_ELIGIBLE_PERIODS = {"anual", "ttm", "balance_instantaneo"}
+
+
+def classify_period_type(quarterly: dict, yearly: dict, tol: float = _PERIOD_TOL) -> str:
+    """Clasifica un FLUJO como 'trimestre_individual' | 'ytd_acumulado' | 'indeterminado', cotejando la
+    serie trimestral contra el ejercicio anual (Σ4T ≈ anual → trimestres; T-cierre ≈ anual → YTD). No
+    basta `period_end`: el significado depende del emisor/endpoint (p. ej. el OCF de ASML es YTD)."""
+    if not yearly:
+        return "indeterminado"
+    yk = sorted(yearly)[-1]
+    A = yearly.get(yk)
+    if not A:
+        return "indeterminado"
+    y = int(str(yk)[:4])
+    qin = {d: v for d, v in sorted((quarterly or {}).items()) if f"{y-1}-" < str(d) <= yk}
+    q_close = (quarterly or {}).get(yk)
+    sum4 = sum(list(qin.values())[-4:]) if qin else None
+    if q_close is not None and abs(q_close / A - 1) <= tol:
+        return "ytd_acumulado"
+    if sum4 is not None and abs(sum4 / A - 1) <= tol:
+        return "trimestre_individual"
+    return "indeterminado"
+
+
+def valuation_eligible(period_type: Optional[str], eps_base_ambigua: bool = False) -> bool:
+    """¿El dato es apto para valoración fundamental? Sólo anual/TTM/saldo de balance; un trimestre
+    suelto, un YTD o un período indeterminado, no. EPS de base ambigua, nunca."""
+    if eps_base_ambigua:
+        return False
+    return period_type in _VALUATION_ELIGIBLE_PERIODS
+
+
 def _parse(s) -> Optional[date]:
     try:
         p = str(s)[:10].split("-")

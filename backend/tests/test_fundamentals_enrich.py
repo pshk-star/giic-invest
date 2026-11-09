@@ -119,3 +119,38 @@ def test_moneda_distinta_no_concilia_queda_parcial():
                               same_currency=False, edgar_states={"revenue": "faltante"})
     assert out["revenue_annual"]["state"] == "parcial"
     assert out["revenue_annual"]["usable"] is True       # 2025 > 2024 (materialmente más fresco)
+
+
+# --- P0.3: clasificación de tipo de período y elegibilidad de valoración ---
+
+from app.core.connectors.fundamentals_enrich import classify_period_type, valuation_eligible
+
+
+def test_classify_trimestre_individual():
+    # 4 trimestres suman el anual → trimestres individuales (caso XOM/TSM).
+    q = {"2025-03-31": 80, "2025-06-30": 80, "2025-09-30": 80, "2025-12-31": 80}
+    y = {"2025-12-31": 320}
+    assert classify_period_type(q, y) == "trimestre_individual"
+
+
+def test_classify_ytd_acumulado():
+    # El 'trimestre' de cierre ≈ el anual → YTD acumulado (caso OCF de ASML).
+    q = {"2025-03-31": 3, "2025-06-30": 7, "2025-09-30": 10, "2025-12-31": 12.6}
+    y = {"2025-12-31": 12.66}
+    assert classify_period_type(q, y) == "ytd_acumulado"
+
+
+def test_classify_indeterminado():
+    q = {"2025-09-30": 5}          # ni Σ4T ni cierre coinciden
+    y = {"2025-12-31": 40}
+    assert classify_period_type(q, y) == "indeterminado"
+
+
+def test_valuation_eligible_por_tipo():
+    assert valuation_eligible("anual") is True
+    assert valuation_eligible("ttm") is True
+    assert valuation_eligible("balance_instantaneo") is True
+    assert valuation_eligible("trimestre_individual") is False   # un trimestre suelto no es base
+    assert valuation_eligible("ytd_acumulado") is False
+    assert valuation_eligible("indeterminado") is False
+    assert valuation_eligible("anual", eps_base_ambigua=True) is False   # EPS ambiguo nunca

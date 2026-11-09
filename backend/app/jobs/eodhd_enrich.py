@@ -46,6 +46,77 @@ DEFAULT_SET = ["AAPL", "META", "ASML", "TSM", "XOM", "JPM", "SPY"]
 EODHD_UNITS_PER_FUNDAMENTALS = 10   # coste declarado por consulta de fundamentales (a verificar/medir)
 
 
+def _num(d, k):
+    v = (d or {}).get(k)
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ser(sect, key):
+    out = {}
+    for k, row in (sect or {}).items():
+        v = _num(row, key)
+        if v is not None:
+            out[(row.get("date") or k)[:10]] = v
+    return out
+
+
+# Concepto EODHD por campo núcleo (para clasificar el tipo de período desde las series crudas).
+_FLOW_CONCEPT = {"revenue": ("Income_Statement", "totalRevenue"),
+                 "net_income": ("Income_Statement", "netIncome"),
+                 "ocf": ("Cash_Flow", "totalCashFromOperatingActivities"),
+                 "capex": ("Cash_Flow", "capitalExpenditures"),
+                 "fcf": ("Cash_Flow", "freeCashFlow")}
+_BALANCE_FIELDS = {"cash", "total_debt"}
+_EPS_FIELDS = {"eps_ttm", "eps_annual"}
+
+
+def field_period_types(obj: dict) -> dict:
+    """Tipo de período VERIFICADO por campo EODHD, a partir de las series crudas (no de period_end).
+    Flujos (revenue/ni/ocf/capex/fcf): trimestre_individual|ytd_acumulado|indeterminado. Balances
+    (cash/total_debt): balance_instantaneo. Variantes _annual: anual. EPS: ttm/anual (base ambigua)."""
+    from app.core.connectors.fundamentals_enrich import classify_period_type
+    fin = (obj or {}).get("Financials", {}) or {}
+    pt = {}
+    for fld, (stmt, concept) in _FLOW_CONCEPT.items():
+        q = _ser((fin.get(stmt, {}) or {}).get("quarterly", {}), concept)
+        y = _ser((fin.get(stmt, {}) or {}).get("yearly", {}), concept)
+        pt[fld] = classify_period_type(q, y) if (q or y) else "indeterminado"
+    # FCF conservador: si OCF o CAPEX no son trimestre_individual compatibles, no lo presentamos limpio.
+    if pt.get("fcf") == "indeterminado" and pt.get("ocf") == "trimestre_individual" and pt.get("capex") == "trimestre_individual":
+        pt["fcf"] = "trimestre_individual"
+    elif pt.get("ocf") in ("ytd_acumulado", "indeterminado") or pt.get("capex") in ("ytd_acumulado", "indeterminado"):
+        pt["fcf"] = "indeterminado"
+    for b in _BALANCE_FIELDS:
+        pt[b] = "balance_instantaneo"
+    # Variantes anuales y de balance de cierre.
+    for base in ("revenue", "net_income", "ocf", "capex", "fcf"):
+        pt[f"{base}_annual"] = "anual"
+    for b in _BALANCE_FIELDS:
+        pt[f"{b}_annual"] = "balance_instantaneo"
+    pt["eps_ttm"] = "ttm"
+    pt["eps_annual"] = "anual"
+    return pt
+
+
+def annotate_valuation(enriched: dict, period_types: dict) -> dict:
+    """Anota cada campo enriquecido con period_type y valuation_eligible (regla financiera verificada).
+    Un interino de un solo trimestre o YTD NO es apto para valoración; sí los anuales, TTM y saldos de
+    balance; EPS de EODHD nunca (base ambigua)."""
+    from app.core.connectors.fundamentals_enrich import valuation_eligible
+    for name, info in enriched.items():
+        ptype = period_types.get(name, "indeterminado")
+        amb = name in _EPS_FIELDS
+        info["period_type"] = ptype
+        info["valuation_eligible"] = bool(info.get("usable") and valuation_eligible(ptype, eps_base_ambigua=amb))
+        if not info["valuation_eligible"] and info.get("usable"):
+            info["valuation_note"] = ("no apto para valoración directa: "
+                                      + ("EPS base ambigua" if amb else f"período '{ptype}' (se requiere anual/TTM/saldo)"))
+    return enriched
+
+
 def classify_enriched(enriched: dict, edgar_payload: dict):
     """Clasifica el resultado de enrich_fundamentals para el reporte y calcula el diff contra el
     payload EDGAR ACTUAL. Pura (sin red): cuarentena (inconsistente), nuevos usables, rechazados, y
@@ -133,18 +204,81 @@ def enrich_one(prov: EDGARProvider, conn, t: str, eval_date: date) -> dict:
     same_ccy = bool(eo_ccy and eo_ccy.upper() == (ccy or "").upper())
     enriched = enrich_fundamentals(fm, series, data_end, same_ccy, edgar_states)
 
+    # Tipo de período VERIFICADO + elegibilidad para valoración (precisión 1). obj cacheado (sin red extra).
+    try:
+        _sym, _adr, obj = conn._resolve(t)
+    except Exception:
+        obj = None
+    period_types = field_period_types(obj) if obj else {}
+    enriched = annotate_valuation(enriched, period_types)
+    eodhd_symbol = _sym if obj else None
+
     edgar_payload = asdict(f)   # lo que HOY se escribe en Supabase y ve la UI (no se modifica)
     nuevos, cuarentena, rechazados, diffs = classify_enriched(enriched, edgar_payload)
+
+    enrichment_block = build_enrichment_block(
+        t, eodhd_symbol, eo_ccy, data_end.isoformat() if data_end else None, enriched)
 
     return {
         "ticker": t, "status": "ok", "eodhd_called": eodhd_called,
         "moneda_edgar": ccy, "moneda_eodhd": eo_ccy, "misma_moneda": same_ccy,
+        "eodhd_symbol": eodhd_symbol,
         "edgar_data_end": data_end.isoformat() if data_end else None,
         "edgar_vigencia": rec["estado"], "segmento_sic": sic,
         "campos_nuevos_usables": nuevos, "cuarentena_inconsistente": cuarentena,
         "campos_rechazados": rechazados, "diferencias_vs_payload_actual": diffs,
-        "edgar_states": edgar_states,
+        "edgar_states": edgar_states, "enrichment_block": enrichment_block,
     }
+
+
+# --- Esquema aditivo de Supabase y hook de escritura (aislado, sin tocar producción) ---
+
+ENRICHMENT_SCHEMA_VERSION = "p0.3-1"
+
+
+def build_enrichment_block(ticker: str, symbol, currency, edgar_data_end, enriched: dict) -> dict:
+    """Bloque ADITIVO para fundamentals.payload.enrichment. Cada métrica lleva valor, moneda,
+    fuente+símbolo, fecha de cierre, tipo de período, estado de calidad y elegibilidad de valoración.
+    NO altera los campos EDGAR (viven en el nivel superior del payload)."""
+    fields = {}
+    for name, info in enriched.items():
+        if info.get("value") is None:
+            continue
+        fields[name] = {
+            "value": info["value"],
+            "currency": info.get("currency"),
+            "source": info.get("source"),
+            "symbol": symbol,
+            "period_end": info.get("period"),
+            "period_type": info.get("period_type"),
+            "quality_state": info["state"],
+            "usable_recency": bool(info.get("usable")),
+            "valuation_eligible": bool(info.get("valuation_eligible")),
+        }
+        if info.get("valuation_note"):
+            fields[name]["valuation_note"] = info["valuation_note"]
+    return {
+        "schema_version": ENRICHMENT_SCHEMA_VERSION,
+        "source": "EODHD Fundamentals Data Feed",
+        "symbol": symbol,
+        "currency": currency,
+        "edgar_data_end": edgar_data_end,
+        "fields": fields,
+    }
+
+
+def attach_enrichment(edgar_payload: dict, enrichment_block, enabled: bool = True) -> dict:
+    """Combina el payload EDGAR actual con el bloque de enriquecimiento, de forma ADITIVA e
+    IDEMPOTENTE. Protección contra sobrescritura: NUNCA modifica un campo EDGAR existente; sólo fija
+    la clave 'enrichment'. `enabled=False` (o bloque vacío) → payload EDGAR intacto (fail-safe)."""
+    out = dict(edgar_payload or {})
+    if not enabled or not enrichment_block or not (enrichment_block.get("fields")):
+        return out                                  # fail-safe: EDGAR intacto, sin bloque enrichment
+    # Garantía de no-colisión: 'enrichment' no debe pisar ningún campo EDGAR existente.
+    if "enrichment" in (edgar_payload or {}) and not isinstance(edgar_payload["enrichment"], dict):
+        raise ValueError("colisión: el payload EDGAR ya usa 'enrichment' con otro tipo")
+    out["enrichment"] = enrichment_block
+    return out
 
 
 def dry_run(tickers=None, eval_date=None) -> dict:

@@ -72,3 +72,74 @@ def test_sin_edgar_devuelve_estado_y_no_consulta(monkeypatch):
 
     out = E.enrich_one(_Prov(), _Conn(), "ZZZZ", __import__("datetime").date(2026, 11, 7))
     assert out["status"] == "sin_edgar" and out["eodhd_called"] is False
+
+
+# --- P0.3: anotación de valoración, esquema y hook de escritura aislado ---
+
+def test_annotate_valuation_por_periodo():
+    enriched = {
+        "revenue": {"value": 100, "state": "parcial", "usable": True},        # trimestre → no apto
+        "revenue_annual": {"value": 400, "state": "parcial", "usable": True},  # anual → apto
+        "cash": {"value": 50, "state": "parcial", "usable": True},             # balance → apto
+        "eps_ttm": {"value": 5, "state": "parcial", "usable": True},           # ttm pero ambiguo → no
+    }
+    pt = {"revenue": "trimestre_individual", "revenue_annual": "anual",
+          "cash": "balance_instantaneo", "eps_ttm": "ttm"}
+    out = E.annotate_valuation(enriched, pt)
+    assert out["revenue"]["valuation_eligible"] is False and "valuation_note" in out["revenue"]
+    assert out["revenue_annual"]["valuation_eligible"] is True
+    assert out["cash"]["valuation_eligible"] is True
+    assert out["eps_ttm"]["valuation_eligible"] is False     # EPS base ambigua
+
+
+def test_build_enrichment_block_esquema_completo():
+    enriched = {"ocf": {"value": 500, "currency": "EUR", "source": "EODHD (ASML.AS)", "period": "2026-09-30",
+                        "period_type": "ytd_acumulado", "state": "parcial", "usable": True,
+                        "valuation_eligible": False, "valuation_note": "YTD"}}
+    blk = E.build_enrichment_block("ASML", "ASML.AS", "EUR", "2025-12-31", enriched)
+    f = blk["fields"]["ocf"]
+    for key in ("value", "currency", "source", "symbol", "period_end", "period_type",
+                "quality_state", "valuation_eligible"):
+        assert key in f, key
+    assert blk["schema_version"] and blk["symbol"] == "ASML.AS"
+
+
+def test_attach_enrichment_aditivo_no_toca_edgar():
+    edgar = {"ticker": "ASML", "pe_ttm": 30.0, "net_debt": 1000, "currency": "EUR"}
+    blk = {"schema_version": "x", "fields": {"ocf": {"value": 500}}}
+    out = E.attach_enrichment(edgar, blk, enabled=True)
+    # campos EDGAR intactos + bloque aditivo
+    assert out["pe_ttm"] == 30.0 and out["net_debt"] == 1000 and out["currency"] == "EUR"
+    assert out["enrichment"]["fields"]["ocf"]["value"] == 500
+    # el payload original no se mutó
+    assert "enrichment" not in edgar
+
+
+def test_attach_enrichment_idempotente():
+    edgar = {"ticker": "ASML", "pe_ttm": 30.0}
+    blk = {"schema_version": "x", "fields": {"ocf": {"value": 500}}}
+    once = E.attach_enrichment(edgar, blk)
+    twice = E.attach_enrichment(once, blk)       # re-aplicar no duplica ni cambia EDGAR
+    assert twice == once
+
+
+def test_attach_enrichment_failsafe_desactivado():
+    edgar = {"ticker": "ASML", "pe_ttm": 30.0}
+    blk = {"schema_version": "x", "fields": {"ocf": {"value": 500}}}
+    out = E.attach_enrichment(edgar, blk, enabled=False)
+    assert "enrichment" not in out and out == edgar   # sin clave/desactivado → EDGAR intacto
+
+
+def test_attach_enrichment_bloque_vacio_no_escribe():
+    edgar = {"ticker": "ASML", "pe_ttm": 30.0}
+    out = E.attach_enrichment(edgar, {"schema_version": "x", "fields": {}}, enabled=True)
+    assert "enrichment" not in out            # nada usable → no se añade bloque
+
+
+def test_attach_enrichment_serializa_json():
+    import json
+    edgar = {"ticker": "ASML", "pe_ttm": 30.0}
+    blk = {"schema_version": "x", "fields": {"ocf": {"value": 500, "period_type": "ytd_acumulado"}}}
+    out = E.attach_enrichment(edgar, blk)
+    s = json.dumps(out)                        # persistible como JSON (como Supabase payload)
+    assert json.loads(s)["enrichment"]["fields"]["ocf"]["period_type"] == "ytd_acumulado"

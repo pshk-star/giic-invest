@@ -57,12 +57,8 @@ def _classify_flow(quarterly: dict, yearly: dict) -> dict:
             "suma_4T": sum4, "trim_en_cierre": q_at_close,
             "ratio_suma4T/anual": round(sum4 / A, 3) if sum4 else None,
             "ratio_Tcierre/anual": round(q_at_close / A, 3) if q_at_close else None}
-    if q_at_close is not None and abs(q_at_close / A - 1) <= TOL:
-        info["tipo"] = "YTD acumulado (el T de cierre ≈ ejercicio anual)"
-    elif sum4 is not None and abs(sum4 / A - 1) <= TOL:
-        info["tipo"] = "trimestre individual (Σ4T ≈ ejercicio anual)"
-    else:
-        info["tipo"] = "indeterminado (ni Σ4T ni T-cierre coinciden con el anual)"
+    from app.core.connectors.fundamentals_enrich import classify_period_type
+    info["tipo"] = classify_period_type(quarterly, yearly)   # verdict con el clasificador compartido
     return info
 
 
