@@ -215,10 +215,11 @@ export function buildAdvice2(inp: Advisor2Input): Advisor2Report {
       continue;
     }
 
-    // Valoración convergente (Fair Value usable + scanner + calidad).
-    if (valUsable && m != null && composite != null) {
-      // ACUMULAR: infravalorada Y atractivo no débil Y fundamentales recientes.
-      if (m >= MARGIN_UNDER && composite >= SCAN_WEAK && !knownStale && mv < capPerAsset - 1e-6) {
+    // Valoración usable (Fair Value disponible y comparable). La CONVERGENCIA con el scanner
+    // decide la acción fuerte; sin score (composite null) ⇒ no se actúa por un solo DCF.
+    if (valUsable && m != null) {
+      // ACUMULAR: infravalorada Y atractivo no débil Y fundamentales recientes Y con espacio.
+      if (m >= MARGIN_UNDER && composite != null && composite >= SCAN_WEAK && !knownStale && mv < capPerAsset - 1e-6) {
         accumulateCands.push({ ticker: h.ticker, current: mv, composite });
         recommendations.push({
           ticker: h.ticker, name: h.name, action: "ACUMULAR",
@@ -232,12 +233,13 @@ export function buildAdvice2(inp: Advisor2Input): Advisor2Report {
         });
         continue;
       }
-      // REDUCIR por valoración CONVERGENTE: muy sobrevalorada Y atractivo no fuerte.
-      if (m <= MARGIN_STRONG_OVER && composite < SCAN_STRONG) {
+      // REDUCIR por valoración CONVERGENTE: muy sobrevalorada Y atractivo DÉBIL (< 40), no sólo "no fuerte".
+      // Un DCF preliminar no recorta un nombre con atractivo medio/alto: exige convergencia clara.
+      if (m <= MARGIN_STRONG_OVER && composite != null && composite < SCAN_WEAK) {
         recommendations.push({
           ticker: h.ticker, name: h.name, action: "REDUCIR",
-          why: `Recortar parcialmente ${h.ticker}: muy sobrevalorada (${pctS(m)}) y sin atractivo relativo fuerte.`,
-          evidence: [mLine, `Score ${Math.round(composite)}/100 (< ${SCAN_STRONG}).`, projLine ?? ""].filter(Boolean),
+          why: `Recortar parcialmente ${h.ticker}: muy sobrevalorada (${pctS(m)}) y atractivo relativo débil.`,
+          evidence: [mLine, `Score ${Math.round(composite)}/100 (< ${SCAN_WEAK}).`, projLine ?? ""].filter(Boolean),
           risks: ["El Fair Value V1 es preliminar: NO se vende la posición entera por un solo DCF; recorte parcial.",
             "Si el crecimiento supera tus supuestos, la sobrevaloración puede ser aparente."],
           missing: commonMissing,
@@ -245,9 +247,12 @@ export function buildAdvice2(inp: Advisor2Input): Advisor2Report {
         });
         continue;
       }
-      // MANTENER con matiz (infravalorada-pero-débil, sobrevalorada-pero-fuerte, o en rango).
-      const nuance = m >= MARGIN_UNDER ? "infravalorada pero atractivo relativo débil: no se fuerza compra por un solo DCF"
-        : m <= -MARGIN_UNDER ? "parece algo cara pero momentum/calidad sostienen: no se vende por un solo DCF"
+      // MANTENER con matiz: sin score, infravalorada-pero-débil, sobrevalorada-pero-no-débil, o en rango.
+      const nuance = composite == null
+        ? `Fair Value disponible (margen ${m >= 0 ? "+" : ""}${pctS(m)}) pero sin score del scanner para confirmar convergencia: no se actúa por un solo DCF`
+        : m >= MARGIN_UNDER ? "infravalorada pero atractivo relativo débil: no se fuerza compra por un solo DCF"
+        : m <= MARGIN_STRONG_OVER ? "parece muy cara pero el atractivo relativo no es débil: no se vende por un solo DCF"
+        : m <= -MARGIN_UNDER ? "algo cara pero dentro de tolerancia: sin acción por un solo DCF"
         : "precio en rango razonable del Fair Value";
       recommendations.push({
         ticker: h.ticker, name: h.name, action: "MANTENER",

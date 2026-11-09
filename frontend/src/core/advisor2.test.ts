@@ -62,13 +62,22 @@ describe("buildAdvice2 — convergencia de evidencia (no un solo DCF)", () => {
     expect(r.invested).toBe(0);
   });
 
-  it("muy sobrevalorada + atractivo no fuerte ⇒ REDUCIR (parcial)", () => {
+  it("muy sobrevalorada + atractivo DÉBIL (<40) ⇒ REDUCIR (parcial)", () => {
     const r = buildAdvice2(base({
       holdings: [hold("AAA", 5000, 0.1)],
-      scan: [{ ticker: "AAA", sector: "Tech", composite: 45 }],
+      scan: [{ ticker: "AAA", sector: "Tech", composite: 30 }],
       fv: { AAA: fv({ marginBase: -0.3 }) },
     }));
     expect(r.recommendations.find((x) => x.ticker === "AAA")!.action).toBe("REDUCIR");
+  });
+
+  it("muy sobrevalorada pero atractivo MEDIO (no débil) ⇒ MANTENER (no recorte por un solo DCF)", () => {
+    const r = buildAdvice2(base({
+      holdings: [hold("AAA", 5000, 0.1)],
+      scan: [{ ticker: "AAA", sector: "Tech", composite: 55 }],
+      fv: { AAA: fv({ marginBase: -0.3 }) },
+    }));
+    expect(r.recommendations.find((x) => x.ticker === "AAA")!.action).toBe("MANTENER");
   });
 
   it("muy sobrevalorada pero atractivo FUERTE ⇒ MANTENER (no venta por un solo DCF)", () => {
