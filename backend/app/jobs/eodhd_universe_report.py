@@ -188,7 +188,7 @@ def dump_advisor() -> dict:
     ca = w.select_rows("corporate_actions", select="ticker,ratio,ex_date", params={"order": "ex_date", "ticker": inq}) if held else []
     prices = w.select_rows("prices", select="ticker,close,as_of", params={"order": "ticker", "ticker": inq}) if held else []
     inst = w.select_rows("instruments", select="ticker,name,asset_class,currency,sector", params={"order": "ticker", "ticker": inq}) if held else []
-    scan = w.select_rows("v_latest_scan", select="ticker,name,sector,composite,factor_value,factor_quality,factor_growth,factor_momentum,factor_low_risk", params={"order": "rank"})
+    scan = w.select_rows("v_latest_scan", select="*", params={"order": "rank"})
     funds = w.select_rows("fundamentals", select="ticker,payload", params={"order": "ticker", "ticker": inq}) if held else []
     settings = w.select_rows("settings", select="capital_available,max_weight_per_asset,max_weight_per_sector", params={"order": "user_id"})
     FKEEP = ("pe_ttm", "eps", "eps_annual", "eps_ttm", "fcf_annual", "fcf_ttm", "net_debt",
