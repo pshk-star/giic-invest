@@ -208,3 +208,17 @@ def test_enrich_scan_payloads_edgar_suficiente_conserva_previo(monkeypatch):
     s = E.enrich_scan_payloads(payloads, ["ASML"], prev_payloads=prev, enabled=True)
     assert payloads["ASML"]["enrichment"]["carried_forward"] is True   # no se borra el bloque previo
     assert s["carry_forward"] == 1
+
+
+def test_build_block_separa_cuarentena():
+    enriched = {
+        "cash": {"value": 50, "currency": "USD", "source": "EODHD", "period": "2026-09-30",
+                 "period_type": "balance_instantaneo", "state": "parcial", "usable": True, "valuation_eligible": True},
+        "revenue_annual": {"value": 900, "currency": "USD", "source": "EODHD", "period": "2025-12-31",
+                           "period_type": "anual", "state": "inconsistente", "usable": False, "valuation_eligible": False},
+    }
+    blk = E.build_enrichment_block("JPM", "JPM.US", "USD", "2026-09-30", enriched)
+    assert "cash" in blk["fields"] and "revenue_annual" not in blk["fields"]
+    assert "revenue_annual" in blk["quarantine"]          # inconsistente → cuarentena, nunca en fields
+    assert blk["quarantine"]["revenue_annual"]["quality_state"] == "inconsistente"
+    assert "valuation_eligible_meaning" in blk            # aclara elegible != verificado

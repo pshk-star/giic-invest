@@ -263,11 +263,11 @@ def build_enrichment_block(ticker: str, symbol, currency, edgar_data_end, enrich
     """Bloque ADITIVO para fundamentals.payload.enrichment. Cada métrica lleva valor, moneda,
     fuente+símbolo, fecha de cierre, tipo de período, estado de calidad y elegibilidad de valoración.
     NO altera los campos EDGAR (viven en el nivel superior del payload)."""
-    fields = {}
+    fields, quarantine = {}, {}
     for name, info in enriched.items():
         if info.get("value") is None:
             continue
-        fields[name] = {
+        rec = {
             "value": info["value"],
             "currency": info.get("currency"),
             "source": info.get("source"),
@@ -279,14 +279,25 @@ def build_enrichment_block(ticker: str, symbol, currency, edgar_data_end, enrich
             "valuation_eligible": bool(info.get("valuation_eligible")),
         }
         if info.get("valuation_note"):
-            fields[name]["valuation_note"] = info["valuation_note"]
+            rec["valuation_note"] = info["valuation_note"]
+        # Cuarentena: los inconsistentes se CONSERVAN (auditoría) en un bloque aparte y NUNCA en
+        # 'fields' (nunca usables). valuation_eligible/verified aquí son orthogonales: 'fields' puede
+        # tener datos elegibles por período pero sólo 'parcial' (no verificados) — la valoración
+        # aplica sus propios controles además de valuation_eligible.
+        if info["state"] == "inconsistente":
+            quarantine[name] = rec
+        else:
+            fields[name] = rec
     return {
         "schema_version": ENRICHMENT_SCHEMA_VERSION,
         "source": "EODHD Fundamentals Data Feed",
         "symbol": symbol,
         "currency": currency,
         "edgar_data_end": edgar_data_end,
+        "valuation_eligible_meaning": ("período/definición apto para valoración; NO implica "
+                                       "verificación: revisar quality_state y controles de Fair Value"),
         "fields": fields,
+        "quarantine": quarantine,
     }
 
 
@@ -302,7 +313,7 @@ def attach_enrichment(edgar_payload: dict, enrichment_block, enabled: bool = Tru
     out = dict(edgar_payload or {})
     if "enrichment" in (edgar_payload or {}) and not isinstance(edgar_payload.get("enrichment"), dict):
         raise ValueError("colisión: el payload EDGAR ya usa 'enrichment' con otro tipo")
-    fresh = bool(enabled and enrichment_block and enrichment_block.get("fields"))
+    fresh = bool(enabled and enrichment_block and (enrichment_block.get("fields") or enrichment_block.get("quarantine")))
     if fresh:
         out["enrichment"] = enrichment_block
     elif prev_block and isinstance(prev_block, dict) and prev_block.get("fields"):
