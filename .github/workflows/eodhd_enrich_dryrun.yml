@@ -1,0 +1,36 @@
+name: GIIC P0.2 dry-run enriquecimiento EODHD (solo lectura, sin escritura)
+
+# Dispara al empujar a la rama P0.2 (corre desde la rama misma, no toca main) y manualmente.
+# NO escribe en Supabase ni activa el scan productivo: sólo compara payload actual vs enriquecido.
+on:
+  push:
+    branches: ["p0.1-fundamentals-enrich"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dryrun:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install httpx pandas
+      - name: Dry-run enriquecimiento EODHD (comparación sin escribir)
+        env:
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
+        run: python -m app.jobs.eodhd_enrich --dry-run | tee /tmp/dryrun.json || true
+      - name: Publicar reporte como artefacto (sin credenciales)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eodhd-enrich-dryrun
+          path: /tmp/dryrun.json
+          if-no-files-found: ignore

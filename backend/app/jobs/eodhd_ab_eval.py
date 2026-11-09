@@ -18,7 +18,6 @@ import time
 from datetime import date
 
 from app.core.normalize import _ttm_best
-from app.core.quality import field_applies, is_financial_sector
 from app.core.recency import assess_recency
 from app.core.connectors.eodhd import EodhdFundamentalsConnector, reconcile_quality
 from app.core.connectors.fundamentals_enrich import edgar_annual_series, is_materially_fresher
@@ -26,8 +25,8 @@ from app.providers.edgar import parse_companyfacts
 from app.services.identity import resolve_identity
 from app.jobs.coverage_battery import UNIVERSE, ADR_SEED, FX
 from app.jobs.e3_coverage_diag import _pick_tax, _ref_period, _parse_date
-from app.jobs.e3_final_eval import (_submissions_recency, _fiscal_cadence, _present, _segment,
-                                    FV_FIELDS, CORP_CATS, EVAL_DATE)
+from app.jobs.e3_final_eval import (_submissions_recency, _fiscal_cadence, _segment,
+                                    build_edgar_states, CORP_CATS, EVAL_DATE)
 
 CORE = ("revenue", "net_income", "ocf", "cash")   # lo que EODHD aporta con calidad suficiente
 
@@ -166,18 +165,8 @@ def run() -> dict:
         blocked = f.data_quality == "bloqueado"
         seg = _segment(cat_of[t], sic)
 
-        # BEFORE (EDGAR): estado por campo.
-        before = {}
-        for fld in FV_FIELDS:
-            present = _present(facts, tax, M, ref, f, fld)
-            if blocked:
-                before[fld] = "bloqueado"
-            elif present:
-                before[fld] = "vigente" if rec["estado"] == "vigente" else "presente_no_vigente"
-            elif not field_applies(fld, sic):
-                before[fld] = "no_aplica"
-            else:
-                before[fld] = "faltante"
+        # BEFORE (EDGAR): estado por campo (lógica compartida con el enriquecimiento productivo).
+        before = build_edgar_states(facts, tax, M, ref, f, sic, blocked, rec["estado"])
 
         # EODHD: fetch + conciliación contra EDGAR (mismo período/moneda).
         eo = {}
