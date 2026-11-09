@@ -365,15 +365,13 @@ def build_enrich_universe(writer, scanner_tickers) -> dict:
     add(scanner_tickers, "scanner")
     if writer is not None:
         try:
-            add(writer.get_transaction_tickers(), "cartera")
-        except Exception:
-            pass
-        try:
-            rows = writer.select_rows("instruments", select="ticker", params={"order": "ticker"})
-            add([r["ticker"] for r in rows if r.get("ticker")], "research/instruments")
+            add(writer.get_transaction_tickers(), "cartera")   # posiciones reales del usuario
         except Exception:
             pass
     add(list(EODHD_SYMBOLS.keys()), "internacional")
+    # NOTA: la tabla `instruments` es un CATÁLOGO de identidad (~12.9k tickers), NO un set de Research;
+    # enriquecerla a diario superaría el límite de API y consultaría datos irrelevantes. Las empresas
+    # que el usuario investiga se enriquecen ON-DEMAND en Research (fase siguiente), no en el batch.
     return origin
 
 

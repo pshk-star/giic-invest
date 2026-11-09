@@ -35,7 +35,8 @@ def report() -> dict:
     add(scanner.keys(), "scanner")
 
     writer = None
-    cartera = instruments = []
+    cartera = []
+    catalogo_instruments = 0
     if url and srk:
         from app.jobs.supabase_writer import SupabaseWriter
         writer = SupabaseWriter(url, srk)
@@ -47,13 +48,13 @@ def report() -> dict:
         timings["supabase_cartera"] = round(time.monotonic() - t1, 3)
         t2 = time.monotonic()
         try:
+            # Sólo para CONTEXTO: tamaño del catálogo de identidad (NO entra al universo diario).
             rows = writer.select_rows("instruments", select="ticker", params={"order": "ticker"})
-            instruments = [r["ticker"] for r in rows if r.get("ticker")]
-        except Exception as e:
-            instruments = []; origin["_error_instruments"] = type(e).__name__
-        timings["supabase_instruments"] = round(time.monotonic() - t2, 3)
+            catalogo_instruments = len([r for r in rows if r.get("ticker")])
+        except Exception:
+            catalogo_instruments = -1
+        timings["supabase_instruments_catalogo"] = round(time.monotonic() - t2, 3)
     add(cartera, "cartera")
-    add(instruments, "research/instruments")
     add(list(EODHD_SYMBOLS.keys()), "internacional")
 
     tickers = {t for t in origin if not t.startswith("_")}
@@ -62,12 +63,15 @@ def report() -> dict:
     corporativos = sorted(t for t in tickers if t not in vehiculos)
 
     por_origen = {o: sum(1 for v in origin.values() if isinstance(v, list) and o in v)
-                  for o in ("scanner", "cartera", "research/instruments", "internacional")}
+                  for o in ("scanner", "cartera", "internacional")}
     return {
         "emisores_unicos_total": len(tickers),
         "corporativos_candidatos": len(corporativos),
         "excluidos_vehiculo": len(excluidos),
         "por_origen": por_origen,
+        "catalogo_instruments_filas": catalogo_instruments,
+        "nota_catalogo": "el catálogo instruments (~identidad/autocompletado) NO entra al universo diario; "
+                         "Research se enriquece on-demand para no superar el límite de API",
         "consultas_eodhd_previstas_cota_superior": len(corporativos),
         "nota_consultas": "cota superior; el gate por disponibilidad omite los vigentes en EDGAR (menos consultas reales)",
         "internacionales_eodhd": sorted(EODHD_SYMBOLS.keys()),

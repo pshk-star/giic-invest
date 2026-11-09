@@ -114,7 +114,7 @@ def execute(provider_name: str = "free", top: int = 50, dry_run: bool = False,
                                        create_missing=True)
             enr["universo"] = {"total": len(origin),
                                "por_origen": {o: sum(1 for v in origin.values() if o in v)
-                                              for o in ("scanner", "cartera", "research/instruments", "internacional")}}
+                                              for o in ("scanner", "cartera", "internacional")}}
             summary_enrich = enr
         except Exception as e:
             summary_enrich = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
