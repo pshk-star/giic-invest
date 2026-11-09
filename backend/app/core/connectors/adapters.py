@@ -9,6 +9,7 @@ y la cobertura son por metadatos.
 """
 from __future__ import annotations
 
+import os
 from typing import Dict, List, Optional
 
 from ..types import Fundamentals
@@ -302,14 +303,20 @@ class EdgarDimensionalConnector:
 
 
 def build_default_registry(edgar_user_agent: Optional[str] = None,
-                           max_cost: CostTier = CostTier.FREE) -> ConnectorRegistry:
-    """Registro por defecto de la arquitectura $0. Los conectores se construyen perezosamente;
-    el catálogo/health es legible sin red. `max_cost` por defecto FREE (USD 0); subirlo a TRIAL/
-    COMMERCIAL habilita conectores de pago (requiere autorización explícita del operador)."""
+                           max_cost: CostTier = CostTier.FREE,
+                           eodhd_api_key: Optional[str] = None) -> ConnectorRegistry:
+    """Registro por defecto. Los conectores se construyen perezosamente; el catálogo/health es
+    legible sin red. `max_cost` FREE (USD 0) por defecto; subirlo a COMMERCIAL habilita conectores de
+    pago (autorización explícita). EODHD (COMMERCIAL) se registra sólo si hay clave; aun registrado,
+    el gate de costo decide si se invoca."""
     reg = ConnectorRegistry(max_cost=max_cost)
     reg.register(EdgarFundamentalsConnector(user_agent=edgar_user_agent))
     reg.register(EdgarDimensionalConnector(user_agent=edgar_user_agent))
     reg.register(YahooStatsConnector())
     reg.register(FrankfurterFxConnector())
     reg.register(PricesConnector())
+    key = eodhd_api_key if eodhd_api_key is not None else os.getenv("EODHD_API_KEY", "")
+    if key:
+        from .eodhd import EodhdFundamentalsConnector
+        reg.register(EodhdFundamentalsConnector(api_key=key))
     return reg
