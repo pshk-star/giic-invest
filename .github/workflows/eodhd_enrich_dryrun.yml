@@ -32,6 +32,11 @@ jobs:
           EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
           EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
         run: python -m app.jobs.eodhd_enrich --dry-run | tee /tmp/dryrun.json || true
+      - name: Línea base EDGAR-only (dry-run, SIN flag) — debe comportarse como hoy
+        env:
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
+        # Sin GIIC_EODHD_ENRICH: el hook queda inerte; eodhd_enrich.enabled=False, sin bloque enrichment.
+        run: python -m app.jobs.run_scan --dry-run --tickers AAPL,META,XOM,JPM | tee /tmp/baseline.json || true
       - name: Simulación de scan con hook EODHD ACTIVO (dry-run, SIN persistencia)
         env:
           GIIC_EODHD_ENRICH: "1"
