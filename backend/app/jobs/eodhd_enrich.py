@@ -324,6 +324,31 @@ def attach_enrichment(edgar_payload: dict, enrichment_block, enabled: bool = Tru
     return out
 
 
+def eodhd_primary_block(conn, t: str):
+    """Para un emisor SIN presentaciones SEC (sin ancla EDGAR) que SÍ está en EODHD: construye un
+    bloque de enriquecimiento de FUENTE PRIMARIA EODHD, marcado explícitamente (moneda/mercado/período/
+    calidad), SIN fabricar datos ni atribuirlos a EDGAR. Reutiliza la lógica compartida con EDGAR vacío
+    (todo queda `parcial`, nunca `verificado`). Devuelve (block, currency) o (None, None)."""
+    try:
+        got = conn.fetch([t]) or {}
+    except Exception:
+        return None, None
+    fm = got.get(t, {}) or {}
+    if not fm:
+        return None, None
+    eo_ccy = next((pf.currency for pf in fm.values() if getattr(pf, "currency", None)), None)
+    # Sin EDGAR: edgar_series vacío y edgar_states vacío → sin conciliación (todo parcial), sin precedencia.
+    enriched = enrich_fundamentals(fm, {}, None, same_currency=True, edgar_states={})
+    try:
+        sym, _adr, obj = conn._resolve(t)
+    except Exception:
+        sym, obj = None, None
+    enriched = annotate_valuation(enriched, field_period_types(obj) if obj else {})
+    block = build_enrichment_block(t, sym, eo_ccy, None, enriched)
+    block["source_kind"] = "eodhd_primary"   # fuente primaria EODHD, SIN ancla SEC
+    return block, eo_ccy
+
+
 def build_enrich_universe(writer, scanner_tickers) -> dict:
     """Universo UNIFICADO y deduplicado de enriquecimiento con su origen. Unión de: scanner US,
     cartera (transacciones), instrumentos añadidos por Research (tabla instruments) e internacionales
@@ -417,7 +442,18 @@ def enrich_scan_payloads(payloads: dict, tickers, prev_payloads=None, eval_date=
             except Exception:
                 base = None
             if base is None:
-                summary["sin_ancla_edgar"].append(t)   # internacional sin presentaciones EDGAR → se omite
+                # Sin ancla SEC: si EODHD lo cubre, se persiste como FUENTE PRIMARIA EODHD (explícita,
+                # sin campos EDGAR fabricados). Si tampoco está en EODHD, se omite.
+                blk, eo_ccy = eodhd_primary_block(conn, t)
+                summary["fetches_eodhd"] += 1
+                if blk and (blk.get("fields") or blk.get("quarantine")):
+                    payloads[t] = {"ticker": t, "source_kind": "eodhd_primary",
+                                   "currency": eo_ccy, "enrichment": blk}
+                    summary["eodhd_primary"] = summary.get("eodhd_primary", 0) + 1
+                    if blk.get("fields"):
+                        summary["enriquecidos"] += 1
+                else:
+                    summary["sin_ancla_edgar"].append(t)
                 continue
             payloads[t] = base                     # se persistirá (nuevo emisor en fundamentals)
             summary["creados_desde_edgar"] += 1
