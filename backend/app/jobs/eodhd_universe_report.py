@@ -83,8 +83,56 @@ def report() -> dict:
     }
 
 
+def verify_enrichment(tickers) -> dict:
+    """Lectura directa de Supabase (evidencia): para cada ticker, resumen del bloque enrichment
+    persistido (fuente, campos, cuarentena, estados) y preservación de EDGAR. Más la cuenta de las
+    309 predicciones y el último scan completado (integridad)."""
+    url = os.getenv("SUPABASE_URL", ""); srk = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    from app.jobs.supabase_writer import SupabaseWriter
+    w = SupabaseWriter(url, srk)
+    tu = [t.upper() for t in tickers]
+    rows = w.select_rows("fundamentals", select="ticker,payload",
+                         params={"order": "ticker", "ticker": f"in.({','.join(tu)})"})
+    pay = {r["ticker"].upper(): (r.get("payload") or {}) for r in rows}
+    out = {}
+    for t in tu:
+        p = pay.get(t)
+        if p is None:
+            out[t] = {"fila": "ausente"}; continue
+        enr = p.get("enrichment") or {}
+        fl = enr.get("fields", {}) or {}
+        out[t] = {
+            "source_kind": p.get("source_kind", "edgar+eodhd"),
+            "tiene_enrichment": bool(enr),
+            "symbol": enr.get("symbol"), "currency": enr.get("currency"),
+            "n_fields": len(fl), "quarantine": sorted((enr.get("quarantine") or {}).keys()),
+            "carried_forward": bool(enr.get("carried_forward")),
+            "aptos_valoracion": sorted(k for k, v in fl.items() if v.get("valuation_eligible")),
+            "edgar_pe_ttm": p.get("pe_ttm"), "edgar_as_of": p.get("as_of"),
+            "muestra_campo": next(({"campo": k, **{x: v.get(x) for x in ("period_type", "quality_state", "period_end", "currency")}}
+                                   for k, v in fl.items()), None),
+        }
+    try:
+        preds = w.select_rows("predictions", select="id", params={"order": "id", "origin": "eq.production"})
+        out["_predicciones_produccion"] = len(preds)
+    except Exception as e:
+        out["_predicciones_produccion"] = f"error: {type(e).__name__}"
+    try:
+        runs = w.select_rows("scan_runs", select="id,as_of,status",
+                             params={"order": "as_of.desc", "status": "eq.completed", "limit": "1"})
+        out["_ultimo_scan"] = runs[0] if runs else None
+    except Exception:
+        out["_ultimo_scan"] = None
+    return out
+
+
 def main(argv=None):
-    print(json.dumps(report(), ensure_ascii=False, indent=1, default=str))
+    verify = os.getenv("GIIC_VERIFY_TICKERS", "")
+    if verify:
+        tickers = [t.strip() for t in verify.split(",") if t.strip()]
+        print(json.dumps(verify_enrichment(tickers), ensure_ascii=False, indent=1, default=str))
+    else:
+        print(json.dumps(report(), ensure_ascii=False, indent=1, default=str))
     return 0
 
 

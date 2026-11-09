@@ -107,7 +107,10 @@ def execute(provider_name: str = "free", top: int = 50, dry_run: bool = False,
             from .eodhd_enrich import enrich_scan_payloads, build_enrich_universe, read_fundamentals_payloads
             # Universo UNIFICADO: scanner ∪ cartera ∪ Research(instruments) ∪ internacionales EODHD.
             origin = build_enrich_universe(writer, [i.ticker for i in universe])
-            enrich_tickers = sorted(origin.keys())
+            # Excluir vehículos (ETF/trust): no tienen fundamentales corporativos → no se consulta EODHD.
+            from ..core.types import AssetClass
+            vehiculos = {i.ticker.upper() for i in universe if i.asset_class != AssetClass.EQUITY}
+            enrich_tickers = sorted(t for t in origin if t not in vehiculos)
             prev_payloads = read_fundamentals_payloads(writer, enrich_tickers) if writer is not None else {}
             enr = enrich_scan_payloads(result.get("fundamentals_payload", {}), enrich_tickers,
                                        prev_payloads=prev_payloads, eval_date=today, enabled=True,
