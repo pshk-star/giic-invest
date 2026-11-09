@@ -17,10 +17,11 @@ import sys
 import time
 from datetime import date
 
-from app.core.normalize import _at, _best_annual, _best_instant, _ttm_best, _concept
+from app.core.normalize import _ttm_best
 from app.core.quality import field_applies, is_financial_sector
 from app.core.recency import assess_recency
 from app.core.connectors.eodhd import EodhdFundamentalsConnector, reconcile_quality
+from app.core.connectors.fundamentals_enrich import edgar_annual_series, is_materially_fresher
 from app.providers.edgar import parse_companyfacts
 from app.services.identity import resolve_identity
 from app.jobs.coverage_battery import UNIVERSE, ADR_SEED, FX
@@ -29,15 +30,6 @@ from app.jobs.e3_final_eval import (_submissions_recency, _fiscal_cadence, _pres
                                     FV_FIELDS, CORP_CATS, EVAL_DATE)
 
 CORE = ("revenue", "net_income", "ocf", "cash")   # lo que EODHD aporta con calidad suficiente
-
-
-def edgar_annual_series(facts, tax, M, ccy):
-    out = {}
-    for field, concepts, inst in (("revenue", M["rev"], False), ("net_income", M["ni"], False),
-                                  ("ocf", M["ocf"], False), ("cash", M["cash"], True)):
-        pts = (_best_instant if inst else _best_annual)(facts, tax, concepts, ccy)
-        out[field] = {d.isoformat(): v for d, v in pts}
-    return out
 
 
 def _data_end(facts, tax, M, ccy, f):
@@ -220,7 +212,7 @@ def run() -> dict:
                 continue
             if before[core] == "vigente":
                 continue  # EDGAR ya vigente → preservar dato oficial, sin mejora
-            if data_end is not None and (pe - data_end).days <= 75:
+            if not is_materially_fresher(pe, data_end):
                 continue  # mismo período económico (jitter de fechas) → no es más fresco
             if before[core] in ("presente_no_vigente", "faltante"):
                 after[core] = "vigente_eodhd"
