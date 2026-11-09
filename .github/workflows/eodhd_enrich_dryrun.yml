@@ -5,6 +5,7 @@ name: GIIC P0.2 dry-run enriquecimiento EODHD (solo lectura, sin escritura)
 on:
   push:
     branches: ["p0.1-fundamentals-enrich"]
+    paths-ignore: ["docs/**", "**/*.md"]   # commits de documentación no regastan API
   workflow_dispatch:
 
 permissions:
