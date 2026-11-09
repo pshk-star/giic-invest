@@ -30,6 +30,65 @@ export interface FundamentalsPayload {
   currency?: string | null;       // divisa de reporte (EDGAR): USD, EUR, TWD, ...
   as_of?: string | null;          // fin del último ejercicio anual usado (YYYY-MM-DD)
   taxonomy?: string | null;       // us-gaap | ifrs-full (procedencia)
+
+  // Campos EDGAR adicionales ya persistidos (dataclass → payload):
+  eps_annual?: number | null;     // EPS diluido anual (USD/ADR)
+  eps_ttm?: number | null;        // EPS diluido TTM
+  fcf_annual?: number | null;     // FCF anual (OCF − CAPEX)
+  fcf_ttm?: number | null;        // FCF TTM
+  net_debt?: number | null;       // deuda neta (divisa de reporte)
+  gross_debt?: number | null;     // deuda bruta
+  cash_and_sti?: number | null;   // caja + inversiones de corto plazo
+  operating_margin?: number | null;
+  gross_margin?: number | null;
+  diluted_shares?: number | null; // acciones diluidas ponderadas (solo EDGAR)
+  ni_period?: string | null;
+
+  source_kind?: string | null;    // 'eodhd_primary' si no hay ancla SEC
+  enrichment?: EnrichmentBlock | null;
+  history?: HistoryBlock | null;
+}
+
+// Campo enriquecido (EODHD) con procedencia, período y calidad — NO confundir elegible con verificado.
+export interface EnrichedField {
+  value: number | null;
+  currency?: string | null;
+  source?: string | null;
+  symbol?: string | null;
+  period_end?: string | null;
+  period_type?: string | null;    // anual | ttm | trimestre_individual | ytd_acumulado | balance_instantaneo | indeterminado
+  quality_state?: string | null;  // verificado | parcial | desactualizado | inconsistente | faltante
+  usable_recency?: boolean;
+  valuation_eligible?: boolean;
+  valuation_note?: string | null;
+}
+
+export interface EnrichmentBlock {
+  schema_version?: string;
+  generated_at?: string;
+  source?: string;
+  symbol?: string | null;
+  currency?: string | null;
+  edgar_data_end?: string | null;
+  valuation_eligible_meaning?: string;
+  source_kind?: string;
+  carried_forward?: boolean;
+  fields?: Record<string, EnrichedField>;
+  quarantine?: Record<string, EnrichedField>;
+}
+
+export interface HistoryRecord {
+  period_end: string;
+  revenue: number | null; net_income: number | null; operating_income: number | null;
+  ocf: number | null; capex: number | null; fcf: number | null;
+  cash: number | null; gross_debt: number | null; net_debt: number | null;
+  op_margin: number | null; net_margin: number | null;
+}
+
+export interface HistoryBlock {
+  source?: string;
+  currency?: string | null;
+  annual?: HistoryRecord[];
 }
 
 export function median(xs: Array<number | null | undefined>): number | null {

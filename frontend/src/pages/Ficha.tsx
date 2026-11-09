@@ -8,6 +8,7 @@ import {
 } from "../data";
 import { QuoteView } from "../components/Quote";
 import { PriceChart } from "../components/PriceChart";
+import { FinancialFiche } from "../components/FinancialFiche";
 import { derivePositions, portfolioTotals } from "../core/portfolio-tx";
 import { buildAssets, forecast, hasMixedAdjustment } from "../core/forecast";
 import {
@@ -125,15 +126,6 @@ function StatProjectionBody({ result, price, horizon, setHorizon, drift, setDrif
   );
 }
 
-function Metric({ label, value, help }: { label: string; value: string; help?: string }) {
-  return (
-    <div className="rounded-lg border border-term-border bg-term-panel2 p-2.5">
-      <div className="text-[10px] uppercase tracking-wide text-term-faint">{label}</div>
-      <div className="font-mono text-base tabnum text-term-fg">{value}</div>
-      {help && <div className="text-[10px] text-term-faint">{help}</div>}
-    </div>
-  );
-}
 
 export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: string; embedded?: boolean }) {
   const ticker = (rawTicker ?? "").toUpperCase();
@@ -404,26 +396,11 @@ export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: st
         </Panel>
       ) : (
         <>
-          <Panel title="Fundamentales (reales, de SEC EDGAR)">
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <Metric label="P/E (anual)" value={fund.pe_ttm !== null ? `${num(fund.pe_ttm, 1)}×` : "—"} help={fund.as_of ? `EPS del ejercicio ${fund.as_of}, no TTM` : "sobre EPS del último ejercicio, no TTM"} />
-              <Metric label="FCF yield" value={pct(fund.fcf_yield)} />
-              <Metric label="ROE" value={pct(fund.roe)} />
-              <Metric label="Margen neto" value={pct(fund.net_margin)} />
-              <Metric label="Crec. ingresos" value={pct(fund.rev_growth_yoy)} help="interanual" />
-              <Metric label="Crec. EPS" value={pct(fund.eps_growth_yoy)} help="interanual" />
-              <Metric label="Deuda/Capital" value={fund.debt_to_equity !== null ? `${num(fund.debt_to_equity, 2)}×` : "—"} />
-              <Metric label="Market cap" value={moneyScale(fund.market_cap)} help="USD; para ADR = precio × (acciones ordinarias / ratio ADR)" />
-            </div>
-            <p className="mt-2 text-[11px] text-term-faint">
-              Fuente: SEC EDGAR ({fund.taxonomy ?? "companyfacts"}{fund.currency ? ` · divisa de reporte ${fund.currency}` : ""}){fund.as_of ? ` · ejercicio anual al ${fund.as_of}` : ""}.
-              {" "}El P/E usa el EPS de ese ejercicio anual, <b>no es un P/E TTM</b> (el EPS interino no está en el XBRL de forma fiable).
-              {fund.currency && fund.currency !== "USD" && " Márgenes, ROE y crecimientos son adimensionales (correctos en cualquier divisa); P/E y market cap se expresan en USD."}
-            </p>
-            {missing.length > 0 && (
-              <p className="mt-2 text-xs text-term-warn">No disponibles gratis: {missing.join(", ")}.</p>
-            )}
-          </Panel>
+          <FinancialFiche fund={fund} />
+          <div className="text-[11px] text-term-faint px-1">
+            Market cap {moneyScale(fund.market_cap)} (USD; para ADR = precio × acciones ordinarias / ratio ADR).
+            {fund.currency && fund.currency !== "USD" && " Márgenes/ROE/crecimientos son adimensionales; P/E y market cap en USD."}
+          </div>
 
           <Panel title="Valoración relativa (comparables del sector · supuestos transparentes)">
             {peerCount === 0 ? (
