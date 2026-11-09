@@ -150,6 +150,30 @@ def run() -> dict:
                 time.sleep(0.12)
             except Exception as e:
                 edgar_diag["companyconcept_NI_ultimo"] = type(e).__name__
+        # Diagnóstico de identificación: si la serie EDGAR quedó vacía, ¿el ticker resuelve a OTRA
+        # CIK (filer con 10-K reales) distinta de la de company_tickers.json? browse-edgar?ticker=
+        # devuelve el emisor con presentaciones efectivas; si esa CIK sí tiene serie anual, el fallo
+        # es de IDENTIFICACIÓN (tickers.json apunta a entidad equivocada), no cobertura real.
+        if not series["revenue"]:
+            try:
+                ae = cli.get("https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
+                             f"&ticker={t}&type=10-K&count=1&output=atom")
+                mm = re.search(r"<cik>\s*(\d+)\s*</cik>", ae.text or "")
+                alt = int(mm.group(1)) if mm else None
+                edgar_diag["browse_edgar_cik"] = alt
+                if alt and alt != cik:
+                    jj = _fetch_facts(cli, alt)
+                    if jj is not None:
+                        tax2, ccy2, M2 = _pick_tax(jj)
+                        s2 = edgar_annual_series(jj, tax2, M2, ccy2)
+                        edgar_diag["alt_cik_n_revenue"] = len(s2["revenue"])
+                        edgar_diag["alt_cik_ultimo_revenue"] = max(s2["revenue"]) if s2["revenue"] else None
+                        edgar_diag["alt_cik_entityName"] = (jj.get("entityName") or "")[:60]
+                    else:
+                        edgar_diag["alt_cik_n_revenue"] = "sin_facts"
+                time.sleep(0.12)
+            except Exception as e:
+                edgar_diag["browse_edgar_cik"] = type(e).__name__
         later = bool(latest_report and data_end and (latest_report - data_end).days > 20)
         rec = assess_recency(data_end, EVAL_DATE, cadence_days=cadence, lag_days=lag,
                              later_report_exists=later, window=f.eps_ttm_window)
