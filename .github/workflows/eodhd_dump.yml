@@ -34,8 +34,10 @@ jobs:
         run: |
           cd backend
           python -m app.jobs.eodhd_universe_report > ../dump.json
-          echo "----- claves por ticker (sin valores sensibles de credencial) -----"
-          python -c "import json;d=json.load(open('../dump.json'));print({k:(list(v.keys()) if isinstance(v,dict) else v) for k,v in d.items()})"
+          echo "===GIIC_DUMP_BEGIN_B64==="
+          base64 -w0 ../dump.json
+          echo ""
+          echo "===GIIC_DUMP_END_B64==="
       - name: Subir artefacto
         if: always()
         uses: actions/upload-artifact@v4
