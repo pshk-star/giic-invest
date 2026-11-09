@@ -34,9 +34,10 @@ jobs:
         run: |
           cd backend
           python -m app.jobs.eodhd_universe_report > ../dump.json
+          echo "DUMP_BYTES=$(wc -c < ../dump.json)"
+          python -c "import json;d=json.load(open('../dump.json'));print('KEYS',{k:(list(v.keys()) if isinstance(v,dict) else v) for k,v in d.items()})"
           echo "===GIIC_DUMP_BEGIN_B64==="
-          base64 -w0 ../dump.json
-          echo ""
+          base64 ../dump.json | sed 's/^/B64:/'
           echo "===GIIC_DUMP_END_B64==="
       - name: Subir artefacto
         if: always()
