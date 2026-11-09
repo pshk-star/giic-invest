@@ -40,10 +40,11 @@ describe("buildAdvice2 — asignación exacta y efectivo", () => {
 
 describe("buildAdvice2 — convergencia de evidencia (no un solo DCF)", () => {
   it("infravalorada + atractivo suficiente ⇒ ACUMULAR y elegible para asignación", () => {
+    // AAA con espacio bajo el tope por activo (1000 de una cartera de 10000 + 3000 aporte).
     const r = buildAdvice2(base({
-      holdings: [hold("AAA", 5000, 0.1)], cash: 3000,
-      scan: [{ ticker: "AAA", sector: "Tech", composite: 60 }],
-      fv: { AAA: fv({ marginBase: 0.2, confidence: "Alta" }) },
+      holdings: [hold("AAA", 1000, 0.1), hold("BBB", 9000, 0.9, "Health")], cash: 3000,
+      scan: [{ ticker: "AAA", sector: "Tech", composite: 60 }, { ticker: "BBB", sector: "Health", composite: 50 }],
+      fv: { AAA: fv({ marginBase: 0.2, confidence: "Alta" }), BBB: fv({ marginBase: 0 }) },
     }));
     const rec = r.recommendations.find((x) => x.ticker === "AAA")!;
     expect(rec.action).toBe("ACUMULAR");
