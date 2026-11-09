@@ -117,6 +117,21 @@ def annotate_valuation(enriched: dict, period_types: dict) -> dict:
     return enriched
 
 
+# Campos que EODHD puede aportar y que decide el gate (núcleo de flujo + saldos de balance).
+GATE_FIELDS = ("revenue", "net_income", "ocf", "cash", "capex", "net_debt")
+
+
+def should_query_eodhd(edgar_states: dict, needed=GATE_FIELDS) -> bool:
+    """Gate por disponibilidad real: consultar EODHD si ALGÚN campo requerido no está vigente en
+    EDGAR (faltante / presente_no_vigente / bloqueado). Si todos están 'vigente' o 'no_aplica'
+    (el emisor no los reporta), EDGAR es suficiente y NO se consulta EODHD."""
+    for fld in needed:
+        st = edgar_states.get(fld, "faltante")
+        if st in ("faltante", "presente_no_vigente", "bloqueado"):
+            return True
+    return False
+
+
 def classify_enriched(enriched: dict, edgar_payload: dict):
     """Clasifica el resultado de enrich_fundamentals para el reporte y calcula el diff contra el
     payload EDGAR ACTUAL. Pura (sin red): cuarentena (inconsistente), nuevos usables, rechazados, y
@@ -189,6 +204,14 @@ def enrich_one(prov: EDGARProvider, conn, t: str, eval_date: date) -> dict:
     # Alias EPS: EDGAR lleva estado 'eps' (anual); el conector emite eps_ttm/eps_annual.
     edgar_states["eps_ttm"] = edgar_states.get("eps_ttm") or edgar_states.get("eps", "faltante")
     edgar_states["eps_annual"] = edgar_states.get("eps", "faltante")
+
+    # Gate de costo POR DISPONIBILIDAD REAL de campos (no sólo por vigencia del ejercicio anual):
+    # si EDGAR ya cubre y tiene vigentes TODOS los campos núcleo/balance, EODHD no aporta → no se
+    # consulta (ahorro de API). Basta que falte o esté no-vigente uno para justificar la consulta.
+    if not should_query_eodhd(edgar_states):
+        return {"ticker": t, "status": "edgar_suficiente", "eodhd_called": False,
+                "edgar_vigencia": rec["estado"], "edgar_data_end": data_end.isoformat() if data_end else None,
+                "nota": "EDGAR vigente en todos los campos núcleo/balance; EODHD no se consulta"}
 
     # EODHD: una consulta por instrumento (el conector resuelve símbolo/ADR y cachea).
     eodhd_called = False
@@ -267,18 +290,89 @@ def build_enrichment_block(ticker: str, symbol, currency, edgar_data_end, enrich
     }
 
 
-def attach_enrichment(edgar_payload: dict, enrichment_block, enabled: bool = True) -> dict:
+def attach_enrichment(edgar_payload: dict, enrichment_block, enabled: bool = True,
+                      prev_block=None) -> dict:
     """Combina el payload EDGAR actual con el bloque de enriquecimiento, de forma ADITIVA e
     IDEMPOTENTE. Protección contra sobrescritura: NUNCA modifica un campo EDGAR existente; sólo fija
-    la clave 'enrichment'. `enabled=False` (o bloque vacío) → payload EDGAR intacto (fail-safe)."""
+    la clave 'enrichment'. `enabled=False` → payload EDGAR intacto (fail-safe).
+
+    PRESERVACIÓN ENTRE SCANS (carry-forward): si en este scan no hay bloque fresco (EODHD caído,
+    sin clave o gate), pero existe uno previo (`prev_block`), se conserva marcándolo `carried_forward`
+    para NO borrar el enriquecimiento ya publicado. Los campos EDGAR siempre quedan intactos."""
     out = dict(edgar_payload or {})
-    if not enabled or not enrichment_block or not (enrichment_block.get("fields")):
-        return out                                  # fail-safe: EDGAR intacto, sin bloque enrichment
-    # Garantía de no-colisión: 'enrichment' no debe pisar ningún campo EDGAR existente.
-    if "enrichment" in (edgar_payload or {}) and not isinstance(edgar_payload["enrichment"], dict):
+    if "enrichment" in (edgar_payload or {}) and not isinstance(edgar_payload.get("enrichment"), dict):
         raise ValueError("colisión: el payload EDGAR ya usa 'enrichment' con otro tipo")
-    out["enrichment"] = enrichment_block
+    fresh = bool(enabled and enrichment_block and enrichment_block.get("fields"))
+    if fresh:
+        out["enrichment"] = enrichment_block
+    elif prev_block and isinstance(prev_block, dict) and prev_block.get("fields"):
+        carried = dict(prev_block)
+        carried["carried_forward"] = True           # no se refrescó en este scan; se preserva
+        out["enrichment"] = carried
+    # si no hay fresco ni previo → no se añade nada (EDGAR intacto)
     return out
+
+
+def enrich_scan_payloads(payloads: dict, tickers, prev_payloads=None, eval_date=None,
+                         enabled: bool = True) -> dict:
+    """Cableado productivo (invocado por run_scan tras el ranking, flag-gated). Enriquece EN SITIO
+    los payloads EDGAR de los equities con el bloque EODHD, aplicando gate de costo, carry-forward y
+    fail-safe. NO toca ranking/factores/predicciones (opera sobre el payload ya calculado). Construye
+    EDGARProvider + conector desde env; sin clave → no hace nada (payloads intactos)."""
+    ua = os.getenv("EDGAR_USER_AGENT", "")
+    key = os.getenv("EODHD_API_KEY", "")
+    prev_payloads = prev_payloads or {}
+    eval_date = eval_date or date.today()
+    summary = {"enabled": bool(enabled), "equities_evaluados": 0, "enriquecidos": 0,
+               "edgar_suficiente": 0, "carry_forward": 0, "sin_edgar_o_vehiculo": 0,
+               "fetches_eodhd": 0, "errores": 0, "muestra": {}}
+    if not (enabled and key and ua and "@" in ua):
+        summary["fail_safe"] = "sin clave/UA o deshabilitado: payloads EDGAR intactos"
+        return summary
+
+    prov = EDGARProvider(user_agent=ua)
+    conn = EodhdFundamentalsConnector(api_key=key)
+    for t in tickers:
+        base = payloads.get(t)
+        if base is None:
+            continue
+        summary["equities_evaluados"] += 1
+        prev_block = (prev_payloads.get(t) or {}).get("enrichment") if isinstance(prev_payloads.get(t), dict) else None
+        try:
+            r = enrich_one(prov, conn, t, eval_date)
+        except Exception:
+            summary["errores"] += 1
+            # fail-safe por ticker: conserva el bloque previo si lo había
+            payloads[t] = attach_enrichment(base, None, enabled=True, prev_block=prev_block)
+            continue
+        status = r.get("status")
+        if r.get("eodhd_called"):
+            summary["fetches_eodhd"] += 1
+        if status == "ok":
+            block = r.get("enrichment_block")
+            payloads[t] = attach_enrichment(base, block, enabled=True, prev_block=prev_block)
+            if block and block.get("fields"):
+                summary["enriquecidos"] += 1
+                flds = block["fields"]
+                summary["muestra"][t] = {
+                    "symbol": block.get("symbol"), "currency": block.get("currency"),
+                    "n_campos": len(flds),
+                    "aptos_valoracion": sorted(k for k, v in flds.items() if v.get("valuation_eligible")),
+                    "solo_recencia": sorted(k for k, v in flds.items() if not v.get("valuation_eligible")),
+                }
+            elif prev_block:
+                summary["carry_forward"] += 1
+        elif status == "edgar_suficiente":
+            summary["edgar_suficiente"] += 1
+            payloads[t] = attach_enrichment(base, None, enabled=True, prev_block=prev_block)  # preserva previo si lo hay
+            if prev_block:
+                summary["carry_forward"] += 1
+        else:  # sin_edgar, no_aplica, eodhd_error
+            summary["sin_edgar_o_vehiculo"] += 1
+            payloads[t] = attach_enrichment(base, None, enabled=True, prev_block=prev_block)
+            if prev_block:
+                summary["carry_forward"] += 1
+    return summary
 
 
 def dry_run(tickers=None, eval_date=None) -> dict:

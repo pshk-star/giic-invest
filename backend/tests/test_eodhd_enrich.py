@@ -143,3 +143,68 @@ def test_attach_enrichment_serializa_json():
     out = E.attach_enrichment(edgar, blk)
     s = json.dumps(out)                        # persistible como JSON (como Supabase payload)
     assert json.loads(s)["enrichment"]["fields"]["ocf"]["period_type"] == "ytd_acumulado"
+
+
+# --- P0.3-final: gate por disponibilidad, carry-forward y orquestador ---
+
+def test_should_query_eodhd_por_disponibilidad():
+    todos_vigentes = {k: "vigente" for k in E.GATE_FIELDS}
+    assert E.should_query_eodhd(todos_vigentes) is False          # EDGAR suficiente → no consultar
+    falta_uno = dict(todos_vigentes); falta_uno["capex"] = "faltante"
+    assert E.should_query_eodhd(falta_uno) is True                # falta un campo → consultar
+    no_aplica = dict(todos_vigentes); no_aplica["net_debt"] = "no_aplica"
+    assert E.should_query_eodhd(no_aplica) is False               # no_aplica no obliga a consultar
+
+
+def test_carry_forward_preserva_bloque_previo():
+    edgar = {"ticker": "ASML", "pe_ttm": 30.0}
+    prev = {"schema_version": "p0.3-1", "fields": {"cash": {"value": 8e9}}}
+    # sin bloque fresco pero con previo → se conserva, marcado carried_forward
+    out = E.attach_enrichment(edgar, None, enabled=True, prev_block=prev)
+    assert out["enrichment"]["carried_forward"] is True
+    assert out["enrichment"]["fields"]["cash"]["value"] == 8e9
+    assert out["pe_ttm"] == 30.0                                  # EDGAR intacto
+
+
+def test_fresco_sobrescribe_previo_sin_carry_flag():
+    edgar = {"ticker": "ASML"}
+    prev = {"schema_version": "p0.3-1", "fields": {"cash": {"value": 1}}}
+    fresh = {"schema_version": "p0.3-1", "fields": {"cash": {"value": 2}}}
+    out = E.attach_enrichment(edgar, fresh, enabled=True, prev_block=prev)
+    assert out["enrichment"]["fields"]["cash"]["value"] == 2
+    assert "carried_forward" not in out["enrichment"]
+
+
+def test_enrich_scan_payloads_failsafe_sin_clave(monkeypatch):
+    monkeypatch.delenv("EODHD_API_KEY", raising=False)
+    payloads = {"AAPL": {"ticker": "AAPL", "pe_ttm": 30.0}}
+    s = E.enrich_scan_payloads(payloads, ["AAPL"], enabled=True)
+    assert payloads["AAPL"] == {"ticker": "AAPL", "pe_ttm": 30.0}  # intacto (fail-safe)
+    assert "fail_safe" in s
+
+
+def test_enrich_scan_payloads_enriquece_y_preserva(monkeypatch):
+    monkeypatch.setenv("EODHD_API_KEY", "k")
+    monkeypatch.setenv("EDGAR_USER_AGENT", "x@y.com")
+    monkeypatch.setattr(E, "EDGARProvider", lambda **k: object())
+    monkeypatch.setattr(E, "EodhdFundamentalsConnector", lambda **k: object())
+    block = {"schema_version": "p0.3-1", "fields": {"ocf": {"value": 500, "period_type": "trimestre_individual"}}}
+    monkeypatch.setattr(E, "enrich_one", lambda prov, conn, t, d: {"status": "ok", "eodhd_called": True, "enrichment_block": block})
+    payloads = {"ASML": {"ticker": "ASML", "pe_ttm": 30.0}}
+    s = E.enrich_scan_payloads(payloads, ["ASML"], enabled=True)
+    assert payloads["ASML"]["enrichment"]["fields"]["ocf"]["value"] == 500
+    assert payloads["ASML"]["pe_ttm"] == 30.0                     # EDGAR intacto
+    assert s["enriquecidos"] == 1
+
+
+def test_enrich_scan_payloads_edgar_suficiente_conserva_previo(monkeypatch):
+    monkeypatch.setenv("EODHD_API_KEY", "k")
+    monkeypatch.setenv("EDGAR_USER_AGENT", "x@y.com")
+    monkeypatch.setattr(E, "EDGARProvider", lambda **k: object())
+    monkeypatch.setattr(E, "EodhdFundamentalsConnector", lambda **k: object())
+    monkeypatch.setattr(E, "enrich_one", lambda prov, conn, t, d: {"status": "edgar_suficiente", "eodhd_called": False})
+    prev = {"ASML": {"ticker": "ASML", "enrichment": {"schema_version": "p0.3-1", "fields": {"cash": {"value": 9}}}}}
+    payloads = {"ASML": {"ticker": "ASML", "pe_ttm": 30.0}}
+    s = E.enrich_scan_payloads(payloads, ["ASML"], prev_payloads=prev, enabled=True)
+    assert payloads["ASML"]["enrichment"]["carried_forward"] is True   # no se borra el bloque previo
+    assert s["carry_forward"] == 1

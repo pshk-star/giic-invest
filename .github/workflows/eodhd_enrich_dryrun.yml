@@ -32,6 +32,13 @@ jobs:
           EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
           EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
         run: python -m app.jobs.eodhd_enrich --dry-run | tee /tmp/dryrun.json || true
+      - name: Simulación de scan con hook EODHD ACTIVO (dry-run, SIN persistencia)
+        env:
+          GIIC_EODHD_ENRICH: "1"
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
+        # Sin credenciales SUPABASE: aunque el flag está activo, dry-run NO escribe nada.
+        run: python -m app.jobs.run_scan --dry-run --tickers AAPL,META,ASML,TSM,XOM,JPM,SPY | tee /tmp/scansim.json || true
       - name: Publicar reporte como artefacto (sin credenciales)
         if: always()
         uses: actions/upload-artifact@v4

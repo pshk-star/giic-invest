@@ -57,7 +57,7 @@ def publish_run(writer, run_id, run_row, snapshot_rows, price_rows, fund_rows, f
 
 def execute(provider_name: str = "free", top: int = 50, dry_run: bool = False,
             sector_relative: bool = True, allow_sample_write: bool = False,
-            writer=None) -> dict:
+            writer=None, tickers=None) -> dict:
     today = date.today()
     run_id = str(uuid.uuid4())
 
@@ -75,6 +75,9 @@ def execute(provider_name: str = "free", top: int = 50, dry_run: bool = False,
         writer = SupabaseWriter(os.getenv("SUPABASE_URL", ""),
                                 os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""))
     universe = get_universe()
+    if tickers:   # override SÓLO para simulación acotada (no afecta producción, que usa el universo completo)
+        want = {t.upper() for t in tickers}
+        universe = [i for i in universe if i.ticker.upper() in want]
     universe_tickers = {i.ticker for i in universe}
     extra_tickers: list[str] = []
     if writer is not None:
@@ -93,6 +96,29 @@ def execute(provider_name: str = "free", top: int = 50, dry_run: bool = False,
         min_coverage=0.4, sector_relative=sector_relative,
     )
 
+    # --- Enriquecimiento EODHD (OPT-IN por flag, fail-safe, POST-ranking) ---
+    # Opera SÓLO sobre fundamentals_payload (lo que ve la UI), después de calcular el ranking:
+    # no altera factores, ranking ni predicciones. Apagado por defecto (sin flag → comportamiento
+    # idéntico al actual). Con escritura, preserva el bloque previo (carry-forward).
+    if os.getenv("GIIC_EODHD_ENRICH") == "1":
+        try:
+            from .eodhd_enrich import enrich_scan_payloads
+            prev_payloads = {}
+            if writer is not None:
+                try:
+                    prev_payloads = {r["ticker"]: r.get("payload")
+                                     for r in writer.select_rows("fundamentals", select="ticker,payload")}
+                except Exception:
+                    prev_payloads = {}
+            enr = enrich_scan_payloads(result.get("fundamentals_payload", {}),
+                                       [i.ticker for i in universe],
+                                       prev_payloads=prev_payloads, eval_date=today, enabled=True)
+            summary_enrich = enr
+        except Exception as e:
+            summary_enrich = {"error": f"{type(e).__name__}: {str(e)[:120]}"}
+    else:
+        summary_enrich = {"enabled": False}
+
     as_of = today.isoformat()
     run_row = build_run_row(run_id, as_of, result, UNIVERSE_VERSION, ALGO_VERSION)
     snapshot_rows = build_snapshot_rows(result, run_id, as_of, UNIVERSE_VERSION, ALGO_VERSION)
@@ -103,6 +129,7 @@ def execute(provider_name: str = "free", top: int = 50, dry_run: bool = False,
         "evaluated": result.get("evaluated"), "snapshots": len(snapshot_rows),
         "usable_factors": result.get("usable_factors"),
         "top3": [(r["ticker"], r["composite"]) for r in result.get("ranking", [])[:3]],
+        "eodhd_enrich": summary_enrich,
     }
 
     # Identificación + precio de la CARTERA, DESACOPLADO de la validación del scan:
@@ -178,12 +205,15 @@ def main(argv=None):
     p.add_argument("--no-sector-relative", action="store_true")
     p.add_argument("--allow-sample-write", action="store_true",
                    help="(solo pruebas) permite publicar datos de ejemplo")
+    p.add_argument("--tickers", default="",
+                   help="(solo simulación) restringe el universo a esta lista separada por comas")
     args = p.parse_args(argv)
 
     import json
+    tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()] or None
     try:
         summary = execute(args.provider, args.top, args.dry_run,
-                          not args.no_sector_relative, args.allow_sample_write)
+                          not args.no_sector_relative, args.allow_sample_write, tickers=tickers)
     except ScanRejected as e:
         # Mensaje sin secretos: solo los motivos de validación.
         print(json.dumps({"written": False, "rejected": True, "reasons": str(e)}, indent=2))
