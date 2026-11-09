@@ -126,7 +126,40 @@ def verify_enrichment(tickers) -> dict:
     return out
 
 
+def dump_payloads(tickers) -> dict:
+    """Volcado SOLO LECTURA del payload persistido (subconjunto que consume la ficha Research):
+    enrichment completo, history anual y campos fundamentales núcleo. Evidencia para capturas P1.1
+    con datos REALES (no fabricados). No escribe nada."""
+    url = os.getenv("SUPABASE_URL", ""); srk = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    from app.jobs.supabase_writer import SupabaseWriter
+    w = SupabaseWriter(url, srk)
+    tu = [t.upper() for t in tickers]
+    rows = w.select_rows("fundamentals", select="ticker,payload",
+                         params={"order": "ticker", "ticker": f"in.({','.join(tu)})"})
+    pay = {r["ticker"].upper(): (r.get("payload") or {}) for r in rows}
+    # Campos que lee FinancialFiche.tsx (más enrichment/history completos).
+    KEEP = ("pe_ttm", "eps", "eps_annual", "eps_ttm", "fcf_annual", "fcf_ttm",
+            "net_debt", "gross_debt", "cash_and_sti", "operating_margin", "gross_margin",
+            "net_margin", "rev_growth_yoy", "roe", "roic", "fcf_yield", "ev_ebitda",
+            "market_cap", "currency", "as_of", "taxonomy", "source_kind")
+    out = {}
+    for t in tu:
+        p = pay.get(t)
+        if p is None:
+            out[t] = {"_fila": "ausente"}; continue
+        d = {k: p.get(k) for k in KEEP}
+        d["enrichment"] = p.get("enrichment")
+        d["history"] = p.get("history")
+        out[t] = d
+    return out
+
+
 def main(argv=None):
+    dump = os.getenv("GIIC_DUMP_TICKERS", "")
+    if dump:
+        tickers = [t.strip() for t in dump.split(",") if t.strip()]
+        print(json.dumps(dump_payloads(tickers), ensure_ascii=False, indent=1, default=str))
+        return 0
     verify = os.getenv("GIIC_VERIFY_TICKERS", "")
     if verify:
         tickers = [t.strip() for t in verify.split(",") if t.strip()]

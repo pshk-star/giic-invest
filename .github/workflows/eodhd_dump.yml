@@ -1,0 +1,45 @@
+name: GIIC volcado fundamentales (manual, solo lectura)
+
+# Vuelca el payload persistido (enrichment + history + núcleo) de los tickers indicados.
+# SOLO LECTURA de Supabase: no escribe, no consulta EDGAR/EODHD. Evidencia para capturas P1.1.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tickers:
+        description: "Tickers separados por coma"
+        required: true
+        default: "NVDA,META,TSM,ASML,JPM,RACE"
+
+permissions:
+  contents: read
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Instalar dependencias mínimas
+        run: |
+          cd backend
+          python -m pip install -q requests
+      - name: Volcar payloads (solo lectura)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GIIC_DUMP_TICKERS: ${{ github.event.inputs.tickers }}
+        run: |
+          cd backend
+          python -m app.jobs.eodhd_universe_report > ../dump.json
+          echo "----- claves por ticker (sin valores sensibles de credencial) -----"
+          python -c "import json;d=json.load(open('../dump.json'));print({k:(list(v.keys()) if isinstance(v,dict) else v) for k,v in d.items()})"
+      - name: Subir artefacto
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: giic-dump
+          path: dump.json
+          if-no-files-found: warn
