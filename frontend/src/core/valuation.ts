@@ -180,24 +180,29 @@ export function riskFlags(f: FundamentalsPayload, peerPE: number | null, scan: S
   return out;
 }
 
-// ───────────────────────────── Fair Value V1 — DCF (FCFF, determinístico) ─────────────────────────────
-// Valor intrínseco por DESCUENTO DE FLUJOS (FCF = OCF − CAPEX), en MONEDA DE REPORTE.
-// Consistencia: un único flujo (OCF−CAPEX) y una única tasa; EV = Σ PV(FCF) + PV(terminal);
-// Equity = EV − deuda neta; valor/acción = Equity / acciones diluidas. No mezcla FCFF con FCFE.
-// NADA se inventa: si faltan datos fiables devuelve {available:false, reason}.
+// ───────────────────────────── Fair Value V1 — DCF (FCFE, determinístico) ─────────────────────────────
+// Convención FINANCIERAMENTE CONSISTENTE: FCFE → coste de EQUITY → equity DIRECTAMENTE.
+// El flujo FCF = OCF − CAPEX ya es POST-intereses y POST-impuestos (OCF incluye intereses pagados
+// y el impuesto en efectivo), por lo que es un FCFE (flujo al accionista) con endeudamiento neto ≈ 0.
+// Se descuenta al coste de EQUITY (Ke = rf + β·ERP) y la suma de VP ES el valor del equity:
+//   Equity = Σ VP(FCFE) + VP(terminal);  valor/acción = Equity / acciones diluidas.
+// NO se resta la deuda neta (su servicio ya está dentro del FCFE vía OCF): restarla sería doble conteo.
+// La caja/deuda neta se muestra como memo informativo, no se suma (evita doble conteo del interés
+// ya reflejado en OCF). No se mezcla FCFF con FCFE. Si faltan datos fiables ⇒ {available:false}.
 
 export interface DcfAssumptions {
   years: number;        // horizonte explícito
-  g1: number;           // crecimiento de FCF del primer año
+  g1: number;           // crecimiento de FCFE del primer año
   gTerminal: number;    // crecimiento terminal (conservador, < tasa)
-  discount: number;     // tasa de descuento (coste de capital)
+  discount: number;     // coste de EQUITY (Ke), no WACC
 }
 export interface DcfRun {
-  pvExplicit: number; pvTerminal: number; ev: number;
+  pvExplicit: number; pvTerminal: number;
   equity: number; perShare: number; terminalWeight: number;
 }
-// Un DCF determinístico. El crecimiento decae linealmente de g1 a gTerminal durante el horizonte.
-export function runDcf(baseFcf: number, netDebt: number, shares: number, a: DcfAssumptions): DcfRun | null {
+// DCF de FCFE determinístico. El crecimiento decae linealmente de g1 a gTerminal durante el horizonte.
+// La suma de valores presentes ES el equity (sin ajuste de deuda neta: ya está en el FCFE).
+export function runDcf(baseFcf: number, shares: number, a: DcfAssumptions): DcfRun | null {
   if (!(baseFcf > 0) || !(shares > 0) || !(a.discount > a.gTerminal) || a.years < 1) return null;
   let pv = 0, fcf = baseFcf;
   for (let t = 1; t <= a.years; t++) {
@@ -207,9 +212,8 @@ export function runDcf(baseFcf: number, netDebt: number, shares: number, a: DcfA
   }
   const tv = (fcf * (1 + a.gTerminal)) / (a.discount - a.gTerminal);
   const pvTerminal = tv / Math.pow(1 + a.discount, a.years);
-  const ev = pv + pvTerminal;
-  const equity = ev - netDebt;              // netDebt<0 (caja neta) ⇒ suma
-  return { pvExplicit: pv, pvTerminal, ev, equity, perShare: equity / shares, terminalWeight: pvTerminal / ev };
+  const equity = pv + pvTerminal;           // FCFE descontado a Ke ⇒ equity directamente
+  return { pvExplicit: pv, pvTerminal, equity, perShare: equity / shares, terminalWeight: pvTerminal / equity };
 }
 
 export interface DcfScenario { name: string; a: DcfAssumptions; run: DcfRun; marginVsPrice: number | null; }
@@ -259,14 +263,14 @@ function revenueCagr(hist: HistoryRecord[]): number {
 }
 
 const RF = 0.04, ERP = 0.05, BETA = 1.1;        // supuestos de tasa (editables, documentados)
-export const DISCOUNT_BASE = RF + BETA * ERP;   // 9.5% coste de capital base
+export const DISCOUNT_BASE = RF + BETA * ERP;   // 9.5% coste de EQUITY (Ke) base
 
-// DCF inverso: crecimiento de FCF constante implícito en el precio (equity objetivo), por bisección.
-function impliedGrowthFor(targetEquity: number, baseFcf: number, netDebt: number, shares: number,
+// DCF inverso: crecimiento de FCFE constante implícito en el precio (equity objetivo), por bisección.
+function impliedGrowthFor(targetEquity: number, baseFcf: number, shares: number,
                           discount: number, gTerminal: number, years: number): number | null {
   if (!(baseFcf > 0) || !(shares > 0) || targetEquity <= 0) return null;
   const equityAt = (g: number) => {
-    const r = runDcf(baseFcf, netDebt, shares, { years, g1: g, gTerminal, discount });
+    const r = runDcf(baseFcf, shares, { years, g1: g, gTerminal, discount });
     return r ? r.equity : null;
   };
   // g1 (tramo explícito) puede superar la tasa de descuento; sólo gTerminal<tasa importa.
@@ -317,7 +321,7 @@ export function fairValueDCF(fund: FundamentalsPayload, price: number | null, pr
   const scenarios: DcfScenario[] = [];
   for (const d of defs) {
     const a: DcfAssumptions = { years: 10, g1: d.g1, gTerminal: d.gT, discount: d.disc };
-    const run = runDcf(nb.base, netDebt, shares, a);
+    const run = runDcf(nb.base, shares, a);
     if (!run) continue;
     const marginVsPrice = mcap != null ? run.equity / mcap - 1 : null;
     scenarios.push({ name: d.name, a, run, marginVsPrice });
@@ -330,12 +334,12 @@ export function fairValueDCF(fund: FundamentalsPayload, price: number | null, pr
   const sensitivity: SensitivityCell[] = [];
   for (const dd of [-0.01, 0, 0.01]) for (const dg of [-0.005, 0, 0.005]) {
     const a: DcfAssumptions = { years: 10, g1: base.a.g1, gTerminal: base.a.gTerminal + dg, discount: base.a.discount + dd };
-    const r = runDcf(nb.base, netDebt, shares, a);
+    const r = runDcf(nb.base, shares, a);
     sensitivity.push({ discount: a.discount, gTerminal: a.gTerminal, perShare: r ? r.perShare : null });
   }
 
   const impliedGrowth = mcap != null
-    ? impliedGrowthFor(mcap, nb.base, netDebt, shares, base.a.discount, base.a.gTerminal, 10) : null;
+    ? impliedGrowthFor(mcap, nb.base, shares, base.a.discount, base.a.gTerminal, 10) : null;
 
   // Confianza
   const notes: string[] = [];
@@ -345,8 +349,12 @@ export function fairValueDCF(fund: FundamentalsPayload, price: number | null, pr
   const mean = fcfs.reduce((s, x) => s + x, 0) / Math.max(1, fcfs.length);
   const cv = mean > 0 ? Math.sqrt(fcfs.reduce((s, x) => s + (x - mean) ** 2, 0) / fcfs.length) / mean : 1;
   if (cv > 0.5) { score += 1; notes.push(`FCF volátil (CV ${cv.toFixed(2)}): base normalizada sensible al año.`); }
-  if (!netDebtKnown) { score += 1; notes.push("Deuda neta no disponible: asumida 0."); }
+  // FCFE asume endeudamiento neto ≈ 0: si la deuda neta es material vs. equity, el supuesto es más débil.
+  if (netDebtKnown && netDebt > 0 && base.run.equity > 0 && netDebt / base.run.equity > 0.3) {
+    score += 1; notes.push(`Deuda neta ${(netDebt / base.run.equity * 100).toFixed(0)}% del equity: el FCFE supone endeudamiento neto ≈ 0 (supuesto más débil).`);
+  }
   if (base.run.terminalWeight > 0.75) { score += 1; notes.push(`${(base.run.terminalWeight * 100).toFixed(0)}% del valor procede del valor terminal.`); }
+  notes.push(`Caja/deuda neta (${inputs.netDebtKnown ? "memo" : "n/d"}) no se suma al equity: su servicio ya está en el FCFE (evita doble conteo).`);
   if (!priceComparable) notes.push(`Precio en ${priceCcy ?? "s/d"} y valor en ${ccy}: margen vs. precio requiere FX fechado (no calculado).`);
   const confidence: "Alta" | "Media" | "Baja" = score >= 3 ? "Baja" : score >= 1 ? "Media" : "Alta";
 

@@ -10,8 +10,8 @@ import { QuoteView } from "../components/Quote";
 import { PriceChart } from "../components/PriceChart";
 import { FinancialFiche } from "../components/FinancialFiche";
 import { FairValue } from "../components/FairValue";
+import { PriceProjection } from "../components/PriceProjection";
 import { derivePositions, portfolioTotals } from "../core/portfolio-tx";
-import { buildAssets, forecast, hasMixedAdjustment } from "../core/forecast";
 import {
   type FundamentalsPayload, type ScanFactors, factorExplanation, fairValueByFcfYield,
   fairValueByPE, impliedFcfGrowth, missingFundamentals, peerMedian, riskFlags,
@@ -43,90 +43,6 @@ function Bar({ v, tone = "bg-term-accent" }: { v: number; tone?: string }) {
     </div>
   );
 }
-
-// Proyección estadística INDIVIDUAL: disponible para CUALQUIER acción con historial
-// suficiente, independiente del universo A/B/C, de EDGAR y de los fundamentales.
-// Misma metodología que Portfolio Forecast (bootstrap por bloques sobre retornos
-// ajustados). Es una distribución CONDICIONADA a supuestos históricos, no una
-// predicción de rendimiento demostrado.
-function StatProjection({ ticker, bars, price }: { ticker: string; bars: PriceBar[]; price: number | null }) {
-  const [horizon, setHorizon] = useState(252);
-  const [drift, setDrift] = useState<"neutral" | "historical">("neutral");
-  const result = useMemo(() => {
-    if (!price || bars.length < 61) return null;
-    const assets = buildAssets({ [ticker]: bars }, { [ticker]: price });
-    return assets.length ? forecast(assets, { drift }) : null;
-  }, [ticker, bars, price, drift]);
-
-  return (
-    <Panel title="Proyección estadística individual (B · simulación histórica)">
-      <p className="mb-2 text-xs text-term-muted">
-        Simulación de la distribución de resultados de <b>{ticker}</b> a partir de sus <b>precios históricos ajustados</b>
-        (bootstrap por bloques; misma metodología que Portfolio Forecast). Independiente del modelo A/B/C y de los
-        fundamentales. Es una <b>distribución condicionada a supuestos históricos</b>, no una predicción validada.
-      </p>
-      {hasMixedAdjustment(bars) ? (
-        <p className="text-sm text-term-crit">Serie con ajuste inconsistente (mezcla precios ajustados y sin ajustar): se excluye de la proyección hasta re-ingerir el historial ajustado. No se proyecta con datos no comparables.</p>
-      ) : !price ? (
-        <p className="text-sm text-term-warn">Sin precio actual: no se puede anclar la proyección.</p>
-      ) : bars.length < 61 ? (
-        <p className="text-sm text-term-warn">Historial insuficiente ({bars.length} sesiones; se requieren ≥61). No se proyecta.</p>
-      ) : !result || !result.horizons.length ? (
-        <p className="text-sm text-term-warn">No fue posible proyectar con el historial disponible.</p>
-      ) : (
-        <StatProjectionBody result={result} price={price} horizon={horizon} setHorizon={setHorizon} drift={drift} setDrift={setDrift} />
-      )}
-    </Panel>
-  );
-}
-
-function StatProjectionBody({ result, price, horizon, setHorizon, drift, setDrift }: {
-  result: ReturnType<typeof forecast>; price: number; horizon: number;
-  setHorizon: (n: number) => void; drift: "neutral" | "historical"; setDrift: (d: "neutral" | "historical") => void;
-}) {
-  const hz = result.horizons.find((h) => h.days === horizon) ?? result.horizons[result.horizons.length - 1];
-  return (
-    <div className="grid gap-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="flex gap-1">
-          {result.horizons.map((h) => (
-            <button key={h.days} onClick={() => setHorizon(h.days)}
-              className={`rounded px-2.5 py-1 text-sm ${horizon === h.days ? "bg-term-accent text-term-bg" : "bg-term-panel2 text-term-muted"}`}>{h.label}</button>
-          ))}
-        </div>
-        <div className="ml-auto flex gap-1 text-xs">
-          {(["neutral", "historical"] as const).map((d) => (
-            <button key={d} onClick={() => setDrift(d)}
-              className={`rounded px-2 py-1 ${drift === d ? "bg-term-panel text-term-fg ring-1 ring-term-accent" : "bg-term-panel2 text-term-muted"}`}>
-              {d === "neutral" ? "Sin deriva" : "Con deriva histórica"}</button>
-          ))}
-        </div>
-      </div>
-      <div className="grid grid-cols-3 gap-2 text-center">
-        {([["Desfavorable (P5)", hz.valP5, hz.retP5, "text-term-crit"], ["Central (P50)", hz.valP50, hz.retP50, "text-term-fg"], ["Favorable (P95)", hz.valP95, hz.retP95, "text-term-good"]] as const).map(([label, v, r, tone]) => (
-          <div key={label} className="rounded-lg border border-term-border bg-term-panel2 px-2 py-2">
-            <div className="text-[10px] uppercase text-term-muted">{label}</div>
-            <div className={`text-base font-semibold tabnum ${tone}`}>{money(v)}</div>
-            <div className={`text-xs tabnum ${r >= 0 ? "text-term-good" : "text-term-crit"}`}>{r >= 0 ? "+" : ""}{pct(r)}</div>
-          </div>
-        ))}
-      </div>
-      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-term-muted">
-        <span>Precio ancla: <b className="text-term-fg">{money(price)}</b></span>
-        <span>Volatilidad anual: <b className="text-term-fg">{pct(result.annVol)}</b></span>
-        <span>Prob. de pérdida a {hz.label}: <b className={hz.probLoss > 0.5 ? "text-term-crit" : "text-term-fg"}>{pct(hz.probLoss)}</b></span>
-        <span>VaR 5%: <b className="text-term-crit">{money(hz.var95)}</b></span>
-        <span>Historial: <b className="text-term-fg">{result.nObs}</b> sesiones</span>
-      </div>
-      <p className="text-[11px] text-term-faint">
-        Supuestos: compra y mantenimiento, sin rebalanceo; el muestreo por bloques preserva autocorrelación corta.
-        «Sin deriva» centra los retornos en 0 (no extrapola el mercado alcista reciente). Los percentiles son rango de
-        resultados históricos, <b>no</b> probabilidades predictivas calibradas ni rendimiento demostrado.
-      </p>
-    </div>
-  );
-}
-
 
 export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: string; embedded?: boolean }) {
   const ticker = (rawTicker ?? "").toUpperCase();
@@ -325,9 +241,6 @@ export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: st
         )}
       </Panel>
 
-      <StatProjection ticker={ticker} bars={hist} price={price} />
-
-
       <Panel title="Proyecciones del modelo (experimental)">
         {preds.length === 0 ? (
           <div className="text-sm">
@@ -404,6 +317,8 @@ export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: st
           </div>
 
           <FairValue fund={fund} price={price} priceCcy={quoteCcy} priceAsOf={priceAsOf} />
+
+          <PriceProjection ticker={ticker} price={price} bars={hist} hasModelSignal={preds.length > 0} />
 
           <Panel title="Valoración relativa por múltiplos (complementaria · comparables del sector)">
             {peerCount === 0 ? (

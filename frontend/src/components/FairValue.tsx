@@ -99,7 +99,7 @@ export function FairValue({ fund, price, priceCcy, priceAsOf }: {
             <dt>FCF base norm.</dt><dd className="text-right text-term-fg font-mono">{sc(inp.baseFcf, ccy)}</dd>
             <dt className="text-term-faint">· método</dt><dd className="text-right text-term-faint">{inp.baseFcfMethod}</dd>
             <dt>FCF último año</dt><dd className="text-right text-term-fg font-mono">{sc(inp.lastFcf, ccy)}</dd>
-            <dt>Deuda neta</dt><dd className="text-right text-term-fg font-mono">{inp.netDebtKnown ? sc(inp.netDebt, ccy) : "n/d → 0"}</dd>
+            <dt>Caja/deuda neta <span className="text-term-faint">(memo)</span></dt><dd className="text-right text-term-fg font-mono">{inp.netDebtKnown ? sc(inp.netDebt, ccy) : "n/d"}</dd>
             <dt>Acciones diluidas</dt><dd className="text-right text-term-fg font-mono">{sc(inp.shares, "")}</dd>
             <dt>Histórico FCF</dt><dd className="text-right text-term-fg font-mono">{inp.histYears} años</dd>
           </dl>
@@ -164,10 +164,11 @@ export function FairValue({ fund, price, priceCcy, priceAsOf }: {
       </div>
 
       <p className="text-[10px] text-term-faint mt-3 leading-snug">
-        DCF determinístico sobre FCF = OCF − CAPEX (moneda de reporte {ccy}); un único flujo y una única tasa.
-        Los escenarios son <b>supuestos</b>, no predicciones. No usa EPS ambiguos, campos en cuarentena ni interinos
-        no aptos. Base de tasa: coste de capital {pct(DISCOUNT_BASE, 1)} (rf + β·ERP). Para financieras y datos
-        insuficientes, la valoración se marca como no disponible.
+        DCF de <b>FCFE</b> (FCF = OCF − CAPEX, ya post-intereses y post-impuestos) descontado al <b>coste de
+        equity</b> Ke = {pct(DISCOUNT_BASE, 1)} (rf + β·ERP); la suma de VP <b>es</b> el equity (no se resta deuda
+        neta: su servicio ya está en el FCFE). Valor/acción = equity / acciones diluidas (moneda {ccy}). Escenarios =
+        <b> supuestos</b>, no predicciones. No usa EPS ambiguos, cuarentena ni interinos no aptos. Financieras y datos
+        insuficientes ⇒ no disponible.
       </p>
     </Panel>
   );
