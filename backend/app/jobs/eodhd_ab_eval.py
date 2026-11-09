@@ -54,33 +54,66 @@ def run() -> dict:
     import httpx
     cli = httpx.Client(timeout=40.0, headers={"User-Agent": ua}, follow_redirects=True)
     tk = cli.get("https://www.sec.gov/files/company_tickers.json").json()
-    cikmap = {r["ticker"].upper(): int(r["cik_str"]) for r in tk.values()}
+    # Un ticker puede colisionar con varias CIK (p. ej. XOM → 34088 Exxon y una entidad reciente).
+    # Se conservan TODAS las candidatas (orden: emisor primario = CIK más baja primero) y se elige
+    # la que tenga datos reales; evita tomar una entidad equivocada por "último gana".
+    cik_cands = {}
+    for r in tk.values():
+        cik_cands.setdefault(r["ticker"].upper(), []).append(int(r["cik_str"]))
+    for k in cik_cands:
+        cik_cands[k] = sorted(set(cik_cands[k]))
     conn = EodhdFundamentalsConnector(api_key=key)
 
     cat_of = {t: c for c, ts in UNIVERSE.items() for t in ts}
     tickers = [t for c in CORP_CATS for t in UNIVERSE[c]]
     per = {}
     eodhd_calls = 0
-    for t in tickers:
-        cik = cikmap.get(t.upper())
-        if not cik:
-            continue
-        lag, latest_report, sic = _submissions_recency(cli, cik)
-        time.sleep(0.12)
-        facts = None
-        for _try in range(3):      # reintento: companyfacts grandes pueden llegar incompletos/throttled
+
+    def _fetch_facts(client, c):   # companyfacts con reintento (pueden llegar incompletos/throttled)
+        for _try in range(3):
             try:
-                r = cli.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json")
+                r = client.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{c:010d}.json")
                 if r.status_code == 200:
                     j = r.json()
                     if (j.get("facts", {}) or {}).get("us-gaap") or (j.get("facts", {}) or {}).get("ifrs-full"):
-                        facts = j
-                        break
+                        return j
             except Exception:
                 pass
             time.sleep(0.6)
+        return None
+
+    for t in tickers:
+        cands = cik_cands.get(t.upper(), [])
+        if not cands:
+            continue
+        # Resolución robusta ticker→CIK. Una sigla puede mapear a varias entidades (XOM → 34088
+        # Exxon y una CIK reciente sin datos). Con una sola candidata, comportamiento idéntico al
+        # previo; con varias, se elige la que tenga serie oficial real, con fallback a la primera
+        # con hechos us-gaap/ifrs. Evita el bug de "última gana" que tomaba la entidad equivocada.
+        cik = None
+        facts = None
+        if len(cands) == 1:
+            facts = _fetch_facts(cli, cands[0])
+            cik = cands[0] if facts is not None else None
+        else:
+            fallback = None
+            for cand in cands:
+                j = _fetch_facts(cli, cand)
+                if j is None:
+                    continue
+                if fallback is None:
+                    fallback = (cand, j)
+                tax_c, ccy_c, M_c = _pick_tax(j)
+                s_c = edgar_annual_series(j, tax_c, M_c, ccy_c)
+                if s_c["revenue"] or s_c["net_income"]:
+                    cik, facts = cand, j
+                    break
+            if facts is None and fallback is not None:
+                cik, facts = fallback
         if facts is None:
             continue
+        lag, latest_report, sic = _submissions_recency(cli, cik)
+        time.sleep(0.12)
         itype = None
         try:
             itype = resolve_identity(t).get("instrument_type")
@@ -101,7 +134,7 @@ def run() -> dict:
                       "ultimo_net_income": (max(series["net_income"]) if series["net_income"] else None),
                       "n_usgaap_concepts": len((facts.get("facts", {}) or {}).get("us-gaap", {})),
                       "has_NetIncomeLoss": "NetIncomeLoss" in (facts.get("facts", {}) or {}).get("us-gaap", {}),
-                      "cik": cik}
+                      "cik": cik, "cik_candidatas": cik_cands.get(t.upper(), [])}
         # Si la serie de ingresos quedó vacía en un filer us-gaap/USD, probar companyconcept (endpoint
         # distinto) para distinguir companyfacts PARCIAL (dato existe allí) de ausencia real.
         if not series["revenue"] and tax == "us-gaap":
