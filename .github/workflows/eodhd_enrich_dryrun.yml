@@ -23,6 +23,10 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install httpx pandas
+      - name: Diagnóstico de tipo de período (trimestre/YTD/anual) ASML/TSM/XOM
+        env:
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+        run: python -m app.jobs.eodhd_period_diag | tee /tmp/periods.json || true
       - name: Dry-run enriquecimiento EODHD (comparación sin escribir)
         env:
           EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
