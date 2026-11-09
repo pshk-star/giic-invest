@@ -71,7 +71,9 @@ def execute(provider_name: str = "free", top: int = 50, dry_run: bool = False,
     # Writer temprano (si corresponde) para leer tickers de la cartera y extender el
     # universo: así los instrumentos que el usuario tiene reciben precio e identificación.
     # Solo si hay credenciales (si no, la validación sigue su curso y puede rechazar).
-    if writer is None and not dry_run and os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_SERVICE_ROLE_KEY"):
+    # Writer disponible también en dry-run para LECTURAS (cartera, instruments, fundamentals previos);
+    # todas las ESCRITURAS siguen guardadas por `not dry_run`, así dry-run nunca persiste.
+    if writer is None and os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_SERVICE_ROLE_KEY"):
         writer = SupabaseWriter(os.getenv("SUPABASE_URL", ""),
                                 os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""))
     universe = get_universe()
@@ -102,17 +104,17 @@ def execute(provider_name: str = "free", top: int = 50, dry_run: bool = False,
     # idéntico al actual). Con escritura, preserva el bloque previo (carry-forward).
     if os.getenv("GIIC_EODHD_ENRICH") == "1":
         try:
-            from .eodhd_enrich import enrich_scan_payloads
-            prev_payloads = {}
-            if writer is not None:
-                try:
-                    prev_payloads = {r["ticker"]: r.get("payload")
-                                     for r in writer.select_rows("fundamentals", select="ticker,payload")}
-                except Exception:
-                    prev_payloads = {}
-            enr = enrich_scan_payloads(result.get("fundamentals_payload", {}),
-                                       [i.ticker for i in universe],
-                                       prev_payloads=prev_payloads, eval_date=today, enabled=True)
+            from .eodhd_enrich import enrich_scan_payloads, build_enrich_universe, read_fundamentals_payloads
+            # Universo UNIFICADO: scanner ∪ cartera ∪ Research(instruments) ∪ internacionales EODHD.
+            origin = build_enrich_universe(writer, [i.ticker for i in universe])
+            enrich_tickers = sorted(origin.keys())
+            prev_payloads = read_fundamentals_payloads(writer, enrich_tickers) if writer is not None else {}
+            enr = enrich_scan_payloads(result.get("fundamentals_payload", {}), enrich_tickers,
+                                       prev_payloads=prev_payloads, eval_date=today, enabled=True,
+                                       create_missing=True)
+            enr["universo"] = {"total": len(origin),
+                               "por_origen": {o: sum(1 for v in origin.values() if o in v)
+                                              for o in ("scanner", "cartera", "research/instruments", "internacional")}}
             summary_enrich = enr
         except Exception as e:
             summary_enrich = {"error": f"{type(e).__name__}: {str(e)[:120]}"}

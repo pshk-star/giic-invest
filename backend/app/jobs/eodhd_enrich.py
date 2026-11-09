@@ -324,6 +324,34 @@ def attach_enrichment(edgar_payload: dict, enrichment_block, enabled: bool = Tru
     return out
 
 
+def build_enrich_universe(writer, scanner_tickers) -> dict:
+    """Universo UNIFICADO y deduplicado de enriquecimiento con su origen. Unión de: scanner US,
+    cartera (transacciones), instrumentos añadidos por Research (tabla instruments) e internacionales
+    soportados por el conector (EODHD_SYMBOLS). La elegibilidad final (emisor corporativo con ancla
+    EDGAR, no vehículo) la decide enrich_one por instrumento; aquí sólo se arma el conjunto y el origen."""
+    from app.core.connectors.eodhd import EODHD_SYMBOLS
+    origin = {}
+
+    def add(tickers, src):
+        for t in tickers or []:
+            tu = str(t).upper()
+            origin.setdefault(tu, []).append(src)
+
+    add(scanner_tickers, "scanner")
+    if writer is not None:
+        try:
+            add(writer.get_transaction_tickers(), "cartera")
+        except Exception:
+            pass
+        try:
+            rows = writer.select_rows("instruments", select="ticker", params={"order": "ticker"})
+            add([r["ticker"] for r in rows if r.get("ticker")], "research/instruments")
+        except Exception:
+            pass
+    add(list(EODHD_SYMBOLS.keys()), "internacional")
+    return origin
+
+
 def preserve_enrichment_blocks(payloads: dict, prev_payloads: dict) -> int:
     """PRESERVACIÓN en la capa de escritura, INDEPENDIENTE del flag. Para cada ticker cuyo payload
     nuevo (EDGAR-only, p. ej. un scan con EODHD DESACTIVADO) no trae bloque `enrichment` pero que YA
@@ -356,18 +384,22 @@ def read_fundamentals_payloads(writer, tickers=None) -> dict:
 
 
 def enrich_scan_payloads(payloads: dict, tickers, prev_payloads=None, eval_date=None,
-                         enabled: bool = True) -> dict:
+                         enabled: bool = True, create_missing: bool = False) -> dict:
     """Cableado productivo (invocado por run_scan tras el ranking, flag-gated). Enriquece EN SITIO
-    los payloads EDGAR de los equities con el bloque EODHD, aplicando gate de costo, carry-forward y
-    fail-safe. NO toca ranking/factores/predicciones (opera sobre el payload ya calculado). Construye
-    EDGARProvider + conector desde env; sin clave → no hace nada (payloads intactos)."""
+    los payloads EDGAR con el bloque EODHD, aplicando gate de costo, carry-forward y fail-safe. NO toca
+    ranking/factores/predicciones (opera sobre el payload ya calculado). Construye EDGARProvider +
+    conector desde env; sin clave → no hace nada (payloads intactos).
+
+    `create_missing`: para tickers del universo unificado que NO están en `payloads` (internacionales
+    de cartera/Research fuera del scanner), se construye su payload EDGAR oficial (igual que el scan
+    para un ticker de cartera) y se añade a `payloads` para que se persista. Sin ancla EDGAR → excluido."""
     ua = os.getenv("EDGAR_USER_AGENT", "")
     key = os.getenv("EODHD_API_KEY", "")
     prev_payloads = prev_payloads or {}
     eval_date = eval_date or date.today()
     summary = {"enabled": bool(enabled), "equities_evaluados": 0, "enriquecidos": 0,
                "edgar_suficiente": 0, "carry_forward": 0, "sin_edgar_o_vehiculo": 0,
-               "fetches_eodhd": 0, "errores": 0, "muestra": {}}
+               "creados_desde_edgar": 0, "sin_ancla_edgar": [], "fetches_eodhd": 0, "errores": 0, "muestra": {}}
     if not (enabled and key and ua and "@" in ua):
         summary["fail_safe"] = "sin clave/UA o deshabilitado: payloads EDGAR intactos"
         return summary
@@ -377,7 +409,18 @@ def enrich_scan_payloads(payloads: dict, tickers, prev_payloads=None, eval_date=
     for t in tickers:
         base = payloads.get(t)
         if base is None:
-            continue
+            if not create_missing:
+                continue
+            try:                                   # flujo real de cartera: construir ancla EDGAR oficial
+                funds = prov.get_fundamentals([t]); f = funds.get(t)
+                base = asdict(f) if f is not None else None
+            except Exception:
+                base = None
+            if base is None:
+                summary["sin_ancla_edgar"].append(t)   # internacional sin presentaciones EDGAR → se omite
+                continue
+            payloads[t] = base                     # se persistirá (nuevo emisor en fundamentals)
+            summary["creados_desde_edgar"] += 1
         summary["equities_evaluados"] += 1
         prev_block = (prev_payloads.get(t) or {}).get("enrichment") if isinstance(prev_payloads.get(t), dict) else None
         try:

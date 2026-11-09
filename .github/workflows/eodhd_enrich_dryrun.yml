@@ -44,6 +44,15 @@ jobs:
           EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
         # Sin credenciales SUPABASE: aunque el flag está activo, dry-run NO escribe nada.
         run: python -m app.jobs.run_scan --dry-run --tickers AAPL,META,ASML,TSM,XOM,JPM,SPY | tee /tmp/scansim.json || true
+      - name: Universo UNIFICADO completo (dry-run con lectura Supabase, SIN persistencia)
+        env:
+          GIIC_EODHD_ENRICH: "1"
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
+        # dry-run: lee cartera/instruments para armar el universo real, pero NO escribe (guardas not dry_run).
+        run: python -m app.jobs.run_scan --dry-run | tee /tmp/universe.json || true
       - name: Publicar reporte como artefacto (sin credenciales)
         if: always()
         uses: actions/upload-artifact@v4

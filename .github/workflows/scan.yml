@@ -7,7 +7,12 @@ name: GIIC scan
 on:
   schedule:
     - cron: "40 22 * * 1-5"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      enrich:
+        description: "Activar enriquecimiento EODHD en esta corrida manual (true) — el cron usa la variable GIIC_EODHD_ENRICH"
+        type: boolean
+        default: false
 # Producción SIEMPRE usa datos reales ('free'). No se expone opción 'sample': el job
 # además rechaza por diseño publicar datos de ejemplo en Supabase.
 
@@ -36,5 +41,9 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
           BASE_CURRENCY: ${{ vars.BASE_CURRENCY || 'USD' }}
+          # Enriquecimiento: en dispatch manual lo decide el input; en cron, la variable de repo
+          # GIIC_EODHD_ENRICH (se fija a "1" sólo tras validar la primera corrida general manual).
+          GIIC_EODHD_ENRICH: ${{ github.event.inputs.enrich == 'true' && '1' || vars.GIIC_EODHD_ENRICH || '' }}
         run: python -m app.jobs.run_scan --provider free --top 50
