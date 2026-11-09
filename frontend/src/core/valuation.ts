@@ -42,7 +42,6 @@ export interface FundamentalsPayload {
   operating_margin?: number | null;
   gross_margin?: number | null;
   diluted_shares?: number | null; // acciones diluidas ponderadas (solo EDGAR)
-  ni_period?: string | null;
 
   source_kind?: string | null;    // 'eodhd_primary' si no hay ancla SEC
   enrichment?: EnrichmentBlock | null;
