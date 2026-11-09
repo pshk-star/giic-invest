@@ -431,3 +431,62 @@ FCF (derivado), acciones diluidas (sólo EDGAR); 16 casos `inconsistente` quaran
 **Pruebas/regresiones:** +7 pruebas del conector; 264 passed, 6 skipped; **309 A/B/C intactas**
 (sin tocar predicciones). **Consumo API:** 63 llamadas por evaluación completa (una por emisor, con
 caché de símbolo) → ~630 unidades/día, muy por debajo del límite de 100k/día; plan $59.99/mes.
+
+## §17 — Revisión final acotada previa al merge (E3.4)
+
+Tres verificaciones pedidas antes de fusionar el conector; datos reales de CI (run A/B
+`eodhd_ab_eval`, 63 operativas, 63 llamadas EODHD).
+
+### 1. Equivalencia de períodos fiscales (sin actualidad ficticia)
+
+EODHD **no** se cuenta como más fresco por una fecha calendario posterior. Una observación EODHD
+sólo mejora un campo si (a) EDGAR no estaba ya `vigente` (se preserva el oficial verificado) **y**
+(b) su período fiscal es **materialmente posterior** (>75 días = al menos un trimestre nuevo, no
+jitter del mismo ejercicio). Efecto: AAPL, COST, JNJ, NVDA y otros US con cierre 2026 reciente ya no
+registran mejora ficticia; su B la aporta EDGAR, no EODHD. La ganancia real de B (65,3→74,2) proviene
+sólo de los emisores ADR/IFRS cuyo interino 2026 es un trimestre genuinamente más reciente que el
+último anual de EDGAR.
+
+### 2. Diagnóstico de ausencias EDGAR (identificación vs cobertura)
+
+- **XOM = error material de IDENTIFICACIÓN, corregido.** `company_tickers.json` mapea `XOM` a la CIK
+  **2115436** (entidad con 98 conceptos us-gaap pero **0 series anuales**). El 10-K real de Exxon se
+  presenta bajo la CIK **34088**. Resolución anterior ("última/única gana" sobre tickers.json) tomaba
+  la entidad vacía → `XOM sin datos`. **Fix (universal, sin lógica por ticker):** si ninguna CIK
+  candidata de tickers.json tiene serie anual (`_has_annual_core`), se resuelve por el filer con 10-K
+  reales vía `browse-edgar?ticker=`. Tras el fix XOM resuelve a 34088 "Exxon Mobil Corporation" con
+  **17 períodos anuales (último 2025-12-31), 438 conceptos**. Aplicado en `EDGARProvider._facts`
+  (producción) y en el job A/B. La CIK corregida queda cacheada para `_sic`/`edgar_pit`.
+- **TM (Toyota, CIK 1094517) y SONY (CIK 313838) = cobertura real, no bug.** Resuelven al filer
+  correcto; sus series XBRL ante la SEC terminan en 2020-03-31 y 2021-03-31 respectivamente (ambos
+  redujeron el reporte us-gaap/IFRS a la SEC). No hay error de extracción ni de identificación; la
+  laguna la mitiga EODHD con el interino reciente (de ahí la mejora de B en ADR/IFRS).
+
+Impacto del fix XOM en el A/B (honesto): cobertura **A total 86,6→88,0 (antes) / 87,6→88,4 (después)**
+—XOM aporta campos EDGAR reales—, **B sin cambio** (489/556): el anual 2025 de Exxon es
+`desactualizado` bajo cadencia anual y el interino EODHD ya se contabilizaba. No se infló vigencia.
+
+### 3. Matriz DCF por empresa (campos para flujo descontado)
+
+Estado por campo (`fcf_ttm, ocf, capex, net_debt, cash, diluted_shares` + moneda), 63 operativas:
+
+| Clasificación DCF | n | Empresas |
+|---|---|---|
+| **LISTO (6/6 verificado)** | 30 | AAPL, ABBV, AMZN, AVGO, CELH, COST, CROX, ETSY, GOOG(L), GS, HD, JNJ, KO, LLY, LRCX, MA, META, MRK, MS, MSFT, NFLX, NVDA, ORCL, PEP, RIVN, TSLA, UAA, WING, WMT |
+| **MIXTO** (1–2 campos faltantes) | 15 | AXP, CVX, DKNG, DXCM, FOX(A), ISRG, NWSA, PG, RIO, ROKU, SAP, SHEL, SHOP, V |
+| **DESACTUALIZADO/PARCIAL** | 17 | ASML, AZN, BABA, BAC, BP, C, HSBC, JPM, NVO, NVS, SE, SONY, TM, TSM, UL, WFC, **XOM** |
+| **BLOQUEADO** | 1 | MU |
+
+Lectura por campo: `ocf` 44 verificado / 16 parcial(EODHD); `fcf_ttm` 43 verificado / 12 desactualizado
+/ 7 faltante; `net_debt` 32 verificado / 18 faltante / 12 desactualizado; `diluted_shares` 44 verificado
+/ 15 desactualizado / 3 faltante. En ADR/IFRS el `ocf` es `vigente/parcial(EODHD)` pero
+`fcf_ttm/capex/net_debt/diluted` quedan `desactualizado`/`faltante`: **ahí Fair Value necesitará
+EDGAR anual + interino EODHD combinados, nunca `outstanding` como diluidas ponderadas.**
+
+### Cuarentena y estado de merge
+
+16 discrepancias `inconsistente` (revenue de bancos, cash) siguen en cuarentena en
+`anomalias_eodhd_vs_edgar`/`por_ticker` — registradas, no eliminadas, no usadas. Único error material
+hallado (XOM) **corregido**. Suite backend **267 passed, 6 skipped**; **309 A/B/C intactas**; CI verde
+en `fde-eodhd`; sin lógica por ticker. Rama lista para merge a `main` a la espera de aprobación final.
+Siguiente desarrollo: **Fair Value**.
