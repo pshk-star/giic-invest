@@ -180,6 +180,15 @@ def execute(provider_name: str = "free", top: int = 50, dry_run: bool = False,
     # (price_rows/fund_rows/fx_rows se construyen abajo y se publican con publish_run)
     price_rows = [{"ticker": t, "close": m["close"], "as_of": m["as_of"], "currency": "USD"}
                   for t, m in result.get("market_prices", {}).items() if m.get("close") is not None]
+    # PRESERVACIÓN de enriquecimiento (independiente del flag): un scan EDGAR-only NO debe borrar un
+    # bloque `enrichment` ya persistido. Se arrastra el previo para los payloads que no traen bloque.
+    try:
+        from .eodhd_enrich import preserve_enrichment_blocks, read_fundamentals_payloads
+        prev_fund = read_fundamentals_payloads(writer, list(result.get("fundamentals_payload", {}).keys()))
+        carried = preserve_enrichment_blocks(result.get("fundamentals_payload", {}), prev_fund)
+        summary["enrichment_carry_forward"] = carried
+    except Exception as e:
+        summary["enrichment_carry_forward_error"] = f"{type(e).__name__}: {str(e)[:100]}"
     fund_rows = [{"ticker": t, "payload": p}
                  for t, p in result.get("fundamentals_payload", {}).items()]
     base = os.getenv("BASE_CURRENCY", "USD")

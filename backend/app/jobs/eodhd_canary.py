@@ -34,7 +34,7 @@ def _edgar_fields_equal(a: dict, b: dict) -> bool:
     return ax == bx
 
 
-def run(commit: bool = False, tickers=None) -> dict:
+def run(commit: bool = False, tickers=None, mode: str = "enrich") -> dict:
     from .supabase_writer import SupabaseWriter
     from ..providers.edgar import EDGARProvider
     from ..core.connectors.eodhd import EodhdFundamentalsConnector
@@ -90,19 +90,31 @@ def run(commit: bool = False, tickers=None) -> dict:
         if base is None:
             resultados[t] = {"estado": "sin_fila_ni_edgar", "nota": "requiere alta por cartera primero"}
             continue
-        try:
-            r = enrich_one(prov, conn, t, eval_date)
-        except Exception as e:
-            resultados[t] = {"estado": "enrich_error", "error": str(e)[:80]}
-            continue
-        block = r.get("enrichment_block") if r.get("status") == "ok" else None
         prev_block = base.get("enrichment") if isinstance(base, dict) else None
-        new_payload = attach_enrichment(base, block, enabled=True, prev_block=prev_block)
+        if mode == "edgar_only":
+            # Simula un rescan EDGAR-only (EODHD desactivado): payload EDGAR fresco SIN bloque nuevo;
+            # debe PRESERVAR el bloque previo (carry-forward). Valida la condición 42 en la BD real.
+            try:
+                funds = prov.get_fundamentals([t]); f = funds.get(t)
+                base = asdict(f) if f is not None else base   # EDGAR fresco, sin enrichment
+            except Exception:
+                pass
+            new_payload = attach_enrichment(base, None, enabled=True, prev_block=prev_block)
+            r = {"status": "edgar_only_rescan", "eodhd_called": False}
+        else:
+            try:
+                r = enrich_one(prov, conn, t, eval_date)
+            except Exception as e:
+                resultados[t] = {"estado": "enrich_error", "error": str(e)[:80]}
+                continue
+            block = r.get("enrichment_block") if r.get("status") == "ok" else None
+            new_payload = attach_enrichment(base, block, enabled=True, prev_block=prev_block)
         resultados[t] = {
             "existia_fila": existing.get(t) is not None, "payload_creado_desde_edgar": creado,
             "edgar_status": r.get("status"), "eodhd_called": r.get("eodhd_called"),
             "enrichment_fields": sorted((new_payload.get("enrichment", {}) or {}).get("fields", {}).keys()),
             "enrichment_quarantine": sorted((new_payload.get("enrichment", {}) or {}).get("quarantine", {}).keys()),
+            "carried_forward": bool((new_payload.get("enrichment", {}) or {}).get("carried_forward")),
             "edgar_preservado": _edgar_fields_equal(base, new_payload),
             "tiene_enrichment": "enrichment" in new_payload,
         }
@@ -111,6 +123,7 @@ def run(commit: bool = False, tickers=None) -> dict:
 
     report = {
         "modo": "COMMIT (escritura real)" if will_write else "DRY-RUN (sin escritura)",
+        "mode": mode,
         "doble_candado": {"--commit": commit, "GIIC_CANARY_COMMIT": commit_env, "escribira": will_write},
         "set_canary": tickers, "alcance_limitado_a": [w["ticker"] for w in to_write],
         "respaldo_tickers": {t: ("presente" if backup.get(t) is not None else "ausente") for t in tickers},
@@ -140,9 +153,11 @@ def main(argv=None):
     p = argparse.ArgumentParser(description="Canary de enriquecimiento EODHD (escritura controlada).")
     p.add_argument("--commit", action="store_true", help="escribir de verdad (requiere además GIIC_CANARY_COMMIT=1)")
     p.add_argument("--tickers", default="", help="subconjunto del set canary (por defecto, todo el set)")
+    p.add_argument("--mode", default="enrich", choices=["enrich", "edgar_only"],
+                   help="enrich: escribe el bloque EODHD; edgar_only: simula rescan EDGAR-only (carry-forward)")
     args = p.parse_args(argv)
     tk = [t.strip().upper() for t in args.tickers.split(",") if t.strip()] or None
-    out = run(commit=args.commit, tickers=tk)
+    out = run(commit=args.commit, tickers=tk, mode=args.mode)
     print(json.dumps(out, ensure_ascii=False, indent=1, default=str))
     return 0
 

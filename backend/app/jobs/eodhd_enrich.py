@@ -324,6 +324,37 @@ def attach_enrichment(edgar_payload: dict, enrichment_block, enabled: bool = Tru
     return out
 
 
+def preserve_enrichment_blocks(payloads: dict, prev_payloads: dict) -> int:
+    """PRESERVACIÓN en la capa de escritura, INDEPENDIENTE del flag. Para cada ticker cuyo payload
+    nuevo (EDGAR-only, p. ej. un scan con EODHD DESACTIVADO) no trae bloque `enrichment` pero que YA
+    tenía uno persistido, se arrastra el previo (carry-forward). Garantiza que un scan EDGAR-only no
+    borre el enriquecimiento ya escrito. No toca los campos EDGAR ni los payloads que ya traen bloque."""
+    carried = 0
+    for t, p in (payloads or {}).items():
+        if not isinstance(p, dict) or p.get("enrichment"):
+            continue
+        prev = prev_payloads.get(t) if isinstance(prev_payloads.get(t), dict) else None
+        prev_block = (prev or {}).get("enrichment")
+        if prev_block and isinstance(prev_block, dict) and (prev_block.get("fields") or prev_block.get("quarantine")):
+            blk = dict(prev_block); blk["carried_forward"] = True
+            p["enrichment"] = blk
+            carried += 1
+    return carried
+
+
+def read_fundamentals_payloads(writer, tickers=None) -> dict:
+    """Lee {ticker: payload} de 'fundamentals'. La tabla se indexa por ticker (sin columna 'id'),
+    por eso se ordena por ticker; con `tickers`, filtra server-side."""
+    params = {"order": "ticker"}
+    if tickers:
+        params["ticker"] = f"in.({','.join(t.upper() for t in tickers)})"
+    try:
+        rows = writer.select_rows("fundamentals", select="ticker,payload", params=params)
+        return {r["ticker"].upper(): r.get("payload") for r in rows if r.get("ticker")}
+    except Exception:
+        return {}
+
+
 def enrich_scan_payloads(payloads: dict, tickers, prev_payloads=None, eval_date=None,
                          enabled: bool = True) -> dict:
     """Cableado productivo (invocado por run_scan tras el ranking, flag-gated). Enriquece EN SITIO

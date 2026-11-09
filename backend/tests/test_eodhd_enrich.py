@@ -222,3 +222,30 @@ def test_build_block_separa_cuarentena():
     assert "revenue_annual" in blk["quarantine"]          # inconsistente → cuarentena, nunca en fields
     assert blk["quarantine"]["revenue_annual"]["quality_state"] == "inconsistente"
     assert "valuation_eligible_meaning" in blk            # aclara elegible != verificado
+
+
+# --- P0.3-write: preservación del bloque en la capa de escritura (carry-forward independiente del flag) ---
+
+def test_preserve_enrichment_blocks_rescan_edgar_only():
+    # Payload nuevo EDGAR-only (sin enrichment) + previo CON bloque → se arrastra (carry-forward).
+    payloads = {"XOM": {"ticker": "XOM", "pe_ttm": 10.0}}   # recién recalculado, sin enrichment
+    prev = {"XOM": {"ticker": "XOM", "pe_ttm": 9.0, "enrichment": {"fields": {"cash": {"value": 1}}}}}
+    n = E.preserve_enrichment_blocks(payloads, prev)
+    assert n == 1
+    assert payloads["XOM"]["enrichment"]["carried_forward"] is True
+    assert payloads["XOM"]["enrichment"]["fields"]["cash"]["value"] == 1
+    assert payloads["XOM"]["pe_ttm"] == 10.0               # EDGAR nuevo intacto
+
+
+def test_preserve_no_pisa_bloque_fresco():
+    payloads = {"XOM": {"ticker": "XOM", "enrichment": {"fields": {"cash": {"value": 2}}}}}  # ya trae fresco
+    prev = {"XOM": {"enrichment": {"fields": {"cash": {"value": 1}}}}}
+    n = E.preserve_enrichment_blocks(payloads, prev)
+    assert n == 0                                          # no se sobrescribe el bloque fresco
+    assert payloads["XOM"]["enrichment"]["fields"]["cash"]["value"] == 2
+
+
+def test_preserve_sin_previo_no_inventa():
+    payloads = {"AAPL": {"ticker": "AAPL", "pe_ttm": 30.0}}
+    n = E.preserve_enrichment_blocks(payloads, {})
+    assert n == 0 and "enrichment" not in payloads["AAPL"]

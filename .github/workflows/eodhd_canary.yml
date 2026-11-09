@@ -10,6 +10,11 @@ on:
         description: "Escribir de verdad en Supabase (true) o sólo dry-run (false)"
         type: boolean
         default: false
+      mode:
+        description: "enrich (escribe bloque EODHD) | edgar_only (simula rescan EDGAR-only, carry-forward)"
+        type: choice
+        options: ["enrich", "edgar_only"]
+        default: "enrich"
 
 permissions:
   contents: read
@@ -34,7 +39,7 @@ jobs:
           EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
           GIIC_CANARY_COMMIT: ${{ inputs.commit && '1' || '0' }}
         run: |
-          python -m app.jobs.eodhd_canary ${{ inputs.commit && '--commit' || '' }} | tee /tmp/canary.json || true
+          python -m app.jobs.eodhd_canary --mode ${{ inputs.mode }} ${{ inputs.commit && '--commit' || '' }} | tee /tmp/canary.json || true
       - name: Publicar reporte + respaldo como artefacto
         if: always()
         uses: actions/upload-artifact@v4
