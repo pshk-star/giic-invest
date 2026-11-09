@@ -249,3 +249,13 @@ def test_preserve_sin_previo_no_inventa():
     payloads = {"AAPL": {"ticker": "AAPL", "pe_ttm": 30.0}}
     n = E.preserve_enrichment_blocks(payloads, {})
     assert n == 0 and "enrichment" not in payloads["AAPL"]
+
+
+def test_run_scan_no_reimporta_AssetClass_en_execute():
+    """Regresión: execute NO debe re-importar AssetClass (ya es de módulo); un import local lo
+    convertiría en variable local y rompería su uso previo (UnboundLocalError con enriquecimiento off)."""
+    import ast, inspect, app.jobs.run_scan as rs
+    tree = ast.parse(inspect.getsource(rs))
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "execute")
+    imported = [a.name for n in ast.walk(fn) if isinstance(n, ast.ImportFrom) for a in n.names]
+    assert "AssetClass" not in imported, f"execute re-importa AssetClass: {imported}"

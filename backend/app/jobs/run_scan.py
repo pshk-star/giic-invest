@@ -108,7 +108,8 @@ def execute(provider_name: str = "free", top: int = 50, dry_run: bool = False,
             # Universo UNIFICADO: scanner ∪ cartera ∪ Research(instruments) ∪ internacionales EODHD.
             origin = build_enrich_universe(writer, [i.ticker for i in universe])
             # Excluir vehículos (ETF/trust): no tienen fundamentales corporativos → no se consulta EODHD.
-            from ..core.types import AssetClass
+            # (AssetClass ya está importado a nivel de módulo; no re-importar: crearía un local y rompería
+            #  el uso previo de AssetClass.EQUITY en el armado de extra_tickers.)
             vehiculos = {i.ticker.upper() for i in universe if i.asset_class != AssetClass.EQUITY}
             enrich_tickers = sorted(t for t in origin if t not in vehiculos)
             prev_payloads = read_fundamentals_payloads(writer, enrich_tickers) if writer is not None else {}
