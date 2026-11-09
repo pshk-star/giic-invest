@@ -175,7 +175,39 @@ def dump_prices(tickers, cap=1300) -> dict:
     return out
 
 
+def dump_advisor() -> dict:
+    """Volcado SOLO LECTURA de las entradas del Investment Advisor: operaciones, acciones
+    corporativas, precios, instrumentos, scanner, fundamentales de las tenencias y settings."""
+    url = os.getenv("SUPABASE_URL", ""); srk = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    from app.jobs.supabase_writer import SupabaseWriter
+    w = SupabaseWriter(url, srk)
+    txns = w.select_rows("transactions", select="ticker,side,quantity,price,executed_at",
+                         params={"order": "executed_at"})
+    held = sorted({(r.get("ticker") or "").upper() for r in txns if r.get("ticker")})
+    inq = f"in.({','.join(held)})" if held else "in.()"
+    ca = w.select_rows("corporate_actions", select="ticker,ratio,ex_date", params={"order": "ex_date", "ticker": inq}) if held else []
+    prices = w.select_rows("prices", select="ticker,close,as_of", params={"order": "ticker", "ticker": inq}) if held else []
+    inst = w.select_rows("instruments", select="ticker,name,asset_class,currency,sector", params={"order": "ticker", "ticker": inq}) if held else []
+    scan = w.select_rows("v_latest_scan", select="ticker,name,sector,composite,factor_value,factor_quality,factor_growth,factor_momentum,factor_low_risk", params={"order": "rank"})
+    funds = w.select_rows("fundamentals", select="ticker,payload", params={"order": "ticker", "ticker": inq}) if held else []
+    settings = w.select_rows("settings", select="capital_available,max_weight_per_asset,max_weight_per_sector", params={"order": "user_id"})
+    FKEEP = ("pe_ttm", "eps", "eps_annual", "eps_ttm", "fcf_annual", "fcf_ttm", "net_debt",
+             "cash_and_sti", "operating_margin", "net_margin", "rev_growth_yoy", "roe", "roic",
+             "fcf_yield", "diluted_shares", "market_cap", "currency", "as_of", "source_kind")
+    fund_out = {}
+    for r in funds:
+        p = r.get("payload") or {}
+        d = {k: p.get(k) for k in FKEEP}
+        d["enrichment"] = p.get("enrichment"); d["history"] = p.get("history")
+        fund_out[(r.get("ticker") or "").upper()] = d
+    return {"transactions": txns, "corporate_actions": ca, "prices": prices,
+            "instruments": inst, "scan": scan, "fundamentals": fund_out, "settings": settings}
+
+
 def main(argv=None):
+    if os.getenv("GIIC_ADVISOR_DUMP", "") == "1":
+        print(json.dumps(dump_advisor(), ensure_ascii=False, default=str))
+        return 0
     prices = os.getenv("GIIC_PRICES_TICKERS", "")
     if prices:
         tickers = [t.strip() for t in prices.split(",") if t.strip()]

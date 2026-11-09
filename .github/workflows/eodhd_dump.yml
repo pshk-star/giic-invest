@@ -14,6 +14,10 @@ on:
         description: "Tickers para volcar historial de precios (opcional)"
         required: false
         default: ""
+      advisor:
+        description: "1 = volcar entradas del Advisor (operaciones, precios, scanner, fundamentales)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -36,9 +40,16 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           GIIC_DUMP_TICKERS: ${{ github.event.inputs.tickers }}
           GIIC_PRICES_TICKERS: ${{ github.event.inputs.prices }}
+          GIIC_ADVISOR_DUMP: ${{ github.event.inputs.advisor }}
         run: |
           cd backend
-          if [ -n "${GIIC_PRICES_TICKERS}" ]; then
+          if [ "${GIIC_ADVISOR_DUMP}" = "1" ]; then
+            python -m app.jobs.eodhd_universe_report > ../adv.json
+            echo "ADV_BYTES=$(wc -c < ../adv.json)"
+            echo "===GIIC_ADV_BEGIN_B64==="
+            base64 ../adv.json | sed 's/^/A64:/'
+            echo "===GIIC_ADV_END_B64==="
+          elif [ -n "${GIIC_PRICES_TICKERS}" ]; then
             python -m app.jobs.eodhd_universe_report > ../prices.json
             echo "PRICES_BYTES=$(wc -c < ../prices.json)"
             echo "===GIIC_PRICES_BEGIN_B64==="
