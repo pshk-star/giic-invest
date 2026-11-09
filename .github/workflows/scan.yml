@@ -43,7 +43,10 @@ jobs:
           EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
           EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
           BASE_CURRENCY: ${{ vars.BASE_CURRENCY || 'USD' }}
-          # Enriquecimiento: en dispatch manual lo decide el input; en cron, la variable de repo
-          # GIIC_EODHD_ENRICH (se fija a "1" sólo tras validar la primera corrida general manual).
-          GIIC_EODHD_ENRICH: ${{ github.event.inputs.enrich == 'true' && '1' || vars.GIIC_EODHD_ENRICH || '' }}
+          # Enriquecimiento EODHD ACTIVADO para el cron (validado en la primera corrida general).
+          #  - cron (schedule) → '1' (enriquecido, autónomo).
+          #  - dispatch manual → el input `enrich` ('1' si true, '0' si false; útil para probar EDGAR-only).
+          #  - KILL-SWITCH: fijar la variable de repo GIIC_EODHD_DISABLE=1 (Settings → Variables) apaga
+          #    el enriquecimiento al instante, sin commit (rollback de futuras consultas/escrituras EODHD).
+          GIIC_EODHD_ENRICH: ${{ (vars.GIIC_EODHD_DISABLE != '1' && (github.event_name == 'schedule' || github.event.inputs.enrich == 'true')) && '1' || '0' }}
         run: python -m app.jobs.run_scan --provider free --top 50
