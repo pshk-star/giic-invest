@@ -100,7 +100,23 @@ def run() -> dict:
                       "ultimo_revenue": (max(series["revenue"]) if series["revenue"] else None),
                       "ultimo_net_income": (max(series["net_income"]) if series["net_income"] else None),
                       "n_usgaap_concepts": len((facts.get("facts", {}) or {}).get("us-gaap", {})),
-                      "has_NetIncomeLoss": "NetIncomeLoss" in (facts.get("facts", {}) or {}).get("us-gaap", {})}
+                      "has_NetIncomeLoss": "NetIncomeLoss" in (facts.get("facts", {}) or {}).get("us-gaap", {}),
+                      "cik": cik}
+        # Si la serie de ingresos quedó vacía en un filer us-gaap/USD, probar companyconcept (endpoint
+        # distinto) para distinguir companyfacts PARCIAL (dato existe allí) de ausencia real.
+        if not series["revenue"] and tax == "us-gaap":
+            try:
+                cc = cli.get(f"https://data.sec.gov/api/xbrl/companyconcept/CIK{cik:010d}/us-gaap/NetIncomeLoss.json")
+                if cc.status_code == 200:
+                    rows = [r for r in cc.json().get("units", {}).get("USD", [])
+                            if str(r.get("form", "")).startswith("10-K") and r.get("start")]
+                    edgar_diag["companyconcept_NI_ultimo"] = max((r["end"] for r in rows), default=None)
+                    edgar_diag["companyconcept_NI_n"] = len(rows)
+                else:
+                    edgar_diag["companyconcept_NI_ultimo"] = f"HTTP {cc.status_code}"
+                time.sleep(0.12)
+            except Exception as e:
+                edgar_diag["companyconcept_NI_ultimo"] = type(e).__name__
         later = bool(latest_report and data_end and (latest_report - data_end).days > 20)
         rec = assess_recency(data_end, EVAL_DATE, cadence_days=cadence, lag_days=lag,
                              later_report_exists=later, window=f.eps_ttm_window)
