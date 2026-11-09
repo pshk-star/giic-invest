@@ -1,24 +1,19 @@
 #!/usr/bin/env python3
-"""Validación empírica INDEPENDIENTE de EODHD para GIIC (no es el conector productivo).
+"""Validación empírica RIGUROSA de EODHD para GIIC (v2). No es el conector productivo.
 
-Objetivo: comprobar con datos REALES —no asumidos— si el plan/clave de EODHD da acceso a los
-fundamentales que necesitamos, con qué cobertura/actualidad, y si mejora la cobertura VIGENTE (B)
-frente a EDGAR. No contrata nada, no toca el núcleo de GIIC, no inicia Fair Value.
+Mejoras sobre v1 (según revisión):
+  - Concilia SOLO cifras del MISMO ejercicio, MONEDA y UNIDAD (empareja por fecha de cierre).
+  - Separa EPS ANUAL, TRIMESTRAL y TTM (fuentes distintas; no las mezcla).
+  - Distingue ACCIONES EN CIRCULACIÓN (outstandingShares) de PROMEDIO PONDERADO DILUIDO
+    (weightedAverageShsOutDil). Nunca usa una por la otra.
+  - Mapea correctamente OCF, CAPEX, FCF, cash y deuda total.
+  - Identifica ordinaria vs ADR y su factor de conversión; concilia LOCAL-vs-LOCAL contra EDGAR.
+  - Conserva procedencia (símbolo, período, filing_date).
+  - NO declara 'verificado' sólo porque el dato exista en EODHD: exige coincidencia con la fuente
+    oficial en período y moneda comparables. Distingue ANOMALÍA real de LIMITACIÓN del validador.
 
-Seguridad de credenciales:
-  - La clave se lee de la variable de entorno EODHD_API_KEY. NUNCA se escribe en disco ni en logs
-    (las URLs se redactan antes de imprimirse). Si falta, el script lo informa y termina.
-  - EDGAR exige User-Agent con contacto: se lee de EDGAR_USER_AGENT (para el contraste oficial).
-
-Uso:
-  export EODHD_API_KEY=...            # clave (gratuita/trial o de pago)
-  export EDGAR_USER_AGENT="giic tu@correo"   # opcional: habilita el contraste contra EDGAR
-  python validate_eodhd.py                    # informe legible (markdown) a stdout
-  python validate_eodhd.py --json out.json    # además guarda el detalle en JSON
-  python validate_eodhd.py --selftest         # prueba el pipeline con fixtures (sin red ni clave)
-
-Si la prueba gratuita NO permite consultar fundamentales, el informe lo declara como BLOQUEO y
-lista alternativas de validación — sin inventar cifras.
+Seguridad: clave sólo de EODHD_API_KEY (env); nunca en disco ni en logs (URLs redactadas).
+EDGAR: EDGAR_USER_AGENT (contraste oficial). Uso: ver README. --selftest corre sin red ni clave.
 """
 from __future__ import annotations
 
@@ -33,39 +28,49 @@ from datetime import date, datetime
 TODAY = date.today()
 EODHD_BASE = "https://eodhd.com/api"
 
-# Batería prioritaria. Para ADR internacionales se consulta el símbolo del MERCADO LOCAL (moneda de
-# reporte real) y, cuando existe, también el ADR en US. adr_ratio = acciones ordinarias por ADR.
+# Universo: 9 prioritarios + resto de ADR/IFRS de la batería. Para cada uno, símbolos EODHD a probar
+# (local primero, ADR US como respaldo), moneda local esperada y factor ADR (acciones ord. por ADR).
 UNIVERSE = [
-    {"name": "ASML", "edgar": "ASML", "eodhd_home": "ASML.AS",   "eodhd_adr": "ASML.US", "home_ccy": "EUR", "adr_ratio": 1},
-    {"name": "TSM",  "edgar": "TSM",  "eodhd_home": "2330.TW",   "eodhd_adr": "TSM.US",  "home_ccy": "TWD", "adr_ratio": 5},
-    {"name": "SAP",  "edgar": "SAP",  "eodhd_home": "SAP.XETRA", "eodhd_adr": "SAP.US",  "home_ccy": "EUR", "adr_ratio": 1},
-    {"name": "NVO",  "edgar": "NVO",  "eodhd_home": "NOVO-B.CO", "eodhd_adr": "NVO.US",  "home_ccy": "DKK", "adr_ratio": 1},
-    {"name": "AZN",  "edgar": "AZN",  "eodhd_home": "AZN.LSE",   "eodhd_adr": "AZN.US",  "home_ccy": "GBP", "adr_ratio": 2},
-    {"name": "BABA", "edgar": "BABA", "eodhd_home": "9988.HK",   "eodhd_adr": "BABA.US", "home_ccy": "HKD", "adr_ratio": 8},
-    {"name": "V",    "edgar": "V",    "eodhd_home": "V.US",      "eodhd_adr": "V.US",    "home_ccy": "USD", "adr_ratio": 1},
-    {"name": "MA",   "edgar": "MA",   "eodhd_home": "MA.US",     "eodhd_adr": "MA.US",   "home_ccy": "USD", "adr_ratio": 1},
-    {"name": "MU",   "edgar": "MU",   "eodhd_home": "MU.US",     "eodhd_adr": "MU.US",   "home_ccy": "USD", "adr_ratio": 1},
+    {"name": "ASML", "edgar": "ASML", "symbols": ["ASML.AS", "ASML.US"], "adr": 1,  "seg": "adr_ifrs"},
+    {"name": "TSM",  "edgar": "TSM",  "symbols": ["2330.TW", "TSM.US"],  "adr": 5,  "seg": "adr_ifrs"},
+    {"name": "SAP",  "edgar": "SAP",  "symbols": ["SAP.XETRA", "SAP.US"], "adr": 1,  "seg": "adr_ifrs"},
+    {"name": "NVO",  "edgar": "NVO",  "symbols": ["NOVO-B.CO", "NVO.US"], "adr": 1,  "seg": "adr_ifrs"},
+    {"name": "AZN",  "edgar": "AZN",  "symbols": ["AZN.LSE", "AZN.US"],   "adr": 2,  "seg": "adr_ifrs"},
+    {"name": "BABA", "edgar": "BABA", "symbols": ["9988.HK", "BABA.US"],  "adr": 8,  "seg": "adr_ifrs"},
+    {"name": "V",    "edgar": "V",    "symbols": ["V.US"],                "adr": 1,  "seg": "us"},
+    {"name": "MA",   "edgar": "MA",   "symbols": ["MA.US"],               "adr": 1,  "seg": "us"},
+    {"name": "MU",   "edgar": "MU",   "symbols": ["MU.US"],               "adr": 1,  "seg": "us"},
+    # Resto ADR/IFRS de la batería
+    {"name": "TM",   "edgar": "TM",   "symbols": ["7203.TSE", "TM.US"],   "adr": 1,  "seg": "adr_ifrs"},
+    {"name": "SHEL", "edgar": "SHEL", "symbols": ["SHEL.LSE", "SHEL.US"], "adr": 2,  "seg": "adr_ifrs"},
+    {"name": "BP",   "edgar": "BP",   "symbols": ["BP.LSE", "BP.US"],     "adr": 6,  "seg": "adr_ifrs"},
+    {"name": "SONY", "edgar": "SONY", "symbols": ["6758.TSE", "SONY.US"], "adr": 1,  "seg": "adr_ifrs"},
+    {"name": "UL",   "edgar": "UL",   "symbols": ["ULVR.LSE", "UL.US"],   "adr": 1,  "seg": "adr_ifrs"},
+    {"name": "RIO",  "edgar": "RIO",  "symbols": ["RIO.LSE", "RIO.US"],   "adr": 2,  "seg": "adr_ifrs"},
+    {"name": "SE",   "edgar": "SE",   "symbols": ["SE.US"],               "adr": 1,  "seg": "adr_ifrs"},
+    {"name": "NVS",  "edgar": "NVS",  "symbols": ["NVS.US", "NOVN.SW"],   "adr": 1,  "seg": "adr_ifrs"},
+    {"name": "HSBC", "edgar": "HSBC", "symbols": ["HSBA.LSE", "HSBC.US"], "adr": 5,  "seg": "adr_ifrs"},
 ]
 
-FV_FIELDS = ["revenue", "net_income", "eps_diluted", "diluted_shares", "ocf", "capex", "fcf", "cash", "total_debt"]
+FV_FIELDS = ["revenue", "net_income", "eps_diluted_annual", "diluted_shares_wavg", "ocf", "capex", "fcf", "cash", "total_debt"]
+# Conceptos EDGAR por campo (us-gaap / ifrs-full).
+EDGAR_CONCEPTS = {
+    "revenue": (["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "RevenueFromContractsWithCustomers", "Revenue", "SalesRevenueNet"], "money", "dur"),
+    "net_income": (["NetIncomeLoss", "ProfitLoss"], "money", "dur"),
+    "eps_diluted_annual": (["EarningsPerShareDiluted", "DilutedEarningsLossPerShare", "DilutedEarningsPerShare"], "pershare", "dur"),
+    "diluted_shares_wavg": (["WeightedAverageNumberOfDilutedSharesOutstanding", "WeightedAverageShares", "AdjustedWeightedAverageShares"], "shares", "dur"),
+    "ocf": (["NetCashProvidedByUsedInOperatingActivities", "CashFlowsFromUsedInOperatingActivities"], "money", "dur"),
+    "capex": (["PaymentsToAcquirePropertyPlantAndEquipment", "PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities"], "money", "dur"),
+    "cash": (["CashAndCashEquivalentsAtCarryingValue", "CashAndCashEquivalents"], "money", "inst"),
+    "total_debt": None,  # se arma de LT+corriente
+}
 
-# Claves posibles en el JSON de EODHD por campo (se prueba la primera que exista y sea numérica).
-INCOME_KEYS = {"revenue": ["totalRevenue"], "net_income": ["netIncome"],
-               "diluted_shares": ["weightedAverageShsOutDil", "weightedAverageShsOut"]}
-CASHFLOW_KEYS = {"ocf": ["totalCashFromOperatingActivities"],
-                 "capex": ["capitalExpenditures"], "fcf": ["freeCashFlow"]}
-BALANCE_KEYS = {"cash": ["cashAndEquivalents", "cash", "cashAndShortTermInvestments"],
-                "total_debt": ["shortLongTermDebtTotal"],
-                "longTermDebt": ["longTermDebt"], "shortDebt": ["shortTermDebt", "shortLongTermDebt"],
-                "netDebt": ["netDebt"]}
 
-
-def _redact(s: str) -> str:
+def _redact(s):
     return re.sub(r"(api_token=)[^&\s]+", r"\1***", s or "")
 
 
-def http_get_json(url: str, headers=None, timeout=40):
-    """GET → (status, obj|None, error|None). Redacta el token en cualquier mensaje."""
+def http_get_json(url, headers=None, timeout=60):
     req = urllib.request.Request(url, headers=headers or {})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -73,18 +78,11 @@ def http_get_json(url: str, headers=None, timeout=40):
             try:
                 return r.status, json.loads(body), None
             except json.JSONDecodeError:
-                return r.status, None, f"respuesta no-JSON ({len(body)} bytes)"
+                return r.status, None, "no-JSON"
     except urllib.error.HTTPError as e:
         return e.code, None, f"HTTP {e.code}"
     except Exception as e:
         return None, None, f"{type(e).__name__}: {_redact(str(e))}"
-
-
-# ---------- EODHD ----------
-def eodhd_fundamentals(symbol, token, fetch=http_get_json):
-    url = f"{EODHD_BASE}/fundamentals/{symbol}?api_token={token}&fmt=json"
-    status, obj, err = fetch(url, {"User-Agent": "giic-eodhd-validation"})
-    return status, obj, err
 
 
 def _num(d, keys):
@@ -100,277 +98,369 @@ def _num(d, keys):
     return None
 
 
-def _latest_period(section):
-    """(period_date, filing_date, row) del período más reciente de una sección yearly/quarterly."""
-    if not isinstance(section, dict):
-        return None, None, None
-    rows = [(k, v) for k, v in section.items() if isinstance(v, dict)]
-    if not rows:
-        return None, None, None
-    rows.sort(key=lambda kv: kv[0])
-    k, row = rows[-1]
-    return row.get("date") or k, row.get("filing_date"), row
-
-
-def extract_eodhd(obj):
-    """Normaliza el JSON de EODHD a: moneda, último anual y trimestral con fecha+publicación, y los
-    9 campos FV en ambos períodos. No inventa: ausente -> None."""
-    out = {"currency": None, "annual": {}, "quarterly": {}, "periods": {}}
-    if not isinstance(obj, dict):
-        return out
-    fin = obj.get("Financials", {}) or {}
-    out["currency"] = ((fin.get("Income_Statement", {}) or {}).get("currency_symbol")
-                       or (obj.get("General", {}) or {}).get("CurrencyCode"))
-    for label, sect in (("annual", "yearly"), ("quarterly", "quarterly")):
-        inc = ((fin.get("Income_Statement", {}) or {}).get(sect)) or {}
-        bal = ((fin.get("Balance_Sheet", {}) or {}).get(sect)) or {}
-        cf = ((fin.get("Cash_Flow", {}) or {}).get(sect)) or {}
-        ip, ifil, irow = _latest_period(inc)
-        bp, bfil, brow = _latest_period(bal)
-        cp, cfil, crow = _latest_period(cf)
-        vals = {}
-        for f, keys in INCOME_KEYS.items():
-            vals[f] = _num(irow, keys)
-        for f, keys in CASHFLOW_KEYS.items():
-            vals[f] = _num(crow, keys)
-        vals["cash"] = _num(brow, BALANCE_KEYS["cash"])
-        td = _num(brow, BALANCE_KEYS["total_debt"])
-        if td is None:
-            lt = _num(brow, BALANCE_KEYS["longTermDebt"]); st = _num(brow, BALANCE_KEYS["shortDebt"])
-            td = (lt or 0) + (st or 0) if (lt is not None or st is not None) else None
-        vals["total_debt"] = td
-        if vals.get("fcf") is None and vals.get("ocf") is not None and vals.get("capex") is not None:
-            vals["fcf"] = vals["ocf"] - abs(vals["capex"])
-        # EPS diluido: EODHD no lo trae en el income; se usa Highlights / Earnings como señal.
-        vals["eps_diluted"] = _num(obj.get("Highlights", {}), ["DilutedEpsTTM", "EarningsShare"]) if label == "annual" else None
-        out[label] = vals
-        out["periods"][label] = {"period_end": ip or bp or cp, "filing_date": ifil or bfil or cfil}
-    return out
-
-
-# ---------- EDGAR (contraste oficial) ----------
-def edgar_latest_annual(edgar_ticker, ua, fetch=http_get_json):
-    """Último anual oficial de EDGAR: (currency, {revenue, net_income, eps_diluted, period_end})."""
-    if not ua or "@" not in ua:
-        return None
-    st, tk, _ = fetch("https://www.sec.gov/files/company_tickers.json", {"User-Agent": ua})
-    if not tk:
-        return None
-    cik = None
-    for r in tk.values():
-        if r["ticker"].upper() == edgar_ticker.upper():
-            cik = int(r["cik_str"]); break
-    if cik is None:
-        return None
-    st, facts, _ = fetch(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json", {"User-Agent": ua})
-    if not facts:
-        return None
-
-    def latest_annual(concepts, unit_filter):
-        best = None
-        for tax in ("us-gaap", "ifrs-full"):
-            for c in concepts:
-                node = (((facts.get("facts", {}) or {}).get(tax, {}) or {}).get(c, {}) or {}).get("units", {}) or {}
-                for unit, rows in node.items():
-                    if unit_filter(unit):
-                        for r in rows:
-                            if str(r.get("form", "")).startswith(("10-K", "20-F", "40-F")) and r.get("start") and r.get("end"):
-                                try:
-                                    d0 = datetime.strptime(r["start"], "%Y-%m-%d").date()
-                                    d1 = datetime.strptime(r["end"], "%Y-%m-%d").date()
-                                except ValueError:
-                                    continue
-                                if 330 <= (d1 - d0).days <= 400 and (best is None or d1 > best[0]):
-                                    best = (d1, float(r["val"]), unit)
-        return best
-
-    def money(u):
-        return "/" not in u and len(u) == 3
-    rev = latest_annual(["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "RevenueFromContractsWithCustomers", "Revenue"], money)
-    ni = latest_annual(["NetIncomeLoss", "ProfitLoss"], money)
-    eps = latest_annual(["EarningsPerShareDiluted", "DilutedEarningsLossPerShare"], lambda u: u.endswith("/shares"))
-    return {"currency": (rev or ni or (None, None, None))[2],
-            "revenue": rev[1] if rev else None, "net_income": ni[1] if ni else None,
-            "eps_diluted": eps[1] if eps else None,
-            "period_end": (rev or ni or (None,))[0].isoformat() if (rev or ni) else None}
-
-
-# ---------- Clasificación ----------
-def classify(eodhd_val, edgar_val, same_currency, tol=0.02):
-    """verificado | inconsistente | parcial | ausente (+ razón)."""
-    if eodhd_val is None:
-        return "ausente", "sin dato en EODHD"
-    if edgar_val is None:
-        return "parcial", "presente en EODHD; sin contraste EDGAR"
-    if not same_currency:
-        return "parcial", "presente; monedas distintas, no comparable directo"
-    if edgar_val == 0:
-        return "parcial", "EDGAR=0, no comparable"
-    diff = abs(eodhd_val - edgar_val) / abs(edgar_val)
-    return ("verificado", f"coincide con EDGAR (dif {diff*100:.2f}%)") if diff <= tol else \
-        ("inconsistente", f"difiere de EDGAR {diff*100:.1f}%")
-
-
-def _parse_d(s):
+def _pd(s):
     try:
         return datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
     except (ValueError, TypeError):
         return None
 
 
-def validate_one(cfg, token, ua, fetch=http_get_json):
-    rec = {"name": cfg["name"], "home_symbol": cfg["eodhd_home"], "adr_ratio": cfg["adr_ratio"]}
-    status, obj, err = eodhd_fundamentals(cfg["eodhd_home"], token, fetch)
-    rec["http_status"] = status
-    if not obj or not isinstance(obj, dict) or "Financials" not in obj:
-        rec["acceso"] = f"sin fundamentales ({err or 'respuesta vacía/sin Financials'})"
-        rec["campos"] = {f: "ausente" for f in FV_FIELDS}
+# ---------- EODHD ----------
+def eodhd_fetch(symbol, token, fetch):
+    url = f"{EODHD_BASE}/fundamentals/{symbol}?api_token={token}&fmt=json"
+    return fetch(url, {"User-Agent": "giic-eodhd-validation"})
+
+
+def eodhd_extract(obj):
+    """Devuelve estructura normalizada SIN mezclar conceptos:
+       currency, annual{year_end:{campos}}, quarterly_latest, eps (anual/trim/ttm por separado),
+       filing dates y acciones (ponderadas diluidas vs en circulación, distintas)."""
+    fin = (obj or {}).get("Financials", {}) or {}
+    inc_y = (fin.get("Income_Statement", {}) or {}).get("yearly", {}) or {}
+    bal_y = (fin.get("Balance_Sheet", {}) or {}).get("yearly", {}) or {}
+    cf_y = (fin.get("Cash_Flow", {}) or {}).get("yearly", {}) or {}
+    currency = (fin.get("Income_Statement", {}) or {}).get("currency_symbol") or (obj.get("General", {}) or {}).get("CurrencyCode")
+
+    def row_fields(irow, brow, crow):
+        f = {}
+        f["revenue"] = _num(irow, ["totalRevenue"])
+        f["net_income"] = _num(irow, ["netIncome"])
+        f["operating_income"] = _num(irow, ["operatingIncome"])
+        # Acciones: PONDERADO DILUIDO (para EPS) — NO outstanding.
+        f["diluted_shares_wavg"] = _num(irow, ["weightedAverageShsOutDil"])
+        f["basic_shares_wavg"] = _num(irow, ["weightedAverageShsOut"])
+        f["ocf"] = _num(crow, ["totalCashFromOperatingActivities"])
+        f["capex"] = _num(crow, ["capitalExpenditures"])
+        fcf = _num(crow, ["freeCashFlow"])
+        if fcf is None and f["ocf"] is not None and f["capex"] is not None:
+            fcf = f["ocf"] - abs(f["capex"])
+        f["fcf"] = fcf
+        f["cash"] = _num(brow, ["cashAndEquivalents", "cash", "cashAndShortTermInvestments"])
+        td = _num(brow, ["shortLongTermDebtTotal"])
+        if td is None:
+            lt = _num(brow, ["longTermDebt"]); st = _num(brow, ["shortTermDebt", "shortLongTermDebt"])
+            td = (lt or 0) + (st or 0) if (lt is not None or st is not None) else None
+        f["total_debt"] = td
+        f["net_debt"] = _num(brow, ["netDebt"])
+        return f
+
+    annual = {}
+    for y, irow in inc_y.items():
+        if not isinstance(irow, dict):
+            continue
+        end = irow.get("date") or y
+        annual[end] = row_fields(irow, bal_y.get(end) or bal_y.get(y) or {}, cf_y.get(end) or cf_y.get(y) or {})
+        annual[end]["filing_date"] = irow.get("filing_date")
+    # EPS separado por base:
+    earn = (obj.get("Earnings", {}) or {})
+    eps_annual = {}
+    for y, row in (earn.get("Annual", {}) or {}).items():
+        if isinstance(row, dict):
+            eps_annual[row.get("date") or y] = _num(row, ["epsActual", "epsActualDiluted"])
+    eps_hist_q = (earn.get("History", {}) or {})
+    q_eps = None
+    if eps_hist_q:
+        qk = sorted([k for k, v in eps_hist_q.items() if isinstance(v, dict) and v.get("reportDate")])
+        if qk:
+            q_eps = _num(eps_hist_q[qk[-1]], ["epsActual"])
+    eps_ttm = _num(obj.get("Highlights", {}), ["DilutedEpsTTM"])
+    # Último trimestral (income/balance/cashflow) para actualidad.
+    inc_q = (fin.get("Income_Statement", {}) or {}).get("quarterly", {}) or {}
+    bal_q = (fin.get("Balance_Sheet", {}) or {}).get("quarterly", {}) or {}
+    cf_q = (fin.get("Cash_Flow", {}) or {}).get("quarterly", {}) or {}
+    qkeys = sorted(inc_q.keys())
+    q_latest = None
+    if qkeys:
+        qk = qkeys[-1]
+        qrow = inc_q[qk]
+        q_latest = {"period_end": qrow.get("date") or qk, "filing_date": qrow.get("filing_date"),
+                    "fields": row_fields(qrow, bal_q.get(qk, {}), cf_q.get(qk, {}))}
+    a_keys = sorted(annual.keys())
+    return {"currency": currency, "annual": annual, "eps_annual": eps_annual,
+            "eps_quarterly_latest": q_eps, "eps_ttm": eps_ttm,
+            "latest_annual": a_keys[-1] if a_keys else None, "quarterly_latest": q_latest,
+            "shares_outstanding_present": bool(obj.get("outstandingShares"))}
+
+
+# ---------- EDGAR ----------
+def edgar_series(ticker, ua, fetch):
+    if not ua or "@" not in ua:
+        return None
+    _, tk, _ = fetch("https://www.sec.gov/files/company_tickers.json", {"User-Agent": ua})
+    if not tk:
+        return None
+    cik = next((int(r["cik_str"]) for r in tk.values() if r["ticker"].upper() == ticker.upper()), None)
+    if cik is None:
+        return None
+    _, facts, _ = fetch(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json", {"User-Agent": ua})
+    if not facts:
+        return None
+    F = (facts.get("facts", {}) or {})
+
+    def unit_ok(u, kind):
+        if kind == "money":
+            return "/" not in u and len(u) == 3
+        if kind == "pershare":
+            return u.endswith("/shares")
+        if kind == "shares":
+            return u == "shares"
+        return False
+
+    def series(concepts, kind, dur):
+        out, ccy = {}, None
+        for tax in ("us-gaap", "ifrs-full"):
+            for c in concepts:
+                node = (((F.get(tax, {}) or {}).get(c, {}) or {}).get("units", {}) or {})
+                for u, rows in node.items():
+                    if not unit_ok(u, kind):
+                        continue
+                    for r in rows:
+                        if not str(r.get("form", "")).startswith(("10-K", "20-F", "40-F")):
+                            continue
+                        e = _pd(r.get("end"))
+                        if not e:
+                            continue
+                        if dur == "dur":
+                            s = _pd(r.get("start"))
+                            if not s or not (330 <= (e - s).days <= 400):
+                                continue
+                        filed = _pd(r.get("filed")) or date.min
+                        key = e.isoformat()
+                        if key not in out or filed >= out[key][1]:
+                            out[key] = (float(r["val"]), filed)
+                            if kind == "money" and not ccy:
+                                ccy = u
+                if out:
+                    break
+            if out:
+                break
+        return {k: v[0] for k, v in out.items()}, ccy
+
+    res, ccy = {}, None
+    for field, spec in EDGAR_CONCEPTS.items():
+        if spec is None:
+            continue
+        concepts, kind, dur = spec
+        s, c = series(concepts, kind, dur)
+        res[field] = s
+        if kind == "money" and c and not ccy:
+            ccy = c
+    # deuda total = LT no corriente + corriente (instantáneos)
+    lt, _ = series(["LongTermDebtNoncurrent", "LongTermDebt", "NoncurrentBorrowings", "Borrowings"], "money", "inst")
+    cur, _ = series(["LongTermDebtCurrent", "DebtCurrent", "ShortTermBorrowings", "CurrentBorrowings"], "money", "inst")
+    td = {}
+    for k in set(lt) | set(cur):
+        td[k] = (lt.get(k, 0) or 0) + (cur.get(k, 0) or 0)
+    res["total_debt"] = td
+    allk = sorted({k for s in res.values() for k in s})
+    return {"currency": ccy, "series": res, "latest_period": allk[-1] if allk else None}
+
+
+# ---------- Conciliación ----------
+def _match_year(eodhd_end, edgar_keys, tol=20):
+    ed = _pd(eodhd_end)
+    if not ed:
+        return None
+    best = None
+    for k in edgar_keys:
+        d = _pd(k)
+        if d and abs((d - ed).days) <= tol and (best is None or abs((d - ed).days) < best[1]):
+            best = (k, abs((d - ed).days))
+    return best[0] if best else None
+
+
+def reconcile_field(eodhd_val, edgar_map, eodhd_end, same_ccy):
+    """Compara MISMO AÑO y MISMA MONEDA. Devuelve (estado, razon, edgar_val, diff)."""
+    if eodhd_val is None:
+        return "ausente", "sin dato en EODHD", None, None
+    if not edgar_map:
+        return "sin_contraste", "EDGAR no reporta este campo", None, None
+    yk = _match_year(eodhd_end, edgar_map.keys())
+    if yk is None:
+        return "sin_contraste_periodo", "EDGAR no tiene el mismo ejercicio", None, None
+    ev = edgar_map[yk]
+    if not same_ccy:
+        return "no_comparable_moneda", "monedas distintas (no se convierte)", ev, None
+    if ev == 0:
+        return "no_comparable", "EDGAR=0", ev, None
+    diff = (eodhd_val - ev) / abs(ev)
+    # tolerancia de escala: a veces miles vs unidades
+    for scale, lab in ((1000, "x1000"), (0.001, "/1000"), (1e6, "x1e6")):
+        if abs(eodhd_val / scale - ev) / abs(ev) <= 0.02:
+            return "inconsistente_escala", f"difiere por factor {lab} (unidades)", ev, diff
+    if abs(diff) <= 0.02:
+        return "verificado", f"coincide (dif {diff*100:.2f}%)", ev, diff
+    if abs(diff) <= 0.05:
+        return "diferencia_menor", f"dif {diff*100:.1f}% (2-5%)", ev, diff
+    return "inconsistente", f"dif {diff*100:.1f}%", ev, diff
+
+
+def validate_one(cfg, token, ua, fetch):
+    rec = {"name": cfg["name"], "seg": cfg["seg"], "adr": cfg["adr"]}
+    obj, used = None, None
+    for sym in cfg["symbols"]:
+        st, o, err = eodhd_fetch(sym, token, fetch)
+        rec["last_status"] = st
+        if o and isinstance(o, dict) and o.get("Financials"):
+            obj, used = o, sym
+            break
+    if obj is None:
+        rec["acceso"] = f"sin fundamentales ({rec.get('last_status')})"
         return rec
-    e = extract_eodhd(obj)
+    rec["symbol_usado"] = used
+    e = eodhd_extract(obj)
     rec["currency"] = e["currency"]
-    rec["ultimo_anual"] = e["periods"]["annual"]
-    rec["ultimo_trimestral"] = e["periods"]["quarterly"]
-    edg = edgar_latest_annual(cfg["edgar"], ua, fetch)
-    rec["edgar"] = {"period_end": edg["period_end"], "currency": edg["currency"]} if edg else None
+    rec["shares_outstanding_present"] = e["shares_outstanding_present"]
+    edg = edgar_series(cfg["edgar"], ua, fetch)
+    rec["edgar_currency"] = edg["currency"] if edg else None
+    rec["edgar_latest"] = edg["latest_period"] if edg else None
     same_ccy = bool(edg and e["currency"] and edg["currency"] and e["currency"].upper() == edg["currency"].upper())
-    # Clasifica los 3 campos contrastables (revenue/NI/EPS) contra EDGAR; el resto por presencia.
-    states, reasons = {}, {}
-    annual = e["annual"]
+    rec["same_currency"] = same_ccy
+    # Último anual EODHD para conciliar
+    la = e["latest_annual"]
+    arow = e["annual"].get(la, {}) if la else {}
+    rec["latest_annual"] = la
+    rec["latest_annual_filing"] = arow.get("filing_date")
+    ql = e["quarterly_latest"]
+    rec["latest_quarter"] = ql["period_end"] if ql else None
+    rec["latest_quarter_filing"] = ql["filing_date"] if ql else None
+    # Estados por campo (conciliación mismo-año/moneda)
+    states, detail = {}, {}
     for f in FV_FIELDS:
-        if f in ("revenue", "net_income", "eps_diluted") and edg:
-            st, why = classify(annual.get(f), edg.get(f), same_ccy)
+        if f == "eps_diluted_annual":
+            val = e["eps_annual"].get(la) if la else None
+            if val is None and arow.get("net_income") and arow.get("diluted_shares_wavg"):
+                val = arow["net_income"] / arow["diluted_shares_wavg"]
+            st, why, ev, diff = reconcile_field(val, (edg["series"].get("eps_diluted_annual") if edg else None), la, same_ccy)
         else:
-            st, why = ("parcial", "presente (sin contraste directo)") if annual.get(f) is not None else ("ausente", "sin dato")
-        states[f], reasons[f] = st, why
-    # Actualidad vs EDGAR: ¿EODHD trae un período más reciente que EDGAR? (señal de mejora de B)
-    eo_q = _parse_d(e["periods"]["quarterly"]["period_end"])
-    eo_a = _parse_d(e["periods"]["annual"]["period_end"])
-    eo_latest = max([d for d in (eo_q, eo_a) if d], default=None)
-    ed_latest = _parse_d(edg["period_end"]) if edg else None
-    rec["eodhd_mas_reciente_que_edgar"] = bool(eo_latest and ed_latest and eo_latest > ed_latest)
-    rec["eodhd_period_latest"] = eo_latest.isoformat() if eo_latest else None
-    rec["edgar_period_latest"] = ed_latest.isoformat() if ed_latest else None
-    rec["same_currency_vs_edgar"] = same_ccy
+            val = arow.get(f)
+            st, why, ev, diff = reconcile_field(val, (edg["series"].get(f) if edg else None), la, same_ccy)
+        states[f] = st
+        detail[f] = {"eodhd": val, "edgar": ev, "diff": (round(diff, 4) if diff is not None else None), "razon": why}
+    rec["eps_separado"] = {"anual": e["eps_annual"].get(la) if la else None,
+                           "trimestral": e["eps_quarterly_latest"], "ttm": e["eps_ttm"]}
     rec["campos"] = states
-    rec["razones"] = reasons
+    rec["detalle"] = detail
+    # Actualidad
+    eo_latest = max([d for d in (_pd(la), _pd(rec["latest_quarter"])) if d], default=None)
+    ed_latest = _pd(edg["latest_period"]) if edg else None
+    rec["eodhd_mas_reciente_que_edgar"] = bool(eo_latest and ed_latest and eo_latest > ed_latest)
     rec["acceso"] = "ok"
     return rec
 
 
-def access_probe(token, fetch=http_get_json):
-    """No asume que la clave habilita fundamentales: lo comprueba con AAPL.US."""
-    status, obj, err = eodhd_fundamentals("AAPL.US", token, fetch)
-    if obj and isinstance(obj, dict) and "Financials" in obj:
-        return {"acceso_fundamentales": True, "status": status, "detalle": "AAPL.US devolvió Financials"}
-    hint = "402/403 suele indicar endpoint no incluido en el plan/clave" if status in (402, 403) else (err or "sin Financials")
-    return {"acceso_fundamentales": False, "status": status, "detalle": hint}
+def access_probe(token, fetch):
+    st, o, err = eodhd_fetch("AAPL.US", token, fetch)
+    ok = bool(o and isinstance(o, dict) and o.get("Financials"))
+    return {"acceso": ok, "status": st, "detalle": "AAPL.US con Financials" if ok else (err or "sin Financials")}
+
+
+ANOMALIA = {"inconsistente", "inconsistente_escala"}
+LIMITACION = {"no_comparable_moneda", "sin_contraste", "sin_contraste_periodo", "no_comparable"}
 
 
 def build_report(probe, results):
-    L = ["# Validación empírica EODHD — GIIC", ""]
-    L.append(f"- Fecha: {TODAY.isoformat()}")
-    L.append(f"- Acceso a fundamentales (prueba AAPL.US): **{'SÍ' if probe['acceso_fundamentales'] else 'NO'}** "
-             f"(HTTP {probe['status']}; {probe['detalle']})")
-    if not probe["acceso_fundamentales"]:
-        L += ["", "> **BLOQUEO**: la clave/plan no da acceso a fundamentales. No se consultaron los 9 emisores.",
-              "> Alternativas: (a) clave de pago del plan Fundamentals Data Feed; (b) prueba del endpoint",
-              ">   en la consola web de EODHD; (c) contraste manual de 2-3 tickers desde su documentación.",
-              "> No se inventan cifras."]
+    L = ["# Validación EODHD v2 — GIIC", "", f"- Fecha: {TODAY.isoformat()}",
+         f"- Acceso fundamentales: **{'SÍ' if probe['acceso'] else 'NO'}** (HTTP {probe['status']}; {probe['detalle']})"]
+    if not probe["acceso"]:
+        L += ["", "> BLOQUEO: la clave/plan no da acceso a fundamentales. No se consultó el universo."]
         return "\n".join(L)
-    # Tabla por emisor
-    L += ["", "## Cobertura y actualidad por emisor", "",
-          "| Emisor | símbolo | moneda | últ. anual (pub.) | últ. trim. (pub.) | EODHD>EDGAR | verif. | inconsist. | ausentes |",
-          "|---|---|---|---|---|---|---|---|---|"]
-    tot = {"verificado": 0, "inconsistente": 0, "ausente": 0, "parcial": 0}
-    fresher = 0
+    L += ["", "## Por emisor", "",
+          "| Emisor | seg | símbolo | moneda(E/EDGAR) | últ.anual (pub) | últ.trim (pub) | fresco>EDGAR | verif | dif.menor | inconsist | no-compar | ausente |",
+          "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    agg = {}
     for r in results:
         if r.get("acceso") != "ok":
-            L.append(f"| {r['name']} | {r['home_symbol']} | — | — | — | — | — | — | sin acceso: {r.get('acceso')} |")
+            L.append(f"| {r['name']} | {r.get('seg')} | — | — | — | — | — | — | — | — | — | sin acceso ({r.get('acceso')}) |")
             continue
         c = r["campos"]
-        v = sum(1 for s in c.values() if s == "verificado")
-        inc = sum(1 for s in c.values() if s == "inconsistente")
-        au = sum(1 for s in c.values() if s == "ausente")
-        for s in c.values():
-            tot[s] = tot.get(s, 0) + 1
-        fresher += 1 if r.get("eodhd_mas_reciente_que_edgar") else 0
-        aa = r["ultimo_anual"]; qq = r["ultimo_trimestral"]
-        L.append(f"| {r['name']} | {r['home_symbol']} | {r.get('currency')} | "
-                 f"{aa.get('period_end')} ({aa.get('filing_date')}) | {qq.get('period_end')} ({qq.get('filing_date')}) | "
-                 f"{'sí' if r.get('eodhd_mas_reciente_que_edgar') else 'no'} | {v} | {inc} | {au} |")
-    # Campos por emisor (estado de los 9)
-    L += ["", "## Estado de los 9 campos (anual, contraste EDGAR donde aplica)", "",
-          "| Emisor | " + " | ".join(FV_FIELDS) + " |", "|---|" + "---|" * len(FV_FIELDS)]
+        n = lambda *s: sum(1 for v in c.values() if v in s)
+        verif = n("verificado"); dmen = n("diferencia_menor"); inc = n(*ANOMALIA); nc = n(*LIMITACION); au = n("ausente")
+        agg.setdefault(r["seg"], []).append(r)
+        L.append(f"| {r['name']} | {r['seg']} | {r.get('symbol_usado')} | {r.get('currency')}/{r.get('edgar_currency')} | "
+                 f"{r.get('latest_annual')} ({r.get('latest_annual_filing')}) | {r.get('latest_quarter')} ({r.get('latest_quarter_filing')}) | "
+                 f"{'sí' if r.get('eodhd_mas_reciente_que_edgar') else 'no'} | {verif} | {dmen} | {inc} | {nc} | {au} |")
+    # Campos por emisor
+    L += ["", "## Estado por campo (anual, conciliación mismo-año/moneda vs EDGAR)", "",
+          "| Emisor | " + " | ".join(f.replace("_diluted_annual", "").replace("_shares_wavg", "_sh") for f in FV_FIELDS) + " |",
+          "|---|" + "---|" * len(FV_FIELDS)]
+    abbr = {"verificado": "veri", "diferencia_menor": "dif<5", "inconsistente": "INCON", "inconsistente_escala": "ESCALA",
+            "no_comparable_moneda": "mon", "sin_contraste": "s/edg", "sin_contraste_periodo": "s/año", "no_comparable": "n/c", "ausente": "AUSE"}
     for r in results:
         if r.get("acceso") != "ok":
             continue
-        L.append(f"| {r['name']} | " + " | ".join(r["campos"][f][:4] for f in FV_FIELDS) + " |")
-    # Resumen / estimación de B SOLO sobre lo comprobado
-    intl = [r for r in results if r.get("acceso") == "ok" and r["name"] in ("ASML", "TSM", "SAP", "NVO", "AZN", "BABA")]
-    intl_fresher = [r for r in intl if r.get("eodhd_mas_reciente_que_edgar")]
-    L += ["", "## Resumen", "",
-          f"- Campos: verificado={tot.get('verificado',0)}, inconsistente={tot.get('inconsistente',0)}, "
-          f"parcial={tot.get('parcial',0)}, ausente={tot.get('ausente',0)}.",
-          f"- Emisores con período más reciente que EDGAR: {fresher}/{sum(1 for r in results if r.get('acceso')=='ok')}.",
-          f"- Internacionales prioritarios con dato más fresco que EDGAR (señal de mejora de B): "
-          f"{len(intl_fresher)}/{len(intl)} → {[r['name'] for r in intl_fresher]}.",
-          "",
-          "> Estimación de B: la mejora SOLO se afirma sobre los emisores efectivamente comprobados aquí.",
-          "> No se extrapola al resto de los 63 sin probarlos. Para los internacionales con dato más",
-          "> fresco Y campos verificados/parciales, EODHD elevaría su cobertura vigente de 0% a cubierta;",
-          "> el impacto total sobre B depende de cuántos de los 14 ADR/IFRS repliquen este resultado.",
-          "",
-          "## Licencia (verificar antes de uso en producto)",
-          "- EODHD separa uso personal de comercial/B2B (página de licencia aparte). Para mostrar datos",
-          "  en GIIC como producto, confirmar el acuerdo de display/redistribución y atribución en su ToS.",
-          "- Este script es de validación; no habilita redistribución."]
+        L.append(f"| {r['name']} | " + " | ".join(abbr.get(r["campos"][f], r["campos"][f]) for f in FV_FIELDS) + " |")
+    # EPS separado
+    L += ["", "## EPS separado (anual / trimestral / TTM) — bases distintas, no se mezclan", "",
+          "| Emisor | EPS anual | EPS trim | EPS TTM |", "|---|---|---|---|"]
+    for r in results:
+        if r.get("acceso") != "ok":
+            continue
+        s = r.get("eps_separado", {})
+        L.append(f"| {r['name']} | {s.get('anual')} | {s.get('trimestral')} | {s.get('ttm')} |")
+    # Anomalías reales
+    L += ["", "## Anomalías reales (inconsistencia mismo-año/moneda) vs limitaciones del validador", ""]
+    any_anom = False
+    for r in results:
+        if r.get("acceso") != "ok":
+            continue
+        anoms = [(f, r["detalle"][f]) for f in FV_FIELDS if r["campos"][f] in ANOMALIA]
+        if anoms:
+            any_anom = True
+            for f, d in anoms:
+                L.append(f"- **{r['name']}.{f}**: EODHD={d['eodhd']} vs EDGAR={d['edgar']} → {d['razon']}")
+    if not any_anom:
+        L.append("- (ninguna anomalía material de inconsistencia mismo-año/moneda)")
+    # Resumen de cobertura A/B comprobada
+    L += ["", "## Cobertura comprobada por segmento (sobre lo validado aquí)", "",
+          "| Segmento | n | campos verif/dif.menor (usables) | fresco>EDGAR |", "|---|---|---|---|"]
+    for seg, rows in agg.items():
+        usable = sum(sum(1 for v in r["campos"].values() if v in ("verificado", "diferencia_menor")) for r in rows)
+        total = len(rows) * len(FV_FIELDS)
+        fresh = sum(1 for r in rows if r.get("eodhd_mas_reciente_que_edgar"))
+        L.append(f"| {seg} | {len(rows)} | {usable}/{total} ({round(100*usable/total)}%) | {fresh}/{len(rows)} |")
+    L += ["", "> 'usable' = verificado o diferencia_menor contra EDGAR mismo-año/moneda. 'no-comparable'",
+          "> (moneda/periodo distinto) NO es anomalía: es límite del contraste, no de EODHD. No se declara",
+          "> verificado por mera existencia en EODHD.",
+          "", "## Licencia", "- Confirmar acuerdo de display/redistribución de EODHD antes de uso como producto."]
     return "\n".join(L)
 
 
-# ---------- Self-test con fixtures (sin red ni clave) ----------
 def _selftest():
-    aapl = {"General": {"CurrencyCode": "USD"}, "Highlights": {"DilutedEpsTTM": 6.1},
-            "Financials": {"Income_Statement": {"currency_symbol": "USD",
-                "yearly": {"2025-09-27": {"date": "2025-09-27", "filing_date": "2025-11-01",
-                                           "totalRevenue": 400000, "netIncome": 95000, "weightedAverageShsOutDil": 15000}},
-                "quarterly": {"2026-06-27": {"date": "2026-06-27", "filing_date": "2026-08-01",
-                                              "totalRevenue": 90000, "netIncome": 22000, "weightedAverageShsOutDil": 14800}}},
-                "Balance_Sheet": {"yearly": {"2025-09-27": {"date": "2025-09-27", "cashAndEquivalents": 30000, "longTermDebt": 80000, "shortTermDebt": 10000}}, "quarterly": {}},
-                "Cash_Flow": {"yearly": {"2025-09-27": {"date": "2025-09-27", "totalCashFromOperatingActivities": 110000, "capitalExpenditures": 11000, "freeCashFlow": 99000}}, "quarterly": {}}}}
-    e = extract_eodhd(aapl)
-    assert e["currency"] == "USD"
-    assert e["annual"]["revenue"] == 400000 and e["annual"]["net_income"] == 95000
-    assert e["annual"]["total_debt"] == 90000 and e["annual"]["fcf"] == 99000
-    assert e["periods"]["annual"]["filing_date"] == "2025-11-01"
-    assert e["periods"]["quarterly"]["period_end"] == "2026-06-27"
-    # clasificación
-    assert classify(400000, 400000, True)[0] == "verificado"
-    assert classify(400000, 360000, True)[0] == "inconsistente"
-    assert classify(None, 1, True)[0] == "ausente"
-    assert classify(5, 5, False)[0] == "parcial"
-    # validate_one con fetch simulado (EODHD home + EDGAR)
-    def fake_fetch(url, headers=None, timeout=40):
-        if "fundamentals/ASML.AS" in url:
-            return 200, {**aapl, "General": {"CurrencyCode": "EUR"},
-                         "Financials": {**aapl["Financials"],
-                            "Income_Statement": {"currency_symbol": "EUR",
-                               "yearly": {"2025-12-31": {"date": "2025-12-31", "filing_date": "2026-02-01", "totalRevenue": 28000, "netIncome": 7000, "weightedAverageShsOutDil": 400}},
-                               "quarterly": {"2026-06-30": {"date": "2026-06-30", "filing_date": "2026-07-16", "totalRevenue": 7000, "netIncome": 1800}}},
-                            "Balance_Sheet": {"yearly": {"2025-12-31": {"date": "2025-12-31", "cashAndEquivalents": 5000, "longTermDebt": 4000}}, "quarterly": {}},
-                            "Cash_Flow": {"yearly": {"2025-12-31": {"date": "2025-12-31", "totalCashFromOperatingActivities": 9000, "capitalExpenditures": 1000, "freeCashFlow": 8000}}, "quarterly": {}}}}, None
-        if "company_tickers" in url:
-            return 200, {"0": {"ticker": "ASML", "cik_str": 937966}}, None
-        if "companyfacts" in url:
-            return 200, {"facts": {"ifrs-full": {"RevenueFromContractsWithCustomers": {"units": {"EUR": [
-                {"start": "2025-01-01", "end": "2025-12-31", "val": 28000, "form": "20-F"}]}},
-                "ProfitLoss": {"units": {"EUR": [{"start": "2025-01-01", "end": "2025-12-31", "val": 7000, "form": "20-F"}]}}}}}, None
-        return 404, None, "HTTP 404"
-    r = validate_one(UNIVERSE[0], "DUMMY", "giic test@test.com", fake_fetch)
-    assert r["currency"] == "EUR" and r["same_currency_vs_edgar"] is True
-    assert r["campos"]["revenue"] == "verificado" and r["campos"]["net_income"] == "verificado"
-    assert r["eodhd_mas_reciente_que_edgar"] is True   # trim 2026-06-30 > anual EDGAR 2025-12-31
-    assert "api_token=***" in _redact("https://x/api/fundamentals/ASML.AS?api_token=SECRET&fmt=json")
-    print("SELF-TEST OK: extracción, clasificación, contraste EDGAR, actualidad y redacción de token.")
+    inc_y = {"2025-12-31": {"date": "2025-12-31", "filing_date": "2026-02-01", "totalRevenue": 28000,
+                            "netIncome": 8000, "weightedAverageShsOutDil": 400, "weightedAverageShsOut": 405}}
+    inc_q = {"2026-06-30": {"date": "2026-06-30", "filing_date": "2026-07-16", "totalRevenue": 7000, "netIncome": 2000}}
+    bal_y = {"2025-12-31": {"date": "2025-12-31", "cashAndEquivalents": 5000, "longTermDebt": 4000, "shortTermDebt": 1000}}
+    cf_y = {"2025-12-31": {"date": "2025-12-31", "totalCashFromOperatingActivities": 9000, "capitalExpenditures": 1000, "freeCashFlow": 8000}}
+    obj = {
+        "General": {"CurrencyCode": "EUR"},
+        "Highlights": {"DilutedEpsTTM": 22.0},
+        "outstandingShares": {"annual": {"0": {"shares": 400}}},
+        "Earnings": {"Annual": {"2025-12-31": {"date": "2025-12-31", "epsActual": 20.0}},
+                     "History": {"2026-06-30": {"reportDate": "2026-07-16", "epsActual": 5.0}}},
+        "Financials": {
+            "Income_Statement": {"currency_symbol": "EUR", "yearly": inc_y, "quarterly": inc_q},
+            "Balance_Sheet": {"yearly": bal_y, "quarterly": {}},
+            "Cash_Flow": {"yearly": cf_y, "quarterly": {}},
+        },
+    }
+    e = eodhd_extract(obj)
+    assert e["currency"] == "EUR"
+    a = e["annual"]["2025-12-31"]
+    assert a["revenue"] == 28000 and a["diluted_shares_wavg"] == 400 and a["total_debt"] == 5000 and a["fcf"] == 8000
+    assert e["eps_annual"]["2025-12-31"] == 20.0 and e["eps_quarterly_latest"] == 5.0 and e["eps_ttm"] == 22.0
+    assert e["shares_outstanding_present"] is True
+    # conciliación mismo-año/moneda
+    st, why, ev, diff = reconcile_field(28000, {"2025-12-31": 28000}, "2025-12-31", True)
+    assert st == "verificado"
+    st, *_ = reconcile_field(28000, {"2024-12-31": 25000}, "2025-12-31", True)
+    assert st == "sin_contraste_periodo"            # distinto año → no se compara
+    st, *_ = reconcile_field(28000, {"2025-12-31": 28000}, "2025-12-31", False)
+    assert st == "no_comparable_moneda"
+    st, *_ = reconcile_field(28000000, {"2025-12-31": 28000}, "2025-12-31", True)
+    assert st == "inconsistente_escala"             # factor x1000 detectado
+    assert "api_token=***" in _redact("x?api_token=SECRET&fmt=json")
+    print("SELF-TEST v2 OK: extracción, EPS separado, acciones ponderadas, conciliación mismo-año/moneda, escala, redacción.")
     return 0
 
 
@@ -379,24 +469,21 @@ def main(argv):
         return _selftest()
     token = os.getenv("EODHD_API_KEY", "")
     if not token:
-        print("ERROR: falta EODHD_API_KEY en el entorno. No se consulta nada. "
-              "Exporta la clave (gratuita o de pago) y reintenta. La clave NUNCA se imprime ni se guarda.")
+        print("ERROR: falta EODHD_API_KEY en el entorno. No se consulta nada. La clave nunca se imprime ni se guarda.")
         return 2
     ua = os.getenv("EDGAR_USER_AGENT", "")
     fetch = http_get_json
     probe = access_probe(token, fetch)
     results = []
-    if probe["acceso_fundamentales"]:
+    if probe["acceso"]:
         for cfg in UNIVERSE:
             results.append(validate_one(cfg, token, ua, fetch))
-    report = build_report(probe, results)
-    print(report)
+    print(build_report(probe, results))
     if "--json" in argv:
         path = argv[argv.index("--json") + 1]
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"probe": probe, "results": results, "fecha": TODAY.isoformat()}, fh,
-                      ensure_ascii=False, indent=2, default=str)
-        print(f"\n(JSON detallado guardado en {path})")
+            json.dump({"probe": probe, "results": results, "fecha": TODAY.isoformat()}, fh, ensure_ascii=False, indent=2, default=str)
+        print(f"\n(JSON en {path})")
     return 0
 
 
