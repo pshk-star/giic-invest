@@ -1,0 +1,36 @@
+name: GIIC validación EODHD (manual, solo lectura)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  eodhd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Ejecutar validador EODHD (clave desde secreto; nunca en logs)
+        env:
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
+        run: |
+          cd tools/eodhd_validation
+          # El script lee la clave solo de env y redacta el token en cualquier salida.
+          # || true: un bloqueo de acceso (o clave ausente) NO debe romper el job; se registra.
+          python3 validate_eodhd.py --json report.json > summary.md 2>&1 || true
+          echo "----- resumen (sin credenciales) -----"
+          cat summary.md
+      - name: Subir artefactos (informe sin credenciales)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eodhd-validation-report
+          path: |
+            tools/eodhd_validation/summary.md
+            tools/eodhd_validation/report.json
+          if-no-files-found: warn
