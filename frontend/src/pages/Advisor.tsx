@@ -10,6 +10,11 @@ import { buildAssets, forecast, type PriceBarLite } from "../core/forecast";
 import { effectiveExposure, type EtfWeight, type PortfolioHolding } from "../core/xray";
 import { valuateCompany } from "../core/fundamental";
 import type { FundamentalsPayload } from "../core/valuation";
+import { fairValueDCF } from "../core/valuation";
+import {
+  buildAdvice2, type Advisor2Input, type FvSummary, type ProjSummary, type QualSummary,
+} from "../core/advisor2";
+import { AdvisorExecutive } from "../components/AdvisorExecutive";
 import {
   reviewPositions, type PosAction, type PositionReview, type PositionReviewInput,
 } from "../core/position-review";
@@ -73,6 +78,8 @@ export function Advisor() {
   const [priceByTicker, setPriceByTicker] = useState<Record<string, { close: number | null; asOf: string | null }>>({});
   const [effWeightByTicker, setEffWeightByTicker] = useState<Record<string, number>>({});
   const [heldTickers, setHeldTickers] = useState<Set<string>>(new Set());
+  const [currencyByTicker, setCurrencyByTicker] = useState<Record<string, string | null>>({});
+  const [histByTicker, setHistByTicker] = useState<Record<string, PriceBarLite[]>>({});
 
   useEffect(() => {
     (async () => {
@@ -119,6 +126,9 @@ export function Advisor() {
       } catch { /* sin datos de candidatas: quedarán como INVESTIGAR */ }
       setFundamentals(allFunds);
       setPriceByTicker(pxMap);
+      const ccyMap: Record<string, string | null> = {};
+      for (const t of Object.keys(instruments)) ccyMap[t.toUpperCase()] = instruments[t]?.currency ?? null;
+      setCurrencyByTicker(ccyMap);
       if (settings) {
         setCash(settings.capital_available || 3000);
         setMaxAsset(settings.max_weight_per_asset || 0.25);
@@ -180,6 +190,7 @@ export function Advisor() {
       if (priced.length) {
         const hist: Record<string, PriceBarLite[]> = {};
         await Promise.all(priced.map(async (p) => { hist[p.ticker] = await getPriceHistory(p.ticker); }));
+        setHistByTicker(hist);
         const valueMap = Object.fromEntries(priced.map((p) => [p.ticker, p.marketValue ?? 0]));
         const assets = buildAssets(hist, valueMap);
         if (assets.length) {
@@ -199,6 +210,68 @@ export function Advisor() {
     () => buildAdvice(holdings, scan, cash, { maxWeightAsset: maxAsset, maxWeightSector: maxSector }, scanAsOf, risk),
     [holdings, scan, cash, maxAsset, maxSector, scanAsOf, risk]
   );
+
+  // ── Investment Advisor 2.0: valoración (Fair Value FCFE), proyección y calidad por ticker.
+  const fvByTicker = useMemo<Record<string, FvSummary>>(() => {
+    const out: Record<string, FvSummary> = {};
+    const tickers = new Set<string>([...Object.keys(fundamentals), ...holdings.map((h) => h.ticker.toUpperCase())]);
+    for (const t of tickers) {
+      const f = fundamentals[t] ?? fundamentals[t.toLowerCase()];
+      if (!f) continue;
+      const px = priceByTicker[t]?.close ?? null;
+      // Moneda de cotización: instrumentos para tenencias; USD por defecto (universo scanner = EE. UU.).
+      const ccy = currencyByTicker[t] ?? "USD";
+      const r = fairValueDCF(f, px, ccy);
+      if (!r.available) { out[t] = { available: false, priceComparable: false, marginBase: null, marginConservative: null, marginOptimista: null, confidence: null, currency: f.currency ?? ccy, reason: r.reason }; continue; }
+      out[t] = {
+        available: true, priceComparable: !!r.priceComparable,
+        marginBase: r.base?.marginVsPrice ?? null,
+        marginConservative: r.scenarios?.[0]?.marginVsPrice ?? null,
+        marginOptimista: r.scenarios?.[2]?.marginVsPrice ?? null,
+        confidence: r.confidence ?? null,
+        currency: f.history?.currency ?? f.currency ?? ccy,
+      };
+    }
+    return out;
+  }, [fundamentals, priceByTicker, currencyByTicker, holdings]);
+
+  const projByTicker = useMemo<Record<string, ProjSummary>>(() => {
+    const out: Record<string, ProjSummary> = {};
+    for (const h of holdings) {
+      const t = h.ticker.toUpperCase();
+      const bars = histByTicker[t] ?? histByTicker[h.ticker];
+      const px = priceByTicker[t]?.close ?? null;
+      if (!bars || bars.length < 61 || !px) continue;
+      const assets = buildAssets({ [t]: bars }, { [t]: px });
+      if (!assets.length) continue;
+      const f = forecast(assets, { drift: "neutral" });
+      const h12 = f.horizons.find((x) => x.days === 252);
+      if (!h12) continue;
+      out[t] = { ret12mP50: h12.retP50, ret12mP5: h12.retP5, ret12mP95: h12.retP95, annVol: f.annVol };
+    }
+    return out;
+  }, [holdings, histByTicker, priceByTicker]);
+
+  const qualByTicker = useMemo<Record<string, QualSummary>>(() => {
+    const out: Record<string, QualSummary> = {};
+    const now = Date.now();
+    for (const t of Object.keys(fundamentals)) {
+      const asOf = fundamentals[t]?.as_of ?? null;
+      const fresh = asOf ? (now - Date.parse(asOf)) < 480 * 24 * 3600 * 1000 : false;  // ~16 meses
+      out[t.toUpperCase()] = { fresh, asOf };
+    }
+    return out;
+  }, [fundamentals]);
+
+  const advisor2 = useMemo(() => {
+    const input: Advisor2Input = {
+      holdings,
+      scan: scan.map((s) => ({ ticker: s.ticker, name: s.name, sector: s.sector, composite: s.composite })),
+      cash, constraints: { maxWeightAsset: maxAsset, maxWeightSector: maxSector },
+      fv: fvByTicker, proj: projByTicker, qual: qualByTicker, risk, scanAsOf,
+    };
+    return buildAdvice2(input);
+  }, [holdings, scan, cash, maxAsset, maxSector, fvByTicker, projByTicker, qualByTicker, risk, scanAsOf]);
 
   const positionReviews = useMemo<PositionReview[]>(() => {
     if (!posRaw.length) return [];
@@ -292,6 +365,8 @@ export function Advisor() {
           </button>
         </div>
       </Panel>
+
+      {!noData && <AdvisorExecutive report={advisor2} />}
 
       {noData && (
         <Panel title="Primero carga tu cartera">

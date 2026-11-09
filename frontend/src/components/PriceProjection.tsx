@@ -83,7 +83,7 @@ export function PriceProjection({ ticker, price, bars, hasModelSignal }: {
                 <tr className="border-b border-term-border text-left text-xs uppercase text-term-muted">
                   <th className="py-1.5">Horizonte</th>
                   <th className="text-right">Precio central (P50)</th>
-                  <th className="text-right">Variación esper.</th>
+                  <th className="text-right">Variación mediana</th>
                   <th className="text-right">Rango P5–P95</th>
                   <th className="text-right">Confianza</th>
                 </tr>
@@ -114,6 +114,8 @@ export function PriceProjection({ ticker, price, bars, hasModelSignal }: {
           </div>
 
           <ul className="text-[10px] text-term-faint leading-snug list-disc pl-4">
+            <li><b>«Variación mediana»</b> = retorno del percentil 50 (P50) de la simulación, no un retorno esperado.</li>
+            <li><b>«Confianza» es cualitativa</b> (tamaño muestral y horizonte), <b>no</b> una probabilidad estadística calibrada.</li>
             <li>Rangos = percentiles de la distribución histórica, <b>no</b> probabilidades predictivas calibradas ni rendimiento demostrado.</li>
             <li>El centro no es un pronóstico de rentabilidad: con retorno esperado 0%, el valor intrínseco (Fair Value) y la proyección de precio son lecturas independientes.</li>
             <li>{hasModelSignal

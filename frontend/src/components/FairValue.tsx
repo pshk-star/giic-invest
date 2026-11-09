@@ -164,9 +164,10 @@ export function FairValue({ fund, price, priceCcy, priceAsOf }: {
       </div>
 
       <p className="text-[10px] text-term-faint mt-3 leading-snug">
-        DCF de <b>FCFE</b> (FCF = OCF − CAPEX, ya post-intereses y post-impuestos) descontado al <b>coste de
-        equity</b> Ke = {pct(DISCOUNT_BASE, 1)} (rf + β·ERP); la suma de VP <b>es</b> el equity (no se resta deuda
-        neta: su servicio ya está en el FCFE). Valor/acción = equity / acciones diluidas (moneda {ccy}). Escenarios =
+        DCF de <b>FCFE</b> — se usa <b>OCF − CAPEX como aproximación a FCFE</b> (post-intereses y post-impuestos;
+        omite el endeudamiento neto, pendiente de ajustes financieros futuros) — descontado al <b>coste de equity</b>
+        Ke = {pct(DISCOUNT_BASE, 1)} (rf + β·ERP); la suma de VP <b>es</b> el equity (no se resta deuda neta: su
+        servicio ya está en el FCFE). Valor/acción = equity / acciones diluidas (moneda {ccy}). Escenarios =
         <b> supuestos</b>, no predicciones. No usa EPS ambiguos, cuarentena ni interinos no aptos. Financieras y datos
         insuficientes ⇒ no disponible.
       </p>
