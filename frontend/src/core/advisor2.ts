@@ -74,6 +74,9 @@ export interface Advisor2Input {
 const MARGIN_UNDER = 0.10;        // ≥ +10% ⇒ infravalorada
 const MARGIN_STRONG_UNDER = 0.20; // ≥ +20% ⇒ muy infravalorada
 const MARGIN_STRONG_OVER = -0.25; // ≤ −25% ⇒ muy sobrevalorada
+// Un margen al alza desmesurado (> +60%) con datos gratuitos casi siempre es un ARTEFACTO del DCF
+// (FCF cíclico/volátil, energía, defensivas de bajo múltiplo): NO es una oportunidad de compra.
+const MARGIN_IMPLAUSIBLE = 0.60;
 const SCAN_STRONG = 65;
 const SCAN_WEAK = 40;
 const MAX_RISK = 0.45;
@@ -92,7 +95,8 @@ function marginLineOf(s: FvSummary | undefined): string {
   if (!s.priceComparable || s.marginBase == null)
     return `Fair Value ${s.currency ?? ""} calculado, margen vs. precio no comparable (requiere FX fechado).`;
   const m = s.marginBase;
-  const bucket = m >= MARGIN_STRONG_UNDER ? "muy infravalorada" : m >= MARGIN_UNDER ? "infravalorada"
+  const bucket = m > MARGIN_IMPLAUSIBLE ? "margen implausible (posible artefacto del DCF)"
+    : m >= MARGIN_STRONG_UNDER ? "muy infravalorada" : m >= MARGIN_UNDER ? "infravalorada"
     : m <= MARGIN_STRONG_OVER ? "muy sobrevalorada" : m <= -MARGIN_UNDER ? "sobrevalorada" : "en rango razonable";
   return `Margen de seguridad (base) ${m >= 0 ? "+" : ""}${pctS(m)} — ${bucket} (confianza ${s.confidence}).`;
 }
@@ -218,8 +222,20 @@ export function buildAdvice2(inp: Advisor2Input): Advisor2Report {
     // Valoración usable (Fair Value disponible y comparable). La CONVERGENCIA con el scanner
     // decide la acción fuerte; sin score (composite null) ⇒ no se actúa por un solo DCF.
     if (valUsable && m != null) {
-      // ACUMULAR: infravalorada Y atractivo no débil Y fundamentales recientes Y con espacio.
-      if (m >= MARGIN_UNDER && composite != null && composite >= SCAN_WEAK && !knownStale && mv < capPerAsset - 1e-6) {
+      // Margen al alza implausible ⇒ artefacto del modelo: MANTENER y revisar (no compra).
+      if (m > MARGIN_IMPLAUSIBLE) {
+        recommendations.push({
+          ticker: h.ticker, name: h.name, action: "MANTENER",
+          why: `Mantener ${h.ticker}: margen +${pctS(m)} implausible con datos gratuitos — probable artefacto del DCF (FCF volátil/cíclico).`,
+          evidence: [mLine, composite != null ? `Score ${Math.round(composite)}/100.` : "", projLine ?? "", `Peso ${pctS(h.weight)} dentro de límites.`].filter(Boolean),
+          risks: ["No se compra por un Fair Value desmesurado: el DCF sobrevalora FCF cíclicos/picos de margen."],
+          missing: [...commonMissing, "Valoración de cíclicas requiere FCF normalizado por ciclo (pendiente)."],
+          confidence: "baja", marginLine: mLine, severity: 24 + h.weight * 20,
+        });
+        continue;
+      }
+      // ACUMULAR: infravalorada (en banda plausible) Y atractivo no débil Y fundamentales recientes Y con espacio.
+      if (m >= MARGIN_UNDER && m <= MARGIN_IMPLAUSIBLE && composite != null && composite >= SCAN_WEAK && !knownStale && mv < capPerAsset - 1e-6) {
         accumulateCands.push({ ticker: h.ticker, current: mv, composite });
         recommendations.push({
           ticker: h.ticker, name: h.name, action: "ACUMULAR",
@@ -290,6 +306,8 @@ export function buildAdvice2(inp: Advisor2Input): Advisor2Report {
       let action: Opp2["action"]; let note: string; let eligible = false;
       if (!fvS || !fvS.available || !usable) {
         action = "INVESTIGAR"; note = "Atractivo relativo alto, pero sin Fair Value comparable: no se compra sin valoración.";
+      } else if (m! > MARGIN_IMPLAUSIBLE) {
+        action = "INVESTIGAR"; note = `Atractivo alto y margen +${pctS(m!)} implausible (probable artefacto del DCF: FCF cíclico): revisar, no comprar.`;
       } else if (m! >= MARGIN_UNDER) {
         action = "COMPRAR"; eligible = true; note = `Atractivo alto e infravalorada (${m! >= 0 ? "+" : ""}${pctS(m!)}): candidata a desplegar capital.`;
       } else if (m! <= -MARGIN_UNDER) {

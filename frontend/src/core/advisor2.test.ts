@@ -131,6 +131,28 @@ describe("buildAdvice2 — abstención, riesgo e higiene", () => {
   });
 });
 
+describe("buildAdvice2 — guarda de margen implausible (artefacto del DCF)", () => {
+  it("margen al alza desmesurado (+200%) ⇒ MANTENER y NO compra", () => {
+    const r = buildAdvice2(base({
+      holdings: [hold("EOG", 2000, 0.1)], cash: 3000,
+      scan: [{ ticker: "EOG", sector: "Energy", composite: 79 }],
+      fv: { EOG: fv({ marginBase: 2.0 }) },
+    }));
+    expect(r.recommendations.find((x) => x.ticker === "EOG")!.action).toBe("MANTENER");
+    expect(r.invested).toBe(0);
+  });
+  it("candidata con margen implausible ⇒ INVESTIGAR (no elegible)", () => {
+    const r = buildAdvice2(base({
+      holdings: [hold("AAA", 10000, 1)], cash: 3000,
+      scan: [{ ticker: "EOG", sector: "Energy", composite: 79 }],
+      fv: { EOG: fv({ marginBase: 2.0 }) },
+    }));
+    const opp = r.opportunities.find((o) => o.ticker === "EOG")!;
+    expect(opp.action).toBe("INVESTIGAR");
+    expect(opp.eligible).toBe(false);
+  });
+});
+
 describe("buildAdvice2 — oportunidades fuera de cartera", () => {
   it("candidata fuerte sin Fair Value ⇒ INVESTIGAR (no elegible)", () => {
     const r = buildAdvice2(base({
