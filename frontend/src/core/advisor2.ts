@@ -160,7 +160,7 @@ export function buildAdvice2(inp: Advisor2Input): Advisor2Report {
     const valUsable = !!fvS && fvS.available && fvS.priceComparable && fvS.marginBase != null && (fvS.confidence === "Alta" || fvS.confidence === "Media");
     const m = valUsable ? fvS!.marginBase! : null;
     const composite = s?.composite ?? null;
-    const fresh = q ? q.fresh : null;
+    const knownStale = !!q && q.fresh === false;   // sólo bloquea si se sabe que NO es reciente
     const projLine = projS ? `Proyección 12m (estadística): mediana ${projS.ret12mP50 >= 0 ? "+" : ""}${pctS(projS.ret12mP50)}, rango ${pctS(projS.ret12mP5)}…+${pctS(projS.ret12mP95)}.` : null;
     const commonMissing: string[] = [];
     if (!fvS || !fvS.available) commonMissing.push("Fair Value no disponible (financiera o datos insuficientes).");
@@ -218,12 +218,12 @@ export function buildAdvice2(inp: Advisor2Input): Advisor2Report {
     // Valoración convergente (Fair Value usable + scanner + calidad).
     if (valUsable && m != null && composite != null) {
       // ACUMULAR: infravalorada Y atractivo no débil Y fundamentales recientes.
-      if (m >= MARGIN_UNDER && composite >= SCAN_WEAK && fresh !== false && mv < capPerAsset - 1e-6) {
+      if (m >= MARGIN_UNDER && composite >= SCAN_WEAK && !knownStale && mv < capPerAsset - 1e-6) {
         accumulateCands.push({ ticker: h.ticker, current: mv, composite });
         recommendations.push({
           ticker: h.ticker, name: h.name, action: "ACUMULAR",
           why: `Acumular ${h.ticker}: infravalorada (${m >= 0 ? "+" : ""}${pctS(m)}) y con atractivo relativo suficiente.`,
-          evidence: [mLine, `Score ${Math.round(composite)}/100 (atractivo relativo, no alfa).`, fresh === false ? "" : "Fundamentales recientes.", projLine ?? ""].filter(Boolean),
+          evidence: [mLine, `Score ${Math.round(composite)}/100 (atractivo relativo, no alfa).`, knownStale ? "" : "Fundamentales recientes.", projLine ?? ""].filter(Boolean),
           risks: ["El Fair Value V1 es preliminar (DCF de FCFE aproximado); el margen puede estrecharse con mejores datos.",
             "El score es atractivo relativo, no una predicción de retorno."],
           missing: commonMissing,
