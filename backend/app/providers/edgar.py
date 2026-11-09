@@ -17,6 +17,8 @@ para compatibilidad con pruebas y consumidores existentes.
 """
 from __future__ import annotations
 
+import re
+from datetime import date
 from typing import Dict, List, Optional
 
 from ..core.normalize import (  # noqa: F401  (re-export para pruebas/consumidores)
@@ -33,6 +35,34 @@ from .base import MarketDataProvider
 FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
+
+
+def _has_annual_core(facts: dict) -> bool:
+    """¿El companyfacts contiene al menos una CIFRA anual de ingresos o beneficio neto?
+
+    Discrimina al emisor REAL de una entidad homónima vacía: no basta que exista la CLAVE del
+    concepto (una shell puede declarar NetIncomeLoss sin valores anuales); debe haber un valor
+    en formulario anual (10-K/20-F/40-F) o con ventana ~365 días. Universal, sin lógica por ticker."""
+    f = facts.get("facts", {}) or {}
+    for taxo, cmap, keys in (("us-gaap", US_GAAP_MAP, ("rev", "ni")),
+                             ("ifrs-full", IFRS_MAP, ("rev", "ni"))):
+        node = f.get(taxo, {})
+        for key in keys:
+            for concept in cmap.get(key, []):
+                units = (node.get(concept) or {}).get("units") or {}
+                for vals in units.values():
+                    for v in vals:
+                        if str(v.get("form", "")).startswith(ANNUAL_FORMS):
+                            return True
+                        st, en = v.get("start"), v.get("end")
+                        if st and en:
+                            try:
+                                d = (date.fromisoformat(en) - date.fromisoformat(st)).days
+                                if 350 <= d <= 380:
+                                    return True
+                            except Exception:
+                                pass
+    return False
 
 # ADR: 1 ADR = N acciones ordinarias (hechos verificables, no estimaciones).
 ADR_RATIO = {"TSM": 5.0, "ASML": 1.0}
@@ -379,7 +409,8 @@ class EDGARProvider(MarketDataProvider):
         import httpx
         self.retries = retries
         self._client = httpx.Client(timeout=timeout, headers={"User-Agent": user_agent})
-        self._cik: Dict[str, int] = {}
+        self._cik: Dict[str, int] = {}           # ticker → CIK resuelta (datos reales)
+        self._cik_cands: Dict[str, list] = {}    # ticker → candidatas (una sigla puede colisionar)
 
     def _fetch(self, url: str):
         """GET con un reintento ante timeout/red transitoria."""
@@ -392,22 +423,74 @@ class EDGARProvider(MarketDataProvider):
         raise last
 
     def _load_ciks(self):
-        if self._cik:
+        if self._cik_cands:
             return
         r = self._fetch(TICKERS_URL)
         r.raise_for_status()
         for row in r.json().values():
-            self._cik[row["ticker"].upper()] = int(row["cik_str"])
+            self._cik_cands.setdefault(row["ticker"].upper(), []).append(int(row["cik_str"]))
+        for k, v in self._cik_cands.items():
+            c = sorted(set(v))
+            self._cik_cands[k] = c
+            if len(c) == 1:                 # sin colisión: resolución inmediata y barata
+                self._cik[k] = c[0]
 
-    def _facts(self, ticker: str) -> Optional[dict]:
-        self._load_ciks()
-        cik = self._cik.get(ticker.upper())
-        if cik is None:
-            return None
+    def _facts_for(self, cik: int) -> Optional[dict]:
         r = self._fetch(FACTS_URL.format(cik=cik))
         if r.status_code != 200:
             return None
-        return r.json()
+        j = r.json()
+        f = j.get("facts", {}) or {}
+        if not (f.get("us-gaap") or f.get("ifrs-full")):
+            return None
+        return j
+
+    def _cik_from_filings(self, ticker: str) -> Optional[int]:
+        """Fallback UNIVERSAL ticker→CIK por el filer con 10-K reales (browse-edgar ?ticker=).
+        company_tickers.json puede apuntar a una entidad sin series anuales (XOM → 2115436, una
+        entidad sin datos; el 10-K de Exxon está bajo 34088). Sin lógica por ticker."""
+        try:
+            r = self._fetch("https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany"
+                            f"&ticker={ticker}&type=10-K&count=1&output=atom")
+            if r.status_code != 200:
+                return None
+            m = re.search(r"<cik>\s*(\d+)\s*</cik>", r.text or "")
+            return int(m.group(1)) if m else None
+        except Exception:
+            return None
+
+    def _facts(self, ticker: str) -> Optional[dict]:
+        """Resuelve ticker→CIK y devuelve companyfacts, priorizando la entidad con DATOS oficiales
+        reales. (1) Candidatas de company_tickers.json: se elige la que tiene serie anual de
+        ingresos/beneficio (una sigla puede colisionar con una entidad homónima vacía). (2) Si
+        ninguna candidata tiene serie anual, fallback al filer con 10-K reales (browse-edgar) —
+        cubre el caso XOM, donde tickers.json apunta a 2115436 (sin datos) y el 10-K está bajo
+        34088. La CIK elegida queda cacheada para `_sic` y los consumidores de `self._cik`."""
+        self._load_ciks()
+        key = ticker.upper()
+        cands = [self._cik[key]] if key in self._cik else (self._cik_cands.get(key) or [])
+        chosen = chosen_facts = fb = fb_facts = None
+        for c in cands:
+            j = self._facts_for(c)
+            if j is None:
+                continue
+            if fb is None:
+                fb, fb_facts = c, j
+            if _has_annual_core(j):              # criterio material: existe dato oficial anual
+                chosen, chosen_facts = c, j
+                break
+        if chosen is None:                       # ninguna candidata con serie anual → filer real
+            alt = self._cik_from_filings(ticker)
+            if alt and alt not in cands:
+                j = self._facts_for(alt)
+                if j is not None and _has_annual_core(j):
+                    chosen, chosen_facts = alt, j
+        if chosen is None:
+            chosen, chosen_facts = fb, fb_facts  # último recurso: lo que haya (parcial)
+        if chosen is None:
+            return None
+        self._cik[key] = chosen                  # cachea la entidad corregida
+        return chosen_facts
 
     def _sic(self, ticker: str):
         """(sic, sicDescription) del emisor desde submissions; (None, None) si no disponible.
