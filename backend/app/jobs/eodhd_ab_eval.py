@@ -67,12 +67,19 @@ def run() -> dict:
             continue
         lag, latest_report, sic = _submissions_recency(cli, cik)
         time.sleep(0.12)
-        try:
-            r = cli.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json")
-            if r.status_code != 200:
-                continue
-            facts = r.json()
-        except Exception:
+        facts = None
+        for _try in range(3):      # reintento: companyfacts grandes pueden llegar incompletos/throttled
+            try:
+                r = cli.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json")
+                if r.status_code == 200:
+                    j = r.json()
+                    if (j.get("facts", {}) or {}).get("us-gaap") or (j.get("facts", {}) or {}).get("ifrs-full"):
+                        facts = j
+                        break
+            except Exception:
+                pass
+            time.sleep(0.6)
+        if facts is None:
             continue
         itype = None
         try:
@@ -91,7 +98,9 @@ def run() -> dict:
         edgar_diag = {"parse_as_of": f.as_of, "data_quality": f.data_quality, "taxonomy": tax,
                       "currency": ccy, "n_revenue": len(series["revenue"]), "n_net_income": len(series["net_income"]),
                       "ultimo_revenue": (max(series["revenue"]) if series["revenue"] else None),
-                      "ultimo_net_income": (max(series["net_income"]) if series["net_income"] else None)}
+                      "ultimo_net_income": (max(series["net_income"]) if series["net_income"] else None),
+                      "n_usgaap_concepts": len((facts.get("facts", {}) or {}).get("us-gaap", {})),
+                      "has_NetIncomeLoss": "NetIncomeLoss" in (facts.get("facts", {}) or {}).get("us-gaap", {})}
         later = bool(latest_report and data_end and (latest_report - data_end).days > 20)
         rec = assess_recency(data_end, EVAL_DATE, cadence_days=cadence, lag_days=lag,
                              later_report_exists=later, window=f.eps_ttm_window)
