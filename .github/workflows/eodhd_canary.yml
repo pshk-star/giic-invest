@@ -1,0 +1,44 @@
+name: GIIC P0.3 canary EODHD (escritura controlada, manual)
+
+# SÓLO manual. Por defecto DRY-RUN (respalda y reporta, sin escribir). La escritura real requiere
+# ejecutar con el input commit=true (que activa el doble candado GIIC_CANARY_COMMIT=1). Limitada al
+# set canary (XOM/JPM/ASML/TSM/AAPL/META). No toca el scan productivo ni el cron.
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: "Escribir de verdad en Supabase (true) o sólo dry-run (false)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install httpx pandas
+      - name: Canary enriquecimiento (dry-run por defecto; commit con doble candado)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
+          GIIC_CANARY_COMMIT: ${{ inputs.commit && '1' || '0' }}
+        run: |
+          python -m app.jobs.eodhd_canary ${{ inputs.commit && '--commit' || '' }} | tee /tmp/canary.json || true
+      - name: Publicar reporte + respaldo como artefacto
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eodhd-canary-report
+          path: /tmp/canary.json
+          if-no-files-found: ignore

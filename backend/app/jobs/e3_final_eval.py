@@ -105,6 +105,24 @@ def _present(facts, tax, M, ref, f, field):
     return False
 
 
+def build_edgar_states(facts, tax, M, ref, f, sic, blocked, rec_estado, fields=None):
+    """Estado de vigencia/presencia de EDGAR por campo: vigente | presente_no_vigente | faltante |
+    bloqueado | no_aplica. Es EXACTAMENTE el loop BEFORE del A/B, extraído para que la evaluación y
+    el enriquecimiento productivo usen la MISMA lógica de vigencia y presencia (sin divergir)."""
+    states = {}
+    for fld in (fields or FV_FIELDS):
+        present = _present(facts, tax, M, ref, f, fld)
+        if blocked:
+            states[fld] = "bloqueado"
+        elif present:
+            states[fld] = "vigente" if rec_estado == "vigente" else "presente_no_vigente"
+        elif not field_applies(fld, sic):
+            states[fld] = "no_aplica"
+        else:
+            states[fld] = "faltante"
+    return states
+
+
 def _segment(cat, sic):
     if is_financial_sector(sic):
         return "bancos_y_financieras"

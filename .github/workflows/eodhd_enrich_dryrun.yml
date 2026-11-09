@@ -1,0 +1,53 @@
+name: GIIC P0.2 dry-run enriquecimiento EODHD (solo lectura, sin escritura)
+
+# Dispara al empujar a la rama P0.2 (corre desde la rama misma, no toca main) y manualmente.
+# NO escribe en Supabase ni activa el scan productivo: sólo compara payload actual vs enriquecido.
+on:
+  push:
+    branches: ["p0.1-fundamentals-enrich"]
+    paths-ignore: ["docs/**", "**/*.md"]   # commits de documentación no regastan API
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dryrun:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install httpx pandas
+      - name: Diagnóstico de tipo de período (trimestre/YTD/anual) ASML/TSM/XOM
+        env:
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+        run: python -m app.jobs.eodhd_period_diag | tee /tmp/periods.json || true
+      - name: Dry-run enriquecimiento EODHD (comparación sin escribir)
+        env:
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
+        run: python -m app.jobs.eodhd_enrich --dry-run | tee /tmp/dryrun.json || true
+      - name: Línea base EDGAR-only (dry-run, SIN flag) — debe comportarse como hoy
+        env:
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
+        # Sin GIIC_EODHD_ENRICH: el hook queda inerte; eodhd_enrich.enabled=False, sin bloque enrichment.
+        run: python -m app.jobs.run_scan --dry-run --tickers AAPL,META,XOM,JPM | tee /tmp/baseline.json || true
+      - name: Simulación de scan con hook EODHD ACTIVO (dry-run, SIN persistencia)
+        env:
+          GIIC_EODHD_ENRICH: "1"
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
+        # Sin credenciales SUPABASE: aunque el flag está activo, dry-run NO escribe nada.
+        run: python -m app.jobs.run_scan --dry-run --tickers AAPL,META,ASML,TSM,XOM,JPM,SPY | tee /tmp/scansim.json || true
+      - name: Publicar reporte como artefacto (sin credenciales)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eodhd-enrich-dryrun
+          path: /tmp/dryrun.json
+          if-no-files-found: ignore
