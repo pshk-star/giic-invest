@@ -1,0 +1,39 @@
+name: GIIC on-demand enriquecimiento EODHD (Research, un emisor)
+
+# Enriquece UN emisor consultado en Research fuera del universo diario. Manual (o invocable por un
+# futuro hook del frontend). Reutiliza el conector y todos sus controles. Escribe sólo ese ticker.
+on:
+  workflow_dispatch:
+    inputs:
+      ticker:
+        description: "Ticker a enriquecer on-demand (p. ej. SPOT, RACE)"
+        type: string
+        required: true
+      commit:
+        description: "Escribir en Supabase (true) o dry-run (false)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  ondemand:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install httpx pandas
+      - name: Enriquecer un emisor on-demand
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
+          GIIC_ONDEMAND_COMMIT: ${{ inputs.commit && '1' || '0' }}
+        run: python -m app.jobs.eodhd_enrich_ondemand --ticker "${{ inputs.ticker }}" ${{ inputs.commit && '--commit' || '' }}

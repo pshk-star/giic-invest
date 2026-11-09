@@ -154,3 +154,33 @@ def test_valuation_eligible_por_tipo():
     assert valuation_eligible("ytd_acumulado") is False
     assert valuation_eligible("indeterminado") is False
     assert valuation_eligible("anual", eps_base_ambigua=True) is False   # EPS ambiguo nunca
+
+
+def test_edgar_annual_history_arma_series_y_margenes():
+    from app.core.connectors.fundamentals_enrich import edgar_annual_history
+
+    def ann(unit, pairs, form="10-K"):
+        return {unit: [{"start": f"{y}-01-01", "end": f"{y}-12-31", "val": v, "form": form} for y, v in pairs]}
+
+    def inst(unit, pairs, form="10-K"):
+        return {unit: [{"end": f"{y}-12-31", "val": v, "form": form} for y, v in pairs]}
+
+    facts = {"facts": {"us-gaap": {
+        "Revenues": {"units": ann("USD", [(2023, 1000), (2024, 1200)])},
+        "OperatingIncomeLoss": {"units": ann("USD", [(2023, 200), (2024, 300)])},
+        "NetIncomeLoss": {"units": ann("USD", [(2023, 150), (2024, 240)])},
+        "NetCashProvidedByUsedInOperatingActivities": {"units": ann("USD", [(2023, 250), (2024, 350)])},
+        "PaymentsToAcquirePropertyPlantAndEquipment": {"units": ann("USD", [(2023, 50), (2024, 60)])},
+        "CashAndCashEquivalentsAtCarryingValue": {"units": inst("USD", [(2023, 400), (2024, 500)])},
+    }}}
+    M = {"rev": ["Revenues"], "ni": ["NetIncomeLoss"], "op_income": ["OperatingIncomeLoss"],
+         "ocf": ["NetCashProvidedByUsedInOperatingActivities"],
+         "capex": ["PaymentsToAcquirePropertyPlantAndEquipment"],
+         "cash": ["CashAndCashEquivalentsAtCarryingValue"], "debt_lt": [], "debt_cur": [], "debt_combined": []}
+    hist = edgar_annual_history(facts, "us-gaap", M, "USD")
+    last = hist[-1]
+    assert last["period_end"] == "2024-12-31"
+    assert last["revenue"] == 1200 and last["net_income"] == 240
+    assert last["fcf"] == 350 - 60                       # ocf − |capex|
+    assert abs(last["op_margin"] - 300 / 1200) < 1e-9     # margen operativo
+    assert abs(last["net_margin"] - 240 / 1200) < 1e-9

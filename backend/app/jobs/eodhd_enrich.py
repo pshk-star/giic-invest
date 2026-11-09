@@ -35,7 +35,7 @@ from app.providers.edgar import EDGARProvider, parse_companyfacts
 from app.services.identity import resolve_identity
 from app.core.recency import assess_recency
 from app.core.connectors.eodhd import EodhdFundamentalsConnector
-from app.core.connectors.fundamentals_enrich import edgar_annual_series, enrich_fundamentals
+from app.core.connectors.fundamentals_enrich import edgar_annual_series, enrich_fundamentals, edgar_annual_history
 from app.jobs.coverage_battery import ADR_SEED, FX
 from app.jobs.e3_coverage_diag import _pick_tax, _ref_period
 from app.jobs.e3_final_eval import _submissions_recency, _fiscal_cadence, build_edgar_states
@@ -195,6 +195,7 @@ def enrich_one(prov: EDGARProvider, conn, t: str, eval_date: date) -> dict:
     cadence = _fiscal_cadence(facts, tax, M, ccy)
     data_end = _data_end(facts, tax, M, ccy, f)
     series = edgar_annual_series(facts, tax, M, ccy)
+    edgar_hist = edgar_annual_history(facts, tax, M, ccy)   # historia oficial para gráficos (todos)
     later = bool(latest_report and data_end and (latest_report - data_end).days > 20)
     rec = assess_recency(data_end, eval_date, cadence_days=cadence, lag_days=lag,
                          later_report_exists=later, window=f.eps_ttm_window)
@@ -211,6 +212,7 @@ def enrich_one(prov: EDGARProvider, conn, t: str, eval_date: date) -> dict:
     if not should_query_eodhd(edgar_states):
         return {"ticker": t, "status": "edgar_suficiente", "eodhd_called": False,
                 "edgar_vigencia": rec["estado"], "edgar_data_end": data_end.isoformat() if data_end else None,
+                "edgar_history": edgar_hist, "moneda_edgar": ccy,
                 "nota": "EDGAR vigente en todos los campos núcleo/balance; EODHD no se consulta"}
 
     # EODHD: una consulta por instrumento (el conector resuelve símbolo/ADR y cachea).
@@ -251,6 +253,7 @@ def enrich_one(prov: EDGARProvider, conn, t: str, eval_date: date) -> dict:
         "campos_nuevos_usables": nuevos, "cuarentena_inconsistente": cuarentena,
         "campos_rechazados": rechazados, "diferencias_vs_payload_actual": diffs,
         "edgar_states": edgar_states, "enrichment_block": enrichment_block,
+        "edgar_history": edgar_hist,
     }
 
 
@@ -288,8 +291,10 @@ def build_enrichment_block(ticker: str, symbol, currency, edgar_data_end, enrich
             quarantine[name] = rec
         else:
             fields[name] = rec
+    from datetime import date as _date
     return {
         "schema_version": ENRICHMENT_SCHEMA_VERSION,
+        "generated_at": _date.today().isoformat(),
         "source": "EODHD Fundamentals Data Feed",
         "symbol": symbol,
         "currency": currency,
@@ -382,14 +387,20 @@ def preserve_enrichment_blocks(payloads: dict, prev_payloads: dict) -> int:
     borre el enriquecimiento ya escrito. No toca los campos EDGAR ni los payloads que ya traen bloque."""
     carried = 0
     for t, p in (payloads or {}).items():
-        if not isinstance(p, dict) or p.get("enrichment"):
+        if not isinstance(p, dict):
             continue
         prev = prev_payloads.get(t) if isinstance(prev_payloads.get(t), dict) else None
-        prev_block = (prev or {}).get("enrichment")
-        if prev_block and isinstance(prev_block, dict) and (prev_block.get("fields") or prev_block.get("quarantine")):
+        if not isinstance(prev, dict):
+            continue
+        prev_block = prev.get("enrichment")
+        if not p.get("enrichment") and prev_block and isinstance(prev_block, dict) \
+                and (prev_block.get("fields") or prev_block.get("quarantine")):
             blk = dict(prev_block); blk["carried_forward"] = True
             p["enrichment"] = blk
             carried += 1
+        # La historia oficial (EDGAR) también se conserva si el scan EDGAR-only no la trae.
+        if not p.get("history") and isinstance(prev.get("history"), dict):
+            p["history"] = prev["history"]
     return carried
 
 
@@ -491,6 +502,10 @@ def enrich_scan_payloads(payloads: dict, tickers, prev_payloads=None, eval_date=
             payloads[t] = attach_enrichment(base, None, enabled=True, prev_block=prev_block)
             if prev_block:
                 summary["carry_forward"] += 1
+        # Historia anual oficial EDGAR para gráficos (todos los corporativos con datos).
+        hist = r.get("edgar_history")
+        if hist and isinstance(payloads.get(t), dict):
+            payloads[t]["history"] = {"source": "EDGAR", "currency": r.get("moneda_edgar"), "annual": hist}
     return summary
 
 

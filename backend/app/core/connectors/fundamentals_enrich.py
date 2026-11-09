@@ -60,6 +60,41 @@ def edgar_annual_series(facts: dict, tax: str, M: dict, ccy: Optional[str]) -> D
     return out
 
 
+def edgar_annual_history(facts: dict, tax: str, M: dict, ccy: Optional[str], n: int = 6) -> list:
+    """Historia ANUAL oficial (EDGAR companyfacts) para gráficos de evolución: últimos `n` ejercicios
+    con revenue, net_income, operating_income, ocf, capex, fcf (=ocf−|capex|), cash, gross_debt,
+    net_debt y márgenes (op/net). Fuente oficial; no inventa (campo ausente → None). Un solo origen,
+    reutilizado por producción y por el on-demand."""
+    from app.core.normalize import _best_annual, _best_instant
+
+    def ser(key, instant=False):
+        concepts = M.get(key) or []
+        pts = (_best_instant if instant else _best_annual)(facts, tax, concepts, ccy)
+        return {d.isoformat(): v for d, v in pts}
+
+    rev, ni, opi = ser("rev"), ser("ni"), ser("op_income")
+    ocf, capex = ser("ocf"), ser("capex")
+    cash = ser("cash", instant=True)
+    dlt, dcur, dcomb = ser("debt_lt", True), ser("debt_cur", True), ser("debt_combined", True)
+    years = sorted(set(rev) | set(ni) | set(ocf) | set(cash))[-n:]
+    out = []
+    for y in years:
+        r, netinc, op = rev.get(y), ni.get(y), opi.get(y)
+        o, cx = ocf.get(y), capex.get(y)
+        fcf = (o - abs(cx)) if (o is not None and cx is not None) else None
+        gd = dcomb.get(y)
+        if gd is None and (dlt.get(y) is not None or dcur.get(y) is not None):
+            gd = (dlt.get(y) or 0) + (dcur.get(y) or 0)
+        c = cash.get(y)
+        nd = (gd - c) if (gd is not None and c is not None) else None
+        rec = {"period_end": y, "revenue": r, "net_income": netinc, "operating_income": op,
+               "ocf": o, "capex": cx, "fcf": fcf, "cash": c, "gross_debt": gd, "net_debt": nd,
+               "op_margin": (op / r) if (op is not None and r) else None,
+               "net_margin": (netinc / r) if (netinc is not None and r) else None}
+        out.append(rec)
+    return out
+
+
 def is_materially_fresher(eodhd_period: Optional[date], edgar_data_end: Optional[date],
                           min_days: int = MIN_FISCAL_GAP_DAYS) -> bool:
     """¿El período EODHD es MATERIALMENTE posterior al último período económico de EDGAR (un nuevo
