@@ -1,0 +1,25 @@
+name: GIIC A/B EODHD antes/después (manual, solo lectura)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  abeval:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install httpx pandas
+      - name: Evaluación A/B antes/después (EDGAR vs EDGAR+EODHD)
+        env:
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
+        run: python -m app.jobs.eodhd_ab_eval
