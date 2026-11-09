@@ -155,7 +155,32 @@ def dump_payloads(tickers) -> dict:
     return out
 
 
+def dump_prices(tickers, cap=1300) -> dict:
+    """Volcado SOLO LECTURA del historial de precios AJUSTADOS (price_history) + precio actual
+    (prices), por ticker. Para validar la proyección de precio con datos reales. No escribe."""
+    url = os.getenv("SUPABASE_URL", ""); srk = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    from app.jobs.supabase_writer import SupabaseWriter
+    w = SupabaseWriter(url, srk)
+    out = {}
+    for t in [x.upper() for x in tickers]:
+        bars = w.select_rows("price_history", select="as_of,close,adjusted",
+                             params={"ticker": f"eq.{t}", "order": "as_of.asc"})
+        bars = [{"as_of": b.get("as_of"), "close": b.get("close"), "adjusted": b.get("adjusted")}
+                for b in bars if b.get("close")]
+        if cap and len(bars) > cap:
+            bars = bars[-cap:]
+        pr = w.select_rows("prices", select="ticker,close,as_of", params={"ticker": f"eq.{t}"})
+        out[t] = {"price": (pr[0].get("close") if pr else None),
+                  "price_as_of": (pr[0].get("as_of") if pr else None), "bars": bars}
+    return out
+
+
 def main(argv=None):
+    prices = os.getenv("GIIC_PRICES_TICKERS", "")
+    if prices:
+        tickers = [t.strip() for t in prices.split(",") if t.strip()]
+        print(json.dumps(dump_prices(tickers), ensure_ascii=False, default=str))
+        return 0
     dump = os.getenv("GIIC_DUMP_TICKERS", "")
     if dump:
         tickers = [t.strip() for t in dump.split(",") if t.strip()]

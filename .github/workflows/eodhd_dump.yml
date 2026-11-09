@@ -10,6 +10,10 @@ on:
         description: "Tickers separados por coma"
         required: true
         default: "NVDA,META,TSM,ASML,JPM,RACE"
+      prices:
+        description: "Tickers para volcar historial de precios (opcional)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -31,14 +35,23 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           GIIC_DUMP_TICKERS: ${{ github.event.inputs.tickers }}
+          GIIC_PRICES_TICKERS: ${{ github.event.inputs.prices }}
         run: |
           cd backend
-          python -m app.jobs.eodhd_universe_report > ../dump.json
-          echo "DUMP_BYTES=$(wc -c < ../dump.json)"
-          python -c "import json;d=json.load(open('../dump.json'));print('KEYS',{k:(list(v.keys()) if isinstance(v,dict) else v) for k,v in d.items()})"
-          echo "===GIIC_DUMP_BEGIN_B64==="
-          base64 ../dump.json | sed 's/^/B64:/'
-          echo "===GIIC_DUMP_END_B64==="
+          if [ -n "${GIIC_PRICES_TICKERS}" ]; then
+            python -m app.jobs.eodhd_universe_report > ../prices.json
+            echo "PRICES_BYTES=$(wc -c < ../prices.json)"
+            echo "===GIIC_PRICES_BEGIN_B64==="
+            base64 ../prices.json | sed 's/^/P64:/'
+            echo "===GIIC_PRICES_END_B64==="
+          else
+            python -m app.jobs.eodhd_universe_report > ../dump.json
+            echo "DUMP_BYTES=$(wc -c < ../dump.json)"
+            python -c "import json;d=json.load(open('../dump.json'));print('KEYS',{k:(list(v.keys()) if isinstance(v,dict) else v) for k,v in d.items()})"
+            echo "===GIIC_DUMP_BEGIN_B64==="
+            base64 ../dump.json | sed 's/^/B64:/'
+            echo "===GIIC_DUMP_END_B64==="
+          fi
       - name: Subir artefacto
         if: always()
         uses: actions/upload-artifact@v4
