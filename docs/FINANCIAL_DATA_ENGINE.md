@@ -391,3 +391,43 @@ ADR/IFRS + C y SHOP (anual-como-TTM con 10-Q posterior en EDGAR).
 (ranura E3.4 tras el gate de costo); algunos interinos US rezagados en companyfacts dejan el
 anual-como-TTM desactualizado hasta que la SEC publique el XBRL del trimestre. net_debt (68%) y
 operating_income en no-financieras siguen con huecos por etiquetas no cubiertas.
+
+---
+
+## 16. E3.4 — conector EODHD integrado (A/B antes/después sobre datos reales)
+
+Conector `eodhd_fundamentals` en el ConnectorRegistry E2 (`cost_tier=COMMERCIAL`, gate; clave por
+secreto/env; caché por símbolo). Emite ANUAL e INTERINO como observaciones distintas con moneda,
+cierre, publicación y procedencia. Controles E3: `reconcile_quality` sube a `verificado` lo que
+coincide con EDGAR (mismo período/moneda) y marca `inconsistente` lo que difiere; un interino fresco
+que EDGAR no tiene queda `parcial` usable (EDGAR no es el único validador; IR/reguladores también).
+
+**Reglas aplicadas:** revenue/NI/OCF/cash integrados (anual+interino); EPS marcado base-ambigua
+(reportado vs core) → NO para valoración, nunca pisa EDGAR; CAPEX/total_debt `parcial` (definición);
+FCF sólo si OCF y CAPEX del mismo período; **acciones diluidas ponderadas sólo de EDGAR** (nunca
+outstanding). Selección por calidad/comparabilidad/actualidad; no se mezclan monedas/períodos/clases.
+
+**A/B antes (EDGAR) → después (EDGAR+EODHD), datos reales en CI (63 operativas, eval 2026-11-09):**
+| Segmento | n | A antes→desp | B antes→desp |
+|---|---|---|---|
+| adr_ifrs | 14 | 84.5→85.1 | **0.0→33.3** |
+| bancos_y_financieras | 8 | 76.4→78.7 | 56.2→64.0 |
+| us_equities | 39 | 89.1→90.0 | 89.1→90.0 |
+| otros (V/MA) | 2 | 91.7→91.7 | 91.7→91.7 |
+| **TOTAL** | 63 | **86.6→87.6** | **65.3→74.2** |
+
+La mejora de B (+8.9 pts; ADR/IFRS 0→33%) viene de que EODHD aporta el interino 2026 fresco para los
+4 campos núcleo en los emisores internacionales que EDGAR sólo tenía en anual. Los otros campos
+(EPS/capex/deuda/FCF) siguen `parcial` por definición/base y NO se cuentan como vigentes.
+
+**Discrepancias materiales detectadas y EXCLUIDAS (16 emisores):** la conciliación marcó
+`inconsistente` el `revenue` de bancos (JPM/WFC/C/GS/MS/AXP — EODHD suma ingresos por intereses vs
+concepto EDGAR) y `cash` de varios (TSLA/JNJ/NFLX/DKNG — efectivo vs efectivo+equivalentes). El
+control los dejó fuera: no se usan. Es la prueba de que EODHD no sobrescribe cifras oficiales.
+
+**Campos que siguen parciales/bloqueados:** EPS (base ambigua), CAPEX y total_debt (definición),
+FCF (derivado), acciones diluidas (sólo EDGAR); 16 casos `inconsistente` quarantinados.
+
+**Pruebas/regresiones:** +7 pruebas del conector; 264 passed, 6 skipped; **309 A/B/C intactas**
+(sin tocar predicciones). **Consumo API:** 63 llamadas por evaluación completa (una por emisor, con
+caché de símbolo) → ~630 unidades/día, muy por debajo del límite de 100k/día; plan $59.99/mes.
