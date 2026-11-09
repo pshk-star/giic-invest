@@ -87,6 +87,11 @@ def run() -> dict:
         ref = _ref_period(facts, tax, M, ccy)
         cadence = _fiscal_cadence(facts, tax, M, ccy)
         data_end = _data_end(facts, tax, M, ccy, f)
+        series = edgar_annual_series(facts, tax, M, ccy)   # serie oficial (para conciliación y diagnóstico)
+        edgar_diag = {"parse_as_of": f.as_of, "data_quality": f.data_quality, "taxonomy": tax,
+                      "currency": ccy, "n_revenue": len(series["revenue"]), "n_net_income": len(series["net_income"]),
+                      "ultimo_revenue": (max(series["revenue"]) if series["revenue"] else None),
+                      "ultimo_net_income": (max(series["net_income"]) if series["net_income"] else None)}
         later = bool(latest_report and data_end and (latest_report - data_end).days > 20)
         rec = assess_recency(data_end, EVAL_DATE, cadence_days=cadence, lag_days=lag,
                              later_report_exists=later, window=f.eps_ttm_window)
@@ -114,7 +119,6 @@ def run() -> dict:
             eodhd_calls += 1
             fm = got.get(t, {})
             if fm:
-                series = edgar_annual_series(facts, tax, M, ccy)
                 eo_ccy = next((pf.currency for pf in fm.values() if pf.currency), None)
                 same_ccy = bool(eo_ccy and eo_ccy.upper() == (ccy or "").upper())
                 fm = reconcile_quality(fm, series, same_ccy)
@@ -125,20 +129,39 @@ def run() -> dict:
         except Exception as e:
             eo = {"_error": str(e)[:80]}
 
-        # AFTER: los 4 núcleo pasan a vigente si EODHD tiene un interino FRESCO usable (no inconsistente).
+        # AFTER: EODHD sólo mejora un campo si (a) EDGAR NO estaba ya vigente (preservar el oficial
+        # verificado) y (b) el interino EODHD es un período fiscal MATERIALMENTE posterior (>75 días
+        # = al menos un trimestre nuevo, no jitter de calendario del mismo ejercicio). Equivalencia
+        # de período: no se cuenta mejora ficticia por una fecha calendario ligeramente posterior.
         after = dict(before)
         eodhd_fresh = {}
         for core in CORE:
             pf = eo.get(core) if isinstance(eo, dict) else None   # 'core' = observación interina
-            if pf and pf.quality in ("verificado", "parcial"):
-                pe = _parse_date(pf.period)
-                if pe and (data_end is None or pe > data_end):
-                    after[core] = "vigente_eodhd"
-                    eodhd_fresh[core] = {"period": pf.period, "quality": pf.quality, "filing": pf.as_of, "currency": pf.currency}
+            if not (pf and pf.quality in ("verificado", "parcial")):
+                continue
+            pe = _parse_date(pf.period)
+            if not pe:
+                continue
+            if before[core] == "vigente":
+                continue  # EDGAR ya vigente → preservar dato oficial, sin mejora
+            if data_end is not None and (pe - data_end).days <= 75:
+                continue  # mismo período económico (jitter de fechas) → no es más fresco
+            if before[core] in ("presente_no_vigente", "faltante"):
+                after[core] = "vigente_eodhd"
+                eodhd_fresh[core] = {"period": pf.period, "quality": pf.quality, "filing": pf.as_of,
+                                     "currency": pf.currency, "edgar_data_end": data_end.isoformat() if data_end else None}
 
+        # Matriz DCF: estado por campo necesario para flujo descontado.
+        dcf_label = {"vigente": "vigente/verificado", "vigente_eodhd": "vigente/parcial(EODHD)",
+                     "presente_no_vigente": "desactualizado", "bloqueado": "bloqueado",
+                     "faltante": "faltante", "no_aplica": "no_aplica"}
+        dcf = {k: dcf_label.get(after.get(k), after.get(k))
+               for k in ("fcf_ttm", "ocf", "capex", "net_debt", "cash", "diluted_shares")}
+        dcf["currency"] = ccy
         per[t] = {"segmento": seg, "sic": sic, "before": before, "after": after,
                   "data_end_edgar": data_end.isoformat() if data_end else None,
-                  "eodhd_fresh": eodhd_fresh, "anomalias_eodhd": anomalies,
+                  "eodhd_fresh": eodhd_fresh, "anomalias_eodhd": anomalies, "edgar_diag": edgar_diag,
+                  "dcf_matriz": dcf,
                   "eodhd_symbol": next((pf.provenance for pf in eo.values() if hasattr(pf, "provenance")), None) if isinstance(eo, dict) else None}
         time.sleep(0.12)
 
