@@ -1,0 +1,32 @@
+name: GIIC P1.8 backtest PIT de proyecciones (A/C/D) — experimental
+
+# Backtest point-in-time de los modelos de proyección (A GIIC / C reinversión-ROIC / D baseline)
+# contra resultados reportados, horizontes 1/2/3a. Consenso (B) NO se backtestea (sin vintages).
+# Solo lectura EODHD (un fetch por ticker). NO calibra a mercado. NO toca producción.
+on:
+  workflow_dispatch:
+    inputs:
+      universe:
+        description: "nº de tickers del universo a añadir a las 5 (para tamaño de muestra)"
+        type: string
+        default: "40"
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-job.txt
+      - name: Backtest PIT de proyecciones
+        env:
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+        run: python -m app.research.forecast_backtest --universe ${{ inputs.universe }}
