@@ -77,6 +77,20 @@ def invested_capital(series: List[dict], ti: int) -> Optional[float]:
     return ic if (seen and ic > 0) else None
 
 
+def _rate(series: List[dict], ti: int, field: str, n: int = 5) -> float:
+    """Mediana de |campo|/ingresos sobre los últimos n años ≤ ti (para capex, D&A)."""
+    vals = [abs(series[k][field]) / series[k]["revenue"] for k in range(max(0, ti - n + 1), ti + 1)
+            if series[k].get(field) is not None and series[k]["revenue"] > 0]
+    return median(vals) if vals else 0.0
+
+
+def _rate_signed(series: List[dict], ti: int, field: str, n: int = 5) -> float:
+    """Mediana de campo/ingresos CON signo (para ΔWC)."""
+    vals = [series[k][field] / series[k]["revenue"] for k in range(max(0, ti - n + 1), ti + 1)
+            if series[k].get(field) is not None and series[k]["revenue"] > 0]
+    return median(vals) if vals else 0.0
+
+
 def _fade(g1: float, gT: float, k: int, years: int = 8) -> float:
     return g1 + (gT - g1) * min(k - 1, years) / years
 
@@ -116,6 +130,9 @@ def project(model: str, series: List[dict], ti: int, gT: float,
     m = trailing_margin(series, ti)
     tr = taxrate(series, ti)
     s2c = sales_to_capital(series, ti) or 1.5
+    # tasas para la reinversión CORREGIDA (P1.8.2): proyecta capex y D&A por separado, reconociendo
+    # que D&A compensa buena parte del capex => reinversión NETA pequeña. Datos ≤ ti.
+    cxr = _rate(series, ti, "capex"); dnr = _rate(series, ti, "dna"); wcr = _rate_signed(series, ti, "wc_change")
     rev = series[ti]["revenue"]; rev_prev = rev
     cum = {}
     revk = rev
@@ -125,9 +142,12 @@ def project(model: str, series: List[dict], ti: int, gT: float,
         ebit = revk_new * m if m is not None else None
         nopat = ebit * (1 - tr) if ebit is not None else None
         reinvest = (revk_new - revk) / s2c
+        reinvest_corr = (cxr - dnr) * revk_new + wcr * (revk_new - revk)   # neto capex−D&A + ΔWC
         fcff = (nopat - reinvest) if nopat is not None else None
+        fcff_corr = (nopat - reinvest_corr) if nopat is not None else None
         cum[k] = {"revenue": revk_new, "ebit_margin": m, "ebit": ebit, "reinvest": reinvest,
-                  "nopat": nopat, "fcff": fcff, "g": g}
+                  "reinvest_corr": reinvest_corr, "nopat": nopat, "fcff": fcff,
+                  "fcff_corr": fcff_corr, "g": g}
         revk = revk_new
     for h in horizons:
         out[h] = cum.get(h)

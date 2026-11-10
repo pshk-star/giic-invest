@@ -243,13 +243,57 @@ def bias_robustness(points: List[dict], model: str) -> dict:
             "nota": "valores = mediana del error FCFF escalado por ingresos (negativo ⇒ subestima)"}
 
 
+def correction_eval(points: List[dict], model: str) -> dict:
+    """Evalúa la reinversión CORREGIDA (capex y D&A proyectados por separado) vs la original.
+    Split dev/validación por empresa (determinista) => la mejora en validación es OOS. La corrección
+    es ESTRUCTURAL (sin parámetro ajustado para borrar el −35%): no es un multiplicador global."""
+    sub = [p for p in points if p["model"] == model and p.get("fcff_f_corr") is not None
+           and p.get("fcff_a") is not None and p.get("rev_a")]
+    if not sub:
+        return {"n": 0}
+
+    def med_bias(pts, key):
+        v = [(p[key] - p["fcff_a"]) / p["rev_a"] for p in pts]
+        return round(median(v), 4) if v else None
+
+    def cum_rel(pts, key):
+        by = defaultdict(dict)
+        for p in pts:
+            by[(p["ticker"], p["base_year"])][p["h"]] = p
+        rel = []
+        for hs in by.values():
+            if all(h in hs for h in (1, 2, 3)):
+                cf = sum(hs[h][key] for h in (1, 2, 3)); ca = sum(hs[h]["fcff_a"] for h in (1, 2, 3))
+                if ca != 0:
+                    rel.append(cf / ca - 1.0)
+        return round(median(rel), 4) if rel else None
+
+    cos = sorted({p["ticker"] for p in sub})
+    dev = {c for i, c in enumerate(cos) if i % 2 == 0}
+    val = {c for i, c in enumerate(cos) if i % 2 == 1}
+    dp = [p for p in sub if p["ticker"] in dev]; vp = [p for p in sub if p["ticker"] in val]
+    rc = [(p["reinv_f_corr"] - p["reinv_a"]) / p["rev_a"] for p in sub if p.get("reinv_f_corr") is not None]
+    return {
+        "n": len(sub),
+        "bias_escalado_original": med_bias(sub, "fcff_f"),
+        "bias_escalado_corregido": med_bias(sub, "fcff_f_corr"),
+        "bias_acumulado_rel_original": cum_rel(sub, "fcff_f"),
+        "bias_acumulado_rel_corregido": cum_rel(sub, "fcff_f_corr"),
+        "sobreestimacion_reinv_corr_pct_ingresos": round(median(rc), 4) if rc else None,
+        "dev": {"orig": med_bias(dp, "fcff_f"), "corr": med_bias(dp, "fcff_f_corr"), "n_emp": len(dev)},
+        "validacion": {"orig": med_bias(vp, "fcff_f"), "corr": med_bias(vp, "fcff_f_corr"), "n_emp": len(val)},
+        "nota": "corrección estructural (proyecta capex y D&A por separado), sin multiplicador global",
+    }
+
+
 def bias_audit(points: List[dict]) -> dict:
     out = {}
     for model in ("A", "D"):
         out[model] = {"descomposicion_global": bias_decomposition(points, model),
                       "descomposicion_por_horizonte": {f"h{h}": bias_decomposition(points, model, h) for h in (1, 2, 3)},
                       "reinversion": reinvestment_analysis(points, model),
-                      "robustez": bias_robustness(points, model)}
+                      "robustez": bias_robustness(points, model),
+                      "correccion_candidata": correction_eval(points, model)}
     return out
 
 

@@ -88,6 +88,7 @@ def backtest_company(ticker: str, ccy: str, series: List[dict], sector: str = "O
                     "margin_f": f.get("ebit_margin"), "margin_a": a_m,
                     "ebit_f": f.get("ebit"), "ebit_a": a_ebit,
                     "reinv_f": f.get("reinvest"), "reinv_a": a_reinv,
+                    "reinv_f_corr": f.get("reinvest_corr"), "fcff_f_corr": f.get("fcff_corr"),
                     # componentes crudos del año real para diagnóstico de reinversión (#3)
                     "capex_a": (abs(sj["capex"]) if sj.get("capex") is not None else None),
                     "dna_a": sj.get("dna"), "wc_a": sj.get("wc_change"), "s2c_used": proj.get("s2c"),
