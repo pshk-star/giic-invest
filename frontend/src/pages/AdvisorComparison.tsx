@@ -18,12 +18,12 @@ function alignedReturns(hist: Record<string, { as_of: string; close: number }[]>
   const maps: Record<string, Map<string, number>> = {};
   let common: Set<string> | null = null;
   for (const [t, bars] of Object.entries(hist)) {
-    const m = new Map(bars.map((b) => [b.as_of, b.close]));
+    const m = new Map<string, number>(bars.map((b) => [b.as_of, b.close] as [string, number]));
     maps[t] = m;
-    const s = new Set(m.keys());
-    common = common ? new Set([...common].filter((d) => s.has(d))) : s;
+    const s = new Set<string>(m.keys());
+    common = common ? new Set<string>([...common].filter((d) => s.has(d))) : s;
   }
-  const dates = [...(common ?? [])].sort();
+  const dates: string[] = [...(common ?? new Set<string>())].sort();
   const out: Record<string, number[]> = {};
   for (const [t, m] of Object.entries(maps)) {
     const px = dates.map((d) => m.get(d)!);
@@ -48,19 +48,17 @@ export function AdvisorComparison() {
 
   useEffect(() => {
     (async () => {
-      const [txns, instruments, fv] = await Promise.all([
-        getTransactions(), getInstruments(), getFundamentalValuations(),
-      ]);
+      const txns = await getTransactions();
       const tickers = [...new Set(txns.map((t) => t.ticker.toUpperCase()))];
-      const [splits, prices] = await Promise.all([getCorporateActions(tickers), getPrices(tickers)]);
-      const meta: Record<string, any> = {};
-      for (const i of instruments) meta[i.ticker.toUpperCase()] = i;
-      const positions = derivePositions(txns, prices, meta, splits).filter((p) => (p.marketValue ?? 0) > 0);
+      const [instruments, prices, splits, fv] = await Promise.all([
+        getInstruments(tickers), getPrices(tickers), getCorporateActions(tickers), getFundamentalValuations(),
+      ]);
+      const positions = derivePositions(txns, prices, instruments, splits).filter((p) => (p.marketValue ?? 0) > 0);
       // retornos solo para acciones con historial
       const equity = positions.filter((p) => !ETF.includes((p.asset_class ?? "").toLowerCase()));
       const histArr = await Promise.all(equity.map((p) => getPriceHistory(p.ticker)));
       const hist: Record<string, { as_of: string; close: number }[]> = {};
-      equity.forEach((p, i) => { hist[p.ticker] = histArr[i].map((b: any) => ({ as_of: b.as_of, close: Number(b.close) })); });
+      equity.forEach((p, i) => { hist[p.ticker] = histArr[i].map((b) => ({ as_of: b.as_of, close: Number(b.close) })); });
       const returns = alignedReturns(hist);
       const total = positions.reduce((s, p) => s + (p.marketValue ?? 0), 0) + cash;
       const valuation: Record<string, Adv3Valuation> = {};
@@ -77,9 +75,8 @@ export function AdvisorComparison() {
       }
       const input: Adv3Input = {
         positions: positions.map((p) => ({
-          ticker: p.ticker, name: p.name, sector: meta[p.ticker]?.sector ?? null,
-          country: meta[p.ticker]?.country_issuer ?? meta[p.ticker]?.country_listing ?? null,
-          currency: p.currency, assetClass: p.asset_class,
+          ticker: p.ticker, name: p.name, sector: instruments[p.ticker]?.sector ?? null,
+          country: null, currency: p.currency, assetClass: p.asset_class,
           marketValue: p.marketValue ?? 0, weight: total > 0 ? (p.marketValue ?? 0) / total : 0,
         })),
         cash, contribution, returns, valuation, quality,

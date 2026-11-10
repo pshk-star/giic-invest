@@ -60,7 +60,7 @@ export interface Advisor3Report {
 }
 
 const STUB_W = 0.015;
-const STRONG_UNDER = 0.20, UNDER = 0.10, STRONG_OVER = -0.25, OVER = -0.10, IMPLAUSIBLE = 0.60;
+const UNDER = 0.10, STRONG_OVER = -0.25, OVER = -0.10;
 
 function sufficient(c: Conf): boolean { return c === "alta" || c === "media"; }
 
@@ -144,11 +144,12 @@ export function buildAdvisor3(inp: Adv3Input, asOf = new Date().toISOString().sl
   // ---------- B) asignación de capital nuevo (configurable) ----------
   const minMargin = constraints.minMarginToBuy ?? UNDER;
   // candidatos a desplegar: margen >= umbral con confianza suficiente, sin romper límites de peso.
+  // Solo FV PRODUCTIVO habilita compra (el FCFF de baja confianza NO).
   const candidates = positions.filter((p) => {
     const em = effectiveMargin(valuation[p.ticker]);
     return !isEtf(p.assetClass) && em.margin != null && em.margin >= minMargin && sufficient(em.conf)
-      && p.weight < constraints.maxPositionWeight && em.source === "productivo";  // FCFF baja NO habilita compra
-  }).map((p) => ({ p, em: effectiveMargin(valuation[p.ticker]) }));
+      && p.weight < constraints.maxPositionWeight && em.source === "productivo";
+  });
 
   function optionFrom(id: string, label: string, dist: { ticker: string; amount: number }[], reasonBy: Record<string, string>): AllocOption {
     // redondea importes primero; conservación de capital EXACTA: efectivo = aporte − Σ(redondeados)
@@ -179,19 +180,20 @@ export function buildAdvisor3(inp: Adv3Input, asOf = new Date().toISOString().sl
     why: "Sin oportunidades que superen el umbral de margen+confianza+riesgo, o por disciplina de liquidez." });
 
   if (candidates.length) {
-    // Opción 1: VALOR — concentra en el mejor margen con confianza, respetando tope de peso
-    const best = [...candidates].sort((a, b) => (b.em.margin ?? 0) - (a.em.margin ?? 0));
+    const emOf = (p: Adv3Position) => effectiveMargin(valuation[p.ticker]);
     const roomValue = (p: Adv3Position) => Math.max(0, constraints.maxPositionWeight * (portfolioValue + contribution) - p.marketValue);
+    // Opción 1: VALOR — concentra en el mejor margen con confianza, respetando tope de peso
+    const best = [...candidates].sort((a, b) => (emOf(b).margin ?? 0) - (emOf(a).margin ?? 0));
     const distV: { ticker: string; amount: number }[] = []; let rem = contribution;
-    for (const { p, em } of best) { if (rem <= 0) break; const amt = Math.min(rem, roomValue(p)); if (amt > 0) { distV.push({ ticker: p.ticker, amount: amt }); rem -= amt; } }
+    for (const p of best) { if (rem <= 0) break; const amt = Math.min(rem, roomValue(p)); if (amt > 0) { distV.push({ ticker: p.ticker, amount: amt }); rem -= amt; } }
     options.push(optionFrom("valor", "Desplegar en valor (mejor margen con confianza)", distV,
-      Object.fromEntries(best.map(({ p, em }) => [p.ticker, `margen ${(em.margin! * 100).toFixed(0)}% confianza ${em.conf}`]))));
+      Object.fromEntries(best.map((p) => { const em = emOf(p); return [p.ticker, `margen ${((em.margin ?? 0) * 100).toFixed(0)}% confianza ${em.conf}`]; }))));
 
     // Opción 2: DIVERSIFICAR — reparte equitativo entre candidatos para no agravar concentración
     const share = contribution / candidates.length;
-    const distD = candidates.map(({ p }) => ({ ticker: p.ticker, amount: Math.min(share, Math.max(0, constraints.maxPositionWeight * (portfolioValue + contribution) - p.marketValue)) }));
+    const distD = candidates.map((p) => ({ ticker: p.ticker, amount: Math.min(share, roomValue(p)) }));
     options.push(optionFrom("diversificar", "Desplegar diversificando entre candidatos", distD,
-      Object.fromEntries(candidates.map(({ p }) => [p.ticker, "reparto para limitar concentración"]))));
+      Object.fromEntries(candidates.map((p) => [p.ticker, "reparto para limitar concentración"]))));
   }
 
   // elegir: mejor score, PERO si ninguna opción con despliegue supera a efectivo, queda efectivo (ESPERAR)
