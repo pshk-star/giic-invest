@@ -26,7 +26,14 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements-job.txt
-      - name: Backtest PIT de proyecciones
+      - name: Backtest PIT de proyecciones (+ volcado de puntos crudos)
         env:
           EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
-        run: python -m app.research.forecast_backtest --universe ${{ inputs.universe }}
+        run: python -m app.research.forecast_backtest --universe ${{ inputs.universe }} --dump /tmp/bt_points.json
+      - name: Subir puntos crudos como artefacto (para auditoría P1.8.1)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-points
+          path: /tmp/bt_points.json
+          if-no-files-found: ignore

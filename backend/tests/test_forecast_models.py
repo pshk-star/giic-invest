@@ -61,7 +61,7 @@ def test_build_series_filters_and_orders():
 
 def test_backtest_clean_trend_low_error():
     s = _series(0.10, 0.30, n=12)
-    pts = backtest_company("TEST", "USD", s, (1, 2, 3))
+    pts = backtest_company("TEST", "USD", s, "Tech", (1, 2, 3))
     revs = [abs(p["err_rev"]) for p in pts if p["model"] == "D" and p["err_rev"] is not None]
     assert revs and max(revs) < 0.05   # tendencia limpia => error bajo
 

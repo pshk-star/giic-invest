@@ -27,6 +27,7 @@ from .forecast_models import project, rel_error, taxrate, _reinvestment, sales_t
 
 FIVE = ["NVDA", "META", "NFLX", "TSM", "ASML"]
 RF_BY_CCY = {"USD": 0.041, "EUR": 0.026, "TWD": 0.015}
+FX_USD = {"USD": 1.0, "EUR": 1.1203, "TWD": 1 / 32.80}   # para MAE en moneda normalizada (USD)
 MIN_SAMPLE = 20   # por debajo de esto no se declaran intervalos calibrados
 
 
@@ -60,8 +61,10 @@ def actual_fcff(series: List[dict], j: int) -> Optional[float]:
     return r["ebit"] * (1 - tr) - ri
 
 
-def backtest_company(ticker: str, ccy: str, series: List[dict], horizons=(1, 2, 3)) -> List[dict]:
+def backtest_company(ticker: str, ccy: str, series: List[dict], sector: str = "Otro",
+                     horizons=(1, 2, 3)) -> List[dict]:
     gT = RF_BY_CCY.get(ccy, 0.041)
+    fx = FX_USD.get(ccy, 1.0)
     pts = []
     n = len(series)
     for ti in range(4, n - 1):
@@ -72,13 +75,22 @@ def backtest_company(ticker: str, ccy: str, series: List[dict], horizons=(1, 2, 
                 if j >= n or proj.get(h) is None:
                     continue
                 a_rev = series[j]["revenue"]; a_m = series[j].get("ebit_margin")
+                a_ebit = series[j].get("ebit"); a_reinv = _reinvestment(series[j])
                 a_fcff = actual_fcff(series, j)
                 f = proj[h]
                 pts.append({
-                    "ticker": ticker, "ccy": ccy, "base_year": series[ti]["year"],
-                    "target_year": series[j]["year"], "model": model, "h": h,
+                    "ticker": ticker, "ccy": ccy, "sector": sector, "fx_usd": fx,
+                    "base_year": series[ti]["year"], "target_year": series[j]["year"],
+                    "model": model, "h": h,
+                    # crudos por componente (predicho / real), en moneda local
+                    "rev_f": f["revenue"], "rev_a": a_rev,
+                    "margin_f": f.get("ebit_margin"), "margin_a": a_m,
+                    "ebit_f": f.get("ebit"), "ebit_a": a_ebit,
+                    "reinv_f": f.get("reinvest"), "reinv_a": a_reinv,
+                    "fcff_f": f.get("fcff"), "fcff_a": a_fcff,
+                    # error relativo heredado (para continuidad con P1.8)
                     "err_rev": rel_error(f["revenue"], a_rev),
-                    "err_margin": (f["ebit_margin"] - a_m) if (f.get("ebit_margin") is not None and a_m is not None) else None,
+                    "err_margin": (f.get("ebit_margin") - a_m) if (f.get("ebit_margin") is not None and a_m is not None) else None,
                     "err_fcff": rel_error(f["fcff"], a_fcff),
                 })
     return pts
@@ -130,7 +142,7 @@ def summarize(all_pts: List[dict]) -> dict:
             "total_points": len(all_pts)}
 
 
-def run(tickers: List[str]) -> dict:
+def run(tickers: List[str], dump_path: Optional[str] = None) -> dict:
     key = os.getenv("EODHD_API_KEY", "")
     if not key:
         return {"error": "sin EODHD_API_KEY"}
@@ -144,17 +156,22 @@ def run(tickers: List[str]) -> dict:
             if not obj:
                 meta[t] = "sin objeto"; continue
             ser = build_series(eodhd_annual_series_full(obj).get("by_field", {}))
-            ccy = (obj.get("General", {}) or {}).get("CurrencyCode", "USD")
+            gen = obj.get("General", {}) or {}
+            ccy = gen.get("CurrencyCode", "USD"); sector = gen.get("Sector") or "Otro"
             if len(ser) < 6:
                 meta[t] = f"serie corta ({len(ser)})"; continue
-            pts = backtest_company(t, ccy, ser, (1, 2, 3))
+            pts = backtest_company(t, ccy, ser, sector, (1, 2, 3))
             all_pts.extend(pts)
             meta[t] = {"years": [ser[0]["year"][:4], ser[-1]["year"][:4]], "points": len(pts)}
         except Exception as e:
             meta[t] = f"{type(e).__name__}: {str(e)[:80]}"
+    if dump_path:
+        with open(dump_path, "w") as fh:
+            json.dump({"points": all_pts, "meta": meta}, fh, default=str)
     return {"experimental": True, "sin_consenso_B": "EODHD no versiona consenso histórico (sin vintages)",
             "convencion_disponibilidad": "FY disponible a FY_end+90d; comparación reportado-vs-reportado",
             "muestra_minima_para_intervalos": MIN_SAMPLE, "cobertura_tickers": meta,
+            "n_puntos_crudos": len(all_pts), "dump": dump_path,
             "resumen": summarize(all_pts)}
 
 
@@ -162,6 +179,7 @@ def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--universe", type=int, default=0, help="añade N tickers del universo a las 5")
     p.add_argument("--tickers", nargs="*")
+    p.add_argument("--dump", default=None, help="ruta JSON para volcar los puntos crudos")
     args = p.parse_args(argv)
     tickers = [t.upper() for t in args.tickers] if args.tickers else list(FIVE)
     if args.universe:
@@ -171,7 +189,7 @@ def main(argv=None):
             tickers += extra[: args.universe]
         except Exception:
             pass
-    print(json.dumps(run(tickers), ensure_ascii=False, indent=1, default=str))
+    print(json.dumps(run(tickers, dump_path=args.dump), ensure_ascii=False, indent=1, default=str))
     return 0
 
 

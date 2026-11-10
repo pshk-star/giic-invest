@@ -126,7 +126,8 @@ def project(model: str, series: List[dict], ti: int, gT: float,
         nopat = ebit * (1 - tr) if ebit is not None else None
         reinvest = (revk_new - revk) / s2c
         fcff = (nopat - reinvest) if nopat is not None else None
-        cum[k] = {"revenue": revk_new, "ebit_margin": m, "ebit": ebit, "fcff": fcff, "g": g}
+        cum[k] = {"revenue": revk_new, "ebit_margin": m, "ebit": ebit, "reinvest": reinvest,
+                  "nopat": nopat, "fcff": fcff, "g": g}
         revk = revk_new
     for h in horizons:
         out[h] = cum.get(h)
