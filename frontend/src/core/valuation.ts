@@ -287,6 +287,22 @@ function impliedGrowthFor(targetEquity: number, baseFcf: number, shares: number,
   return (lo + hi) / 2;
 }
 
+// Guarda de escala de acciones diluidas: impide publicar un Fair Value cuando las
+// acciones vienen en una unidad inconsistente (p. ej. millones/miles) y producirían
+// un valor por acción absurdo (caso MCD: 716 "acciones" ⇒ precio implícito de millones).
+export const MIN_PLAUSIBLE_SHARES = 1e5;
+export const MAX_PLAUSIBLE_IMPLIED_PRICE = 2e6;
+export function sharesScaleIssue(shares: number, marketCap: number | null | undefined): string | null {
+  if (!(shares >= MIN_PLAUSIBLE_SHARES))
+    return `Acciones diluidas con escala implausible (${shares.toExponential(2)} < 1e5): posible error de unidades (millones/miles).`;
+  if (typeof marketCap === "number" && marketCap > 0) {
+    const implied = marketCap / shares;
+    if (implied > MAX_PLAUSIBLE_IMPLIED_PRICE || implied < 1e-3)
+      return `Precio implícito por acción implausible (${implied.toExponential(2)}): escala de acciones inconsistente con el market cap.`;
+  }
+  return null;
+}
+
 // Punto de entrada: construye inputs, 3 escenarios, sensibilidad, DCF inverso y confianza.
 export function fairValueDCF(fund: FundamentalsPayload, price: number | null, priceCcy: string | null): FairValueDCF {
   const hist = (fund.history?.annual ?? []).filter((h) => h && h.period_end) as HistoryRecord[];
@@ -300,6 +316,9 @@ export function fairValueDCF(fund: FundamentalsPayload, price: number | null, pr
     return { available: false, reason: "FCF base normalizado no positivo: un DCF forzaría un valor no defendible. Valoración no disponible." };
   if (shares === null)
     return { available: false, reason: "Acciones diluidas no disponibles: no es posible convertir a valor por acción." };
+  const scaleIssue = sharesScaleIssue(shares, fund.market_cap);
+  if (scaleIssue)
+    return { available: false, reason: `${scaleIssue} No se publica Fair Value.` };
 
   const netDebt = typeof fund.net_debt === "number" && isFinite(fund.net_debt) ? fund.net_debt
     : (hist.length && typeof hist[hist.length - 1].net_debt === "number" ? hist[hist.length - 1].net_debt as number : 0);

@@ -1,17 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { fairValueDCF, type FundamentalsPayload, type HistoryRecord } from "./valuation";
+import { fairValueDCF, sharesScaleIssue, type FundamentalsPayload, type HistoryRecord } from "./valuation";
 import {
   rawRevenueCagr, g1Evidence, pathA, runDcfPath, robustBaseFcf, fairValueV2, V2_PARAMS,
 } from "./valuation.v2";
 
-// Construye un payload mínimo desde (año, ingresos, fcf). netDebt opcional.
-function payload(rows: Array<[number, number, number]>, shares = 10, netDebt = 0): FundamentalsPayload {
+// Construye un payload mínimo desde (año, ingresos, fcf). netDebt y marketCap opcionales.
+function payload(rows: Array<[number, number, number]>, shares = 1e9, netDebt = 0, marketCap?: number): FundamentalsPayload {
   const annual: HistoryRecord[] = rows.map(([y, rev, fcf]) => ({
     period_end: `${y}-12-31`, revenue: rev, net_income: null, operating_income: null,
     ocf: null, capex: null, fcf, cash: null, gross_debt: null, net_debt: netDebt,
     op_margin: null, net_margin: null,
   }));
-  return { diluted_shares: shares, net_debt: netDebt, currency: "USD",
+  return { diluted_shares: shares, net_debt: netDebt, currency: "USD", market_cap: marketCap ?? null,
     history: { currency: "USD", annual } } as unknown as FundamentalsPayload;
 }
 const flat = (n: number, rev: number, margin: number, startY = 2019): Array<[number, number, number]> =>
@@ -120,11 +120,36 @@ describe("v2 · regresión — no infla indiscriminadamente (controles vs crecim
   });
 
   it("bandera de deuda neta: se reporta, NO se resta del equity", () => {
-    const f = payload(flat(4, 100, 0.20), 10, 50);
+    const f = payload(flat(4, 100, 0.20), 1e9, 50e6);
     const v2 = fairValueV2(f);
     expect(v2.netDebtRatio!).toBeGreaterThan(0); // reportada
     // equity no penalizado por deuda (mismo que sin deuda): base no cambia por netDebt
-    const f0 = payload(flat(4, 100, 0.20), 10, 0);
+    const f0 = payload(flat(4, 100, 0.20), 1e9, 0);
     expect(fairValueV2(f).base!.perShare).toBeCloseTo(fairValueV2(f0).base!.perShare, 6);
+  });
+});
+
+describe("v2 · guarda de escala de acciones diluidas (impide FV absurdo — caso MCD)", () => {
+  it("sharesScaleIssue: detecta escala absurda y acepta escala normal", () => {
+    expect(sharesScaleIssue(716, 199.9e9)).not.toBeNull();   // MCD: 716 'acciones'
+    expect(sharesScaleIssue(5e4, null)).not.toBeNull();       // < 1e5 acciones
+    expect(sharesScaleIssue(1e9, 1e18)).not.toBeNull();       // precio implícito 1e9
+    expect(sharesScaleIssue(4.313e9, 413e9)).toBeNull();      // KO real: ~$96/acción
+    expect(sharesScaleIssue(178e6, 0)).toBeNull();            // mcap desconocido ⇒ sólo piso
+  });
+  it("fairValueV2 NO publica FV con acciones en millones (MCD)", () => {
+    const mcd = payload([[2022, 23200, 5490], [2023, 25500, 7250], [2024, 25900, 6670], [2025, 26900, 7190]], 716.4, 0, 199.9e9);
+    const r = fairValueV2(mcd);
+    expect(r.available).toBe(false);
+    expect(r.reason).toMatch(/escala|implausible|implícito/i);
+  });
+  it("fairValueDCF (productivo) tampoco publica FV con escala inconsistente", () => {
+    const mcd = payload([[2022, 23200, 5490], [2023, 25500, 7250], [2024, 25900, 6670], [2025, 26900, 7190]], 716.4, 0, 199.9e9);
+    expect(fairValueDCF(mcd, null, null).available).toBe(false);
+  });
+  it("una empresa con escala correcta sí publica FV", () => {
+    const ok = payload([[2022, 100, 20], [2023, 104, 21], [2024, 108, 22], [2025, 112, 23]], 1e9, 0, 50e9);
+    expect(fairValueV2(ok).available).toBe(true);
+    expect(fairValueDCF(ok, null, null).available).toBe(true);
   });
 });

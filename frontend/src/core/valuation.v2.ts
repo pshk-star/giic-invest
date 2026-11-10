@@ -9,7 +9,7 @@
 // Convención de flujo (sin cambios): OCF−CAPEX es una APROXIMACIÓN a FCFE
 // (no se reetiqueta). equity = Σ VP (deuda neta NO se resta; sólo bandera).
 // ============================================================================
-import { DISCOUNT_BASE, type FundamentalsPayload, type HistoryRecord } from "./valuation";
+import { DISCOUNT_BASE, sharesScaleIssue, type FundamentalsPayload, type HistoryRecord } from "./valuation";
 
 export const V2_PARAMS = {
   // A — compresión de g1 (cóncava, asintótica): admite >18% con evidencia, sin cap plano.
@@ -134,6 +134,8 @@ export function fairValueV2(fund: FundamentalsPayload): FairValueV2 {
   const ccy = fund.history?.currency ?? fund.currency ?? "USD";
   const shares = typeof fund.diluted_shares === "number" && fund.diluted_shares > 0 ? fund.diluted_shares : null;
   if (shares === null) return { available: false, reason: "Acciones diluidas no disponibles." };
+  const scaleIssue = sharesScaleIssue(shares, fund.market_cap);
+  if (scaleIssue) return { available: false, reason: `${scaleIssue} No se publica Fair Value.` };
   const norm = robustBaseFcf(hist);
   if (!norm) return { available: false, reason: "Sin FCF/ingresos suficientes (≥3 años)." };
   if (!(norm.base > 0)) return { available: false, reason: "FCF base normalizado no positivo." };
