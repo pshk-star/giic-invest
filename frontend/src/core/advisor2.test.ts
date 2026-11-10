@@ -156,11 +156,11 @@ describe("buildAdvice2 — guarda de margen implausible (artefacto del DCF)", ()
 describe("buildAdvice2 — ruta ETF diversificada (2.1) y graduación", () => {
   it("ETF que reduce la concentración efectiva ⇒ ruta C elegida y aporte asignado", () => {
     const r = buildAdvice2(base({
-      holdings: [hold("NVDA", 10000, 0.5, "Technology"), { ticker: "SCHD", name: "SCHD", sector: null, assetClass: "etf", marketValue: 4000, weight: 0.2, priceAsOf: "2026-11-06" }], cash: 3000,
+      holdings: [hold("NVDA", 20000, 0.5, "Technology"), { ticker: "SCHD", name: "SCHD", sector: null, assetClass: "etf", marketValue: 2000, weight: 0.1, priceAsOf: "2026-11-06" }], cash: 3000,
       scan: [{ ticker: "NVDA", sector: "Technology", composite: 58 }],
       fv: { NVDA: fv({ marginBase: -0.5 }) },
       effBefore: { effN: 12.8, hhi: 0.078, tech: 0.153 },
-      etfRoutes: [{ ticker: "SCHD", currentValue: 4000, effNamesAfter: 14.9, hhiAfter: 0.067, techAfter: 0.148 }],
+      etfRoutes: [{ ticker: "SCHD", currentValue: 2000, effNamesAfter: 14.9, hhiAfter: 0.067, techAfter: 0.148 }],
     }));
     expect(r.invested).toBe(3000);
     expect(r.allocation.some((a) => a.ticker === "SCHD" && a.route === "C")).toBe(true);
