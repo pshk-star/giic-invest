@@ -1,0 +1,39 @@
+name: GIIC P1.7 Modelo C (sorpresa/PEAD) — comparación A/B/C
+
+# Experimento A/B/C sobre la MISMA muestra (precio+fundamentales+sorpresa PIT). Solo lectura
+# (Supabase para fundamentals_pit, Yahoo para precios, EODHD para Earnings.History). Modelo C
+# EXPERIMENTAL: NO se emite a producción. Imprime IC OOS, incrementales, p-valores y Holm.
+on:
+  workflow_dispatch:
+    inputs:
+      range:
+        type: string
+        default: "max"
+      tickers:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  pead:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-job.txt
+      - name: Comparación A/B/C (Modelo C sorpresa/PEAD)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+        run: |
+          ARGS="--range ${{ inputs.range }}"
+          if [ -n "${{ inputs.tickers }}" ]; then ARGS="$ARGS --tickers ${{ inputs.tickers }}"; fi
+          python -m app.research.pead_compare $ARGS

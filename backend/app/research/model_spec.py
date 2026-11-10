@@ -14,6 +14,9 @@ CALENDAR = "XNYS"
 PRICE_FEATURES = ["mom_12_1", "ret_20", "ret_60", "ret_120", "reversal_5",
                   "vol_20", "vol_60", "dd_252", "vol_ratio", "rel_strength_60"]
 FUND_FEATURES = ["rev_g", "ni_g", "accel", "net_margin", "roe", "leverage", "fcf_margin"]
+# Rasgos de SORPRESA / PEAD (P1.7), todos POINT-IN-TIME (reportDate<=as_of; NUNCA incluyen
+# el retorno del período que se predice). Orden congelado.
+SURPRISE_FEATURES = ["sue", "surprise_pct", "surprise_streak", "drift_since_report", "days_since_report"]
 
 MODEL_A = {
     "name": "price-ridge",
@@ -37,4 +40,22 @@ MODEL_B = {
     "target": "retorno relativo al mercado (equiponderado)",
 }
 
+# MODELO C (P1.7): B + sorpresa/PEAD. EXPERIMENTAL. NO se emite a producción (el plan de
+# emit_predictions sigue siendo A/B): C vive solo en la comparación de investigación hasta
+# que demuestre superioridad robusta fuera de muestra. No sustituye a B (B queda congelado).
+MODEL_C = {
+    "name": "price-fund-surprise-ridge",
+    "version": "c-1.0.0",
+    "feature_set": "price+fundamentals_pit+surprise_pit",
+    "features": PRICE_FEATURES + FUND_FEATURES + SURPRISE_FEATURES,
+    "estimator": "Ridge(alpha=1.0, standardized)",
+    "alpha": 1.0,
+    "horizons_sessions": [20, 60, 252],   # PEAD es efecto de 1-3 meses: horizontes cortos añadidos
+    "target": "retorno relativo al mercado (equiponderado)",
+    "status": STATUS,
+}
+
+# Producción emite solo A/B. C se añade aparte para que la investigación lo referencie sin
+# tocar la emisión productiva.
 MODELS = [MODEL_A, MODEL_B]
+RESEARCH_MODELS = [MODEL_A, MODEL_B, MODEL_C]

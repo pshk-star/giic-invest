@@ -31,6 +31,21 @@ jobs:
         env:
           EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
         run: python -m app.research.eodhd_forward_probe | tee /tmp/fwdprobe.json || true
+      - name: P1.7 F2 verificación POINT-IN-TIME de sorpresas (read-only)
+        env:
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+        run: python -m app.research.surprise_pit_probe | tee /tmp/surprise_pit.json || true
+      - name: P1.7 F1 captura de expectativas — DRY-RUN (cobertura, sin escribir)
+        env:
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+        run: python -m app.jobs.estimates_snapshot --dry-run | tee /tmp/estsnap_dry.json || true
+      - name: P1.7 F1 captura de expectativas — ESCRITURA INMUTABLE a pit_snapshots (primeros snapshots)
+        env:
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        # Aditivo y append-only (trigger de inmutabilidad + DO NOTHING). No toca predictions/FCFF/Advisor.
+        run: python -m app.jobs.estimates_snapshot | tee /tmp/estsnap_write.json || true
       - name: Dry-run enriquecimiento EODHD (comparación sin escribir)
         env:
           EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
