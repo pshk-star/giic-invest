@@ -71,7 +71,10 @@ def _fade(start: float, end: float, i: int, i0: int, years: int) -> float:
 
 # Banda de crecimiento anual plausible para estas megacaps. Fuera de ella, el dato de consenso se
 # considera no fiable (p.ej. nivel de ingresos de consenso en escala errónea => tasa derivada absurda).
-GROWTH_CAP = 0.80
+# Techo de seguridad para crecimiento (datos ROTOS). La validación real la hace el gate de
+# admisión (consensus_admission): consistencia nivel↔crecimiento, ancla de escala, cobertura y
+# frescura. Un crecimiento alto pero consistente (p.ej. NVDA) lo admite el gate y marca 'extremo'.
+GROWTH_CAP = 2.0
 GROWTH_FLOOR = -0.50
 
 

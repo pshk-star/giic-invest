@@ -16,9 +16,11 @@ import os
 import sys
 from typing import Dict, Optional
 
+from datetime import date
+
 from .fcff_forward import Assump, Base, value_p16, value_path, attribute_fv, FX, ADR
-from .forward_forecast import (Consensus, consensus_from_eodhd, consensus_path, giic_path,
-                               combined_path)
+from .forward_forecast import (Consensus, consensus_path, giic_path, combined_path)
+from .consensus_admission import Reported, admit_consensus
 
 # Datos REPORTADOS (de fcff_base_full, P1.6). ebit_margin0 = ebit/revenue.
 BASE: Dict[str, Base] = {
@@ -37,37 +39,86 @@ ASSUMP: Dict[str, Assump] = {
 }
 PX = {"NVDA": 177.20, "META": 610.15, "NFLX": 63.41, "TSM": 375.44, "ASML": 1424.75}
 RF = {"USD": 0.041, "EUR": 0.026, "TWD": 0.015}
+# Fin del último ejercicio reportado (ancla de escala del gate). NVDA cierra en enero.
+FY_END = {"NVDA": "2026-01-31", "META": "2025-12-31", "NFLX": "2025-12-31",
+          "TSM": "2025-12-31", "ASML": "2025-12-31"}
 TICKERS = ["NVDA", "META", "NFLX", "TSM", "ASML"]
 
 
-def _consensus(t: str, use_net: bool) -> Optional[Consensus]:
-    if not use_net or not os.getenv("EODHD_API_KEY"):
+def _trend_list(obj: dict) -> list:
+    trend = (obj.get("Earnings", {}) or {}).get("Trend", {}) or {}
+    out = []
+    for k, d in trend.items():
+        d = d or {}
+
+        def n(x):
+            try:
+                return float(x)
+            except (TypeError, ValueError):
+                return None
+        out.append({"date": d.get("date") or k, "period": d.get("period"),
+                    "revEstAvg": n(d.get("revenueEstimateAvg")), "revGrowth": n(d.get("revenueEstimateGrowth")),
+                    "revAnalysts": n(d.get("revenueEstimateNumberOfAnalysts")),
+                    "epsEstAvg": n(d.get("earningsEstimateAvg")), "epsAnalysts": n(d.get("earningsEstimateNumberOfAnalysts"))})
+    return out
+
+
+def _reported(t: str) -> Reported:
+    b = BASE[t]
+    ni = b.revenue * b.ebit_margin0 * (1 - b.tax_rate)   # proxy; sólo para net-margin sanity
+    return Reported(ccy=b.ccy, revenue=b.revenue, shares=b.shares, ni=ni,
+                    ebit_margin0=b.ebit_margin0, interest=b.interest, tax_rate=b.tax_rate,
+                    fiscal_year_end=FY_END[t])
+
+
+def _resolve(t: str):
+    if not os.getenv("EODHD_API_KEY"):
         return None
     try:
         from app.core.connectors.eodhd import EodhdFundamentalsConnector
         conn = EodhdFundamentalsConnector(api_key=os.getenv("EODHD_API_KEY", ""))
         _s, _a, obj = conn._resolve(t)
-        return consensus_from_eodhd(obj) if obj else None
+        return obj
     except Exception:
         return None
 
 
-def evaluate(t: str, use_net: bool = True) -> dict:
+def evaluate(t: str, use_net: bool = True, today: Optional[date] = None) -> dict:
     base, a = BASE[t], ASSUMP[t]
     gT = RF[base.ccy]
+    today = today or date.today()
     out: dict = {"ticker": t, "ccy": base.ccy, "price": PX[t], "gT": gT}
     # B = GIIC propio = P1.6 (benchmark)
     vB = value_p16(base, a)
     out["fv_P16_GIIC"] = round(vB["bridge"]["ps_usd"], 2)
     out["terminal_weight_P16"] = round(vB["proj"]["terminal_weight"], 3)
     pB = giic_path(base, a, gT)
-    # A = consenso
-    c = _consensus(t, use_net)
-    out["consensus_raw"] = (c.__dict__ if c else None)
-    if c is None:
+
+    obj = _resolve(t) if use_net else None
+    if obj is None:
         out["fv_consenso"] = None
         out["note"] = "sin consenso (sin red o sin EODHD_API_KEY): solo P1.6/GIIC"
         return out
+    # Control de moneda a nivel objeto
+    ccy = ((obj.get("General", {}) or {}).get("CurrencyCode"))
+    updated = (obj.get("General", {}) or {}).get("UpdatedAt")
+    if ccy and ccy != base.ccy:
+        out["fv_consenso"] = None
+        out["gate"] = {"admitted": False, "reasons": [f"moneda EODHD {ccy} ≠ {base.ccy}"]}
+        return out
+    # GATE: seleccionar por fecha + validar
+    gate = admit_consensus(t, _trend_list(obj), _reported(t), today, updated)
+    out["gate"] = gate
+    if not gate["admitted"]:
+        out["fv_consenso"] = None
+        out["note"] = "consenso NO admitido por el gate → solo P1.6/GIIC (ver gate.reasons)"
+        return out
+    # A = consenso VALIDADO (construye Consensus desde el gate)
+    cyd, nyd = gate["cy"], gate.get("ny") or {}
+    c = Consensus(currency=base.ccy, g_cy=cyd["rev_growth"], g_ny=nyd.get("rev_growth"),
+                  eps_cy=cyd["eps"], eps_ny=nyd.get("eps"), n_analysts=cyd["n_analysts"],
+                  rev_cy=cyd["rev_level"], rev_ny=nyd.get("rev_level"),
+                  fiscal_cy_end=cyd["fiscal_end"], fiscal_ny_end=nyd.get("fiscal_end"))
     pA = consensus_path(base, a, c, gT)
     if not pA.get("available"):
         out["fv_consenso"] = None
@@ -75,17 +126,15 @@ def evaluate(t: str, use_net: bool = True) -> dict:
         return out
     vA = value_path(base, a, pA["g"], pA["m"], gT=gT)
     out["fv_consenso"] = round(vA["bridge"]["ps_usd"], 2)
-    out["confianza_consenso"] = pA["confidence"]
+    out["confianza_consenso"] = gate["confidence"]
     out["procedencia_consenso"] = pA["provenance"]
     out["notas_consenso"] = pA["notes"]
     out["atribucion_consenso_vs_P16"] = attribute_fv(base, a, pA["g"], pA["m"], gT_new=gT)
-    # C = combinado
+    # C = combinado (solo si A admitido)
     pC = combined_path(pA, pB, a.years)
     if pC.get("available"):
         vC = value_path(base, a, pC["g"], pC["m"], gT=gT)
         out["fv_combinado"] = round(vC["bridge"]["ps_usd"], 2)
-        out["confianza_combinado"] = pC["confidence"]
-        out["pesos_combinado"] = [round(w, 3) for w in pC["weights"]]
         out["atribucion_combinado_vs_P16"] = attribute_fv(base, a, pC["g"], pC["m"], gT_new=gT)
     return out
 
