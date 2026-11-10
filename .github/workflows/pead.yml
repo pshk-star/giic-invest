@@ -8,7 +8,7 @@ on:
     inputs:
       range:
         type: string
-        default: "max"
+        default: "8y"
       tickers:
         type: string
         default: ""
