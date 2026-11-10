@@ -1,0 +1,33 @@
+name: GIIC P1.7.4 atribución del impacto del consenso sobre el FV (experimental)
+
+# Atribución A→E + descomposición terminal (lineal vs reversión a la media) + trayectoria 10a +
+# escenarios, para las 5. Consenso EODHD vivo + gate P1.7.3. Solo lectura. NO calibra a mercado.
+on:
+  workflow_dispatch:
+    inputs:
+      tickers:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  attribution:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-job.txt
+      - name: Atribución P1.7.4
+        env:
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.tickers }}" ]; then ARGS="--tickers ${{ inputs.tickers }}"; fi
+          python -m app.research.fv_attribution_report $ARGS
