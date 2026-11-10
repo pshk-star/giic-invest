@@ -36,6 +36,7 @@ export interface Adv3Input {
 
 export interface Explain {
   motivos: string[]; datosModelos: string[]; riesgos: string[];
+  factores: string[];   // cuáles de los 5 factores impulsaron la decisión (valoración, concentración, riesgo, deterioro, confianza/desacuerdo)
   impactoCartera: Record<string, number | string>; condicionesCambio: string[];
 }
 export interface PositionDecision {
@@ -61,8 +62,21 @@ export interface Advisor3Report {
 
 const STUB_W = 0.015;
 const UNDER = 0.10, STRONG_OVER = -0.25, OVER = -0.10;
+const RISK_TRIM = 0.30;        // contribución al riesgo que justifica RECORTAR (nunca vender por sí sola)
+const DISAGREE_MAG = 0.25;     // brecha de margen productivo vs FCFF que se considera desacuerdo material
+const DIVERSIFY_MIN = 0.002;   // reducción mínima de HHI sector para que un ETF cuente como diversificación real
 
 function sufficient(c: Conf): boolean { return c === "alta" || c === "media"; }
+
+// Desacuerdo entre el DCF productivo y el FCFF experimental. No ignora la discrepancia: la clasifica.
+function modelDisagreement(v: Adv3Valuation | undefined): { material: boolean; kind: "direccional" | "magnitud" | null; gap: number | null } {
+  if (!v || v.productiveMargin == null || v.fcffMargin == null) return { material: false, kind: null, gap: null };
+  const p = v.productiveMargin, f = v.fcffMargin, gap = Math.abs(p - f);
+  const opposite = (p > UNDER && f < -UNDER) || (p < -UNDER && f > UNDER);  // lados claramente opuestos
+  if (opposite) return { material: true, kind: "direccional", gap };
+  if (gap >= DISAGREE_MAG) return { material: true, kind: "magnitud", gap };
+  return { material: false, kind: null, gap };
+}
 
 // Valoración efectiva: manda el FV PRODUCTIVO; el FCFF solo corrobora/contextualiza y NO lo desplaza.
 function effectiveMargin(v: Adv3Valuation | undefined): { margin: number | null; conf: Conf; source: PositionDecision["marginSource"]; note: string } {
@@ -100,42 +114,65 @@ export function buildAdvisor3(inp: Adv3Input, asOf = new Date().toISOString().sl
   // ---------- A) decisiones sobre posiciones existentes ----------
   const positionDecisions: PositionDecision[] = positions.map((p) => {
     const em = effectiveMargin(valuation[p.ticker]);
+    const dis = modelDisagreement(valuation[p.ticker]);
     const q = quality[p.ticker];
     const contribPct = rc.byPosition[p.ticker]?.contribPct ?? 0;
-    const topRisk = contribPct > 0.30;                         // contribuye >30% del riesgo total
+    const topRisk = contribPct > RISK_TRIM;                    // contribuye > umbral del riesgo total
     const sectorW = concSector.byGroup[p.sector ?? "na"] ?? 0;
     const overSector = sectorW > constraints.maxSectorWeight;
-    let action: PositionAction; let motivos: string[] = []; const riesgos: string[] = []; const cond: string[] = [];
+    const deterioro = !!q && (!q.eligible || !q.fresh);        // deterioro de fundamentales (datos)
+    const corrobora = (em.margin != null && (valuation[p.ticker]?.fcffMargin ?? 1) <= 0) || deterioro;
+    const motivos: string[] = []; const riesgos: string[] = []; const cond: string[] = []; const factores: string[] = [];
+    let action: PositionAction;
 
     if (p.weight < STUB_W) {
-      action = "REVISAR"; motivos.push(`Posición ínfima (${(p.weight * 100).toFixed(1)}%): tamaño inmaterial → revisar; vender exige razón económica, no solo tamaño.`);
+      action = "REVISAR"; factores.push("tamaño");
+      motivos.push(`Posición ínfima (${(p.weight * 100).toFixed(1)}%): tamaño inmaterial → revisar; vender exige razón económica, no solo tamaño.`);
     } else if (isEtf(p.assetClass)) {
-      action = overSector ? "REVISAR" : "MANTENER";
+      action = overSector ? "REVISAR" : "MANTENER"; factores.push("vehículo");
       motivos.push(overSector ? "Vehículo que agrava concentración sectorial → revisar." : "Vehículo diversificado dentro de límites: cumple su rol (se evalúa por cartera, no por DCF).");
     } else if (em.margin == null) {
-      action = "REVISAR"; motivos.push(`Sin valoración concluyente (${em.note}): no se concluye por valoración; se evalúa por riesgo/límites.`);
+      action = "REVISAR"; factores.push("sin-valoración");
+      motivos.push(`Sin valoración concluyente (${em.note}).`);
       cond.push("Disponer de FV productivo comparable o consenso validado elevaría la conclusión.");
-    } else if (em.margin <= STRONG_OVER && sufficient(em.conf)) {
-      action = (topRisk || overSector) ? "VENDER" : "REDUCIR";
-      motivos.push(`Muy sobrevalorada (margen ${(em.margin * 100).toFixed(0)}%, ${em.note}, confianza ${em.conf}).`);
-      if (topRisk) motivos.push(`Además es top contribuyente de riesgo (${(contribPct * 100).toFixed(0)}% del riesgo).`);
+    } else if (dis.kind === "direccional") {
+      action = "REVISAR"; factores.push("desacuerdo-modelos");
+      motivos.push(`Desacuerdo DIRECCIONAL entre DCF productivo (${(em.margin * 100).toFixed(0)}%) y FCFF (${((valuation[p.ticker]!.fcffMargin!) * 100).toFixed(0)}%): no se concluye por valoración.`);
+      cond.push("Convergencia de modelos (o consenso validado) permitiría concluir.");
+    } else if (em.margin <= STRONG_OVER && sufficient(em.conf) && corrobora && !dis.material) {
+      // VENDER: criterio EXIGENTE — sobrevaloración fuerte + confianza + corroboración (FCFF mismo lado
+      // o deterioro) + SIN desacuerdo material. La concentración NO es un criterio de venta.
+      action = "VENDER"; factores.push("sobrevaloración-fuerte", "confianza", deterioro ? "deterioro" : "corroboración-FCFF");
+      motivos.push(`Muy sobrevalorada (margen ${(em.margin * 100).toFixed(0)}%, ${em.note}, confianza ${em.conf})${deterioro ? " + deterioro de fundamentales" : " corroborada por FCFF"}.`);
+    } else if (em.margin <= STRONG_OVER && sufficient(em.conf) && dis.kind === "magnitud") {
+      action = "REDUCIR"; factores.push("sobrevaloración-fuerte", "desacuerdo-magnitud");
+      motivos.push(`Muy sobrevalorada por el FV productivo (${(em.margin * 100).toFixed(0)}%) PERO desacuerdo de magnitud con el FCFF (brecha ${((dis.gap ?? 0) * 100).toFixed(0)} pp): se ATENÚA de VENDER a REDUCIR por incertidumbre.`);
+    } else if (em.margin <= STRONG_OVER && !sufficient(em.conf)) {
+      action = "REDUCIR"; factores.push("sobrevaloración-fuerte", "confianza-insuficiente");
+      motivos.push(`Muy sobrevalorada (${(em.margin * 100).toFixed(0)}%) pero confianza insuficiente: REDUCIR, no VENDER.`);
     } else if (em.margin <= OVER && sufficient(em.conf)) {
-      action = "REDUCIR"; motivos.push(`Sobrevalorada (margen ${(em.margin * 100).toFixed(0)}%, confianza ${em.conf}).`);
-    } else if (topRisk && overSector) {
-      action = "REDUCIR"; motivos.push(`Valoración no extrema, pero top contribuyente de riesgo (${(contribPct * 100).toFixed(0)}%) y sector por encima del límite (${(sectorW * 100).toFixed(0)}%): reducir por RIESGO, no por valoración.`);
+      action = "REDUCIR"; factores.push("sobrevaloración-moderada");
+      motivos.push(`Sobrevalorada moderada (margen ${(em.margin * 100).toFixed(0)}%, confianza ${em.conf}).`);
+    } else if ((topRisk || overSector) && em.margin < UNDER) {
+      // RIESGO: recortar por concentración/contribución, NUNCA vender por esto solo.
+      action = "REDUCIR"; factores.push("riesgo/concentración");
+      motivos.push(`Valoración no barata; top contribuyente de riesgo (${(contribPct * 100).toFixed(0)}%)${overSector ? ` y sector sobre el límite (${(sectorW * 100).toFixed(0)}%)` : ""}: RECORTAR por riesgo, no vender.`);
     } else {
-      action = "MANTENER"; motivos.push(em.margin >= UNDER ? `Dentro de límites y con margen (${(em.margin * 100).toFixed(0)}%, confianza ${em.conf}).` : `Valorada en rango razonable y dentro de límites de riesgo.`);
+      action = "MANTENER"; factores.push("en-límites");
+      motivos.push(em.margin >= UNDER ? `Dentro de límites y con margen (${(em.margin * 100).toFixed(0)}%, confianza ${em.conf}).` : `Valorada en rango razonable y dentro de límites de riesgo.`);
     }
+    if (dis.material && action !== "REVISAR") riesgos.push(`Desacuerdo de modelos (${dis.kind}, brecha ${((dis.gap ?? 0) * 100).toFixed(0)} pp): confianza de la acción degradada.`);
     if (q && !q.eligible) riesgos.push("Calidad/elegibilidad financiera degradada (datos incompletos).");
     if (q && !q.fresh) riesgos.push("Fundamentales no recientes.");
-    if (topRisk) riesgos.push(`Concentración de riesgo: ${(contribPct * 100).toFixed(0)}% del riesgo del portafolio.`);
-    cond.push(action === "MANTENER" ? "Un deterioro de margen (<-10%) con confianza suficiente movería a REDUCIR." : "Una mejora de margen con confianza suficiente movería a MANTENER.");
+    if (topRisk) riesgos.push(`Concentración de riesgo: ${(contribPct * 100).toFixed(0)}% del riesgo del portafolio (criterio de REDUCIR, no de VENDER).`);
+    cond.push(action === "MANTENER" ? "Un deterioro de margen (<-10%) con confianza suficiente movería a REDUCIR." : action === "VENDER" ? "Una convergencia al alza del FV o menor sobrevaloración movería a REDUCIR/MANTENER." : "Una mejora de margen con confianza suficiente, o convergencia de modelos, movería a MANTENER.");
     return {
       ticker: p.ticker, action, confidence: em.conf, marginUsed: em.margin, marginSource: em.source,
       riskContribPct: Number(contribPct.toFixed(4)),
       explain: {
         motivos, datosModelos: [`valoración: ${em.source}`, "riesgo: contribución por Euler (retornos históricos)", "concentración: HHI sector/país"],
-        riesgos, impactoCartera: { peso: Number(p.weight.toFixed(4)), contrib_riesgo_pct: Number(contribPct.toFixed(4)) },
+        riesgos, factores,
+        impactoCartera: { peso: Number(p.weight.toFixed(4)), contrib_riesgo_pct: Number(contribPct.toFixed(4)) },
         condicionesCambio: cond,
       },
     };
@@ -189,24 +226,52 @@ export function buildAdvisor3(inp: Adv3Input, asOf = new Date().toISOString().sl
     options.push(optionFrom("valor", "Desplegar en valor (mejor margen con confianza)", distV,
       Object.fromEntries(best.map((p) => { const em = emOf(p); return [p.ticker, `margen ${((em.margin ?? 0) * 100).toFixed(0)}% confianza ${em.conf}`]; }))));
 
-    // Opción 2: DIVERSIFICAR — reparte equitativo entre candidatos para no agravar concentración
+    // Opción 2: DIVERSIFICAR (acciones) — reparte equitativo entre candidatos para no agravar concentración
     const share = contribution / candidates.length;
     const distD = candidates.map((p) => ({ ticker: p.ticker, amount: Math.min(share, roomValue(p)) }));
     options.push(optionFrom("diversificar", "Desplegar diversificando entre candidatos", distD,
       Object.fromEntries(candidates.map((p) => [p.ticker, "reparto para limitar concentración"]))));
   }
 
-  // elegir: mejor score, PERO si ninguna opción con despliegue supera a efectivo, queda efectivo (ESPERAR)
+  // Opción ETF DIVERSIFICADOR — comprar un ETF YA en cartera para REDUCIR concentración (HHI sector),
+  // justificado por diversificación medible, NO por margen ni retornos inventados. Solo si hay ETF en cartera.
+  const heldEtfs = positions.filter((p) => isEtf(p.assetClass) && p.marketValue > 0);
+  let etfHhiReduction = 0;
+  if (heldEtfs.length) {
+    const share = contribution / heldEtfs.length;
+    const distE = heldEtfs.map((p) => ({ ticker: p.ticker, amount: share }));
+    const optE = optionFrom("etf", "Diversificar vía ETF en cartera (reduce concentración, no por margen)", distE,
+      Object.fromEntries(heldEtfs.map((p) => [p.ticker, "aumenta diversificación; se evalúa por cartera, no por DCF"])));
+    etfHhiReduction = concSector.hhi - optE.hhiSectorAfter;    // >0 si el aporte reduce la concentración sectorial
+    optE.score = Number(Math.max(0, etfHhiReduction).toFixed(4));  // crédito de diversificación, escala propia (HHI)
+    options.push(optE);
+  }
+
+  // Problema de concentración real: un top-contribuyente > umbral o un sector por encima del límite.
+  const hasConcProblem = topContribs.some((c) => c.pct > RISK_TRIM)
+    || Object.values(concSector.byGroup).some((w) => w > constraints.maxSectorWeight);
+
+  // Jerarquía TRANSPARENTE (sin comparar escalas distintas como si fueran iguales):
+  //  1) si hay acciones con margen+confianza (candidatos) y aportan valor neto → desplegar en valor/diversificar;
+  //  2) si NO, pero hay problema de concentración y un ETF lo reduce de forma material → ETF diversificador;
+  //  3) si nada supera los criterios → ESPERAR (efectivo). ESPERAR es una decisión válida, no un fallo.
   let chosen = "efectivo";
-  const deployables = options.filter((o) => o.id !== "efectivo" && o.items.length);
-  if (deployables.length) {
-    const top = deployables.sort((a, b) => b.score - a.score)[0];
+  const equityDeployables = options.filter((o) => (o.id === "valor" || o.id === "diversificar") && o.items.length);
+  if (equityDeployables.length) {
+    const top = equityDeployables.sort((a, b) => b.score - a.score)[0];
     if (top.score > 0) chosen = top.id;      // score>0 = aporta valor neto de penalización por concentración
+  }
+  if (chosen === "efectivo" && hasConcProblem && etfHhiReduction >= DIVERSIFY_MIN) {
+    chosen = "etf";                           // sin oportunidades de valor, pero reducir concentración sí es acción
   }
   options.forEach((o) => { o.preferred = o.id === chosen; });
   const chosenOpt = options.find((o) => o.id === chosen)!;
   chosenOpt.why = chosen === "efectivo"
-    ? "Ningún despliegue supera el umbral de valor neto de riesgo/concentración; se espera (ESPERAR)."
+    ? (hasConcProblem
+        ? "Hay concentración elevada, pero ningún despliegue (acción con margen+confianza ni ETF con reducción material de HHI) supera el umbral; se ESPERA sin forzar la inversión."
+        : "Ninguna alternativa supera el umbral de valor/riesgo y no hay problema de concentración que resolver; se ESPERA (ESPERAR es válido).")
+    : chosen === "etf"
+    ? `Sin acciones que superen margen+confianza, pero la cartera está concentrada y este ETF reduce el HHI sector en ${(etfHhiReduction).toFixed(4)}: se diversifica por RIESGO, no por margen.`
     : `Mejor score de valor neto de concentración (${chosenOpt.score}); respeta topes de peso y mantiene el riesgo controlado.`;
 
   const guardrails = [

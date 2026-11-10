@@ -134,6 +134,7 @@ export function AdvisorComparison() {
               </summary>
               <div className="mt-2 text-xs space-y-1">
                 {d.explain.motivos.map((m, i) => <div key={i}>• {m}</div>)}
+                {d.explain.factores.length ? <div className="text-term-muted">Factores: {d.explain.factores.join(", ")}</div> : null}
                 {d.explain.riesgos.length ? <div className="text-amber-300/80">Riesgos: {d.explain.riesgos.join("; ")}</div> : null}
                 <div className="text-term-muted">Datos/modelos: {d.explain.datosModelos.join("; ")}</div>
                 <div className="text-term-muted">Cambiaría si: {d.explain.condicionesCambio.join("; ")}</div>
