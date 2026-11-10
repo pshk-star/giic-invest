@@ -432,3 +432,17 @@ export async function getLatestRun(): Promise<any | null> {
   if (error) throw error;
   return data?.[0] ?? null;
 }
+
+// P1.9 — Valoración fundamental (experimental). Payload calculado en backend; se renderiza tal cual.
+export async function getFundamentalValuations(): Promise<import("./core/fundval").FundValPayload> {
+  const { data, error } = await supabase
+    .from("fundamental_valuation").select("ticker,as_of,payload").order("ticker");
+  if (error) throw error;
+  const resultados: Record<string, import("./core/fundval").CompanyValuation> = {};
+  let generado: string | undefined;
+  for (const r of (data ?? []) as any[]) {
+    resultados[r.ticker] = r.payload;
+    generado = r.as_of ?? generado;
+  }
+  return { resultados, generado, no_calibrado_a_mercado: true };
+}

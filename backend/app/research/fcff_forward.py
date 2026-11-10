@@ -66,9 +66,11 @@ def p16_path(g1: float, gT: float, m0: float, mT: float, years: int = 10):
 
 
 def project_path(base: Base, a: Assump, g: List[float], m: List[float], gT: float,
-                 margin_terminal: float, wacc: float) -> dict:
+                 margin_terminal: float, wacc: float, reinv_fn=None) -> dict:
     """FCFF con senda explícita. g[i], m[i] por año (longitud = years). Terminal CONSISTENTE:
-    reinv_T = gT/ROIC_T; TV = NOPAT_{T+1}(1−reinv_T)/(WACC−gT). Idéntico a P1.6."""
+    reinv_T = gT/ROIC_T; TV = NOPAT_{T+1}(1−reinv_T)/(WACC−gT). Idéntico a P1.6.
+    `reinv_fn(rev, rev_prev)` opcional inyecta la reinversión (corregida capex/D&A); por defecto
+    usa ventas/capital (s2c). Única lógica financiera; no se duplica en el frontend."""
     years = a.years
     if len(g) != years or len(m) != years:
         raise ValueError("las sendas g y m deben tener longitud = years")
@@ -81,7 +83,7 @@ def project_path(base: Base, a: Assump, g: List[float], m: List[float], gT: floa
         gi, mi = g[i - 1], m[i - 1]
         rev = rev_prev * (1 + gi)
         nopat = rev * mi * (1 - a.tax_norm)
-        reinvest = (rev - rev_prev) / a.s2c
+        reinvest = reinv_fn(rev, rev_prev) if reinv_fn else (rev - rev_prev) / a.s2c
         fcff = nopat - reinvest
         roic = nopat / (rev / a.s2c) if a.s2c else None
         pv += fcff / (1 + wacc) ** i
@@ -108,12 +110,41 @@ def equity_bridge(base: Base, ev: float) -> dict:
 
 
 def value_path(base: Base, a: Assump, g: List[float], m: List[float],
-               gT: Optional[float] = None, dwacc: float = 0.0) -> dict:
+               gT: Optional[float] = None, dwacc: float = 0.0, reinv_fn=None) -> dict:
     gt = (gT if gT is not None else (a.g_terminal if a.g_terminal is not None else RF[base.ccy]))
     w = wacc_of(a, base.ccy, dwacc)
-    proj = project_path(base, a, g, m, gt, a.margin_terminal, w["wacc"])
+    proj = project_path(base, a, g, m, gt, a.margin_terminal, w["wacc"], reinv_fn=reinv_fn)
     br = equity_bridge(base, proj["ev"])
     return {"wacc": w, "proj": proj, "bridge": br, "gT": gt}
+
+
+def corrected_reinv_fn(capex_rate: float, dna_rate: float, wc_rate: float):
+    """Reinversión neta P1.8.2: (capex−D&A) sobre el nivel de ingresos + ΔWC sobre el crecimiento.
+    Conserva reinversión alta en intensivas en capital y permite valores negativos (desinversión)."""
+    return lambda rev, rev_prev: (capex_rate - dna_rate) * rev + wc_rate * (rev - rev_prev)
+
+
+def reverse_g1(base: Base, a: Assump, target_ps_usd: float, gT: Optional[float] = None,
+               reinv_fn=None, lo: float = -0.2, hi: float = 1.5) -> Optional[float]:
+    """g1 implícito que iguala el FV/acción USD al precio objetivo (fade mecánica P1.6, bisección)."""
+    gt = (gT if gT is not None else (a.g_terminal if a.g_terminal is not None else RF[base.ccy]))
+
+    def fv(g1):
+        g, m = p16_path(g1, gt, base.ebit_margin0, a.margin_terminal, a.years)
+        return value_path(base, a, g, m, gT=gt, reinv_fn=reinv_fn)["bridge"]["ps_usd"]
+    flo, fhi = fv(lo) - target_ps_usd, fv(hi) - target_ps_usd
+    if flo * fhi > 0:
+        return None
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        fm = fv(mid) - target_ps_usd
+        if abs(fm) < 1e-6:
+            return mid
+        if flo * fm <= 0:
+            hi = mid
+        else:
+            lo, flo = mid, fm
+    return (lo + hi) / 2
 
 
 def value_p16(base: Base, a: Assump, dwacc: float = 0.0, dg1: float = 0.0, dm: float = 0.0,

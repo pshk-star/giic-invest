@@ -1,0 +1,41 @@
+name: GIIC P1.9 valoración fundamental (experimental)
+
+# Calcula el payload multi-modelo (DCF productivo, FCFF GIIC/corregido/combinado) para las 5 y
+# (opcional) lo escribe en Supabase. NO toca el Fair Value productivo ni Advisor. Imprime el payload
+# al log para evidencia. Escritura solo si hay credenciales SUPABASE (y el flag write).
+on:
+  workflow_dispatch:
+    inputs:
+      write:
+        description: "escribir a Supabase (true/false)"
+        type: string
+        default: "false"
+      tickers:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  fundval:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-job.txt
+      - name: Payload de valoración fundamental P1.9
+        env:
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          ARGS=""
+          if [ "${{ inputs.write }}" = "true" ]; then ARGS="--write"; fi
+          if [ -n "${{ inputs.tickers }}" ]; then ARGS="$ARGS --tickers ${{ inputs.tickers }}"; fi
+          python -m app.jobs.fundamental_valuation $ARGS
