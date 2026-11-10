@@ -179,11 +179,16 @@ def main(argv=None):
     res = {"P1.9": "valoración fundamental (experimental, no productiva)", "generado": PRICE_DATE,
            "no_calibrado_a_mercado": True, "resultados": resultados}
     if args.write:
-        from app.jobs.supabase_writer import SupabaseWriter
-        w = SupabaseWriter(os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""))
-        rows = [{"ticker": t, "as_of": PRICE_DATE, "payload": v} for t, v in resultados.items()]
-        n = w.upsert("fundamental_valuation", rows, on_conflict="ticker")
-        res["escritura"] = {"upserted": n, "tabla": "fundamental_valuation"}
+        # Best-effort: una escritura fallida (p.ej. tabla sin migrar) NO debe perder el payload.
+        try:
+            from app.jobs.supabase_writer import SupabaseWriter
+            w = SupabaseWriter(os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""))
+            rows = [{"ticker": t, "as_of": PRICE_DATE, "payload": v} for t, v in resultados.items()]
+            n = w.upsert("fundamental_valuation", rows, on_conflict="ticker")
+            res["escritura"] = {"ok": True, "upserted": n, "tabla": "fundamental_valuation"}
+        except Exception as e:
+            res["escritura"] = {"ok": False, "error": f"{type(e).__name__}: {str(e)[:160]}",
+                                "nota": "¿migración 0014 aplicada en Supabase?"}
     print(json.dumps(res, ensure_ascii=False, indent=1, default=str))
     return 0
 
