@@ -12,7 +12,7 @@ import { valuateCompany } from "../core/fundamental";
 import type { FundamentalsPayload } from "../core/valuation";
 import { fairValueDCF } from "../core/valuation";
 import {
-  buildAdvice2, type Advisor2Input, type FvSummary, type ProjSummary, type QualSummary,
+  buildAdvice2, type Advisor2Input, type FvSummary, type ProjSummary, type QualSummary, type EtfRouteInput,
 } from "../core/advisor2";
 import { AdvisorExecutive } from "../components/AdvisorExecutive";
 import {
@@ -80,6 +80,8 @@ export function Advisor() {
   const [heldTickers, setHeldTickers] = useState<Set<string>>(new Set());
   const [currencyByTicker, setCurrencyByTicker] = useState<Record<string, string | null>>({});
   const [histByTicker, setHistByTicker] = useState<Record<string, PriceBarLite[]>>({});
+  const [xrayWeights, setXrayWeights] = useState<EtfWeight[]>([]);
+  const [pholdState, setPholdState] = useState<PortfolioHolding[]>([]);
 
   useEffect(() => {
     (async () => {
@@ -154,6 +156,7 @@ export function Advisor() {
           etf: w.etf, ticker: w.ticker as string, weight: w.weight as number,
           name: w.name ?? undefined, assetClass: w.asset_class, sector: w.sector ?? undefined,
         }));
+        setXrayWeights(ew); setPholdState(phold);
         const xr = effectiveExposure(phold, ew);
         xrayTotal = xr.totalUsd || total;
         for (const c of xr.byCompany) {
@@ -263,15 +266,40 @@ export function Advisor() {
     return out;
   }, [fundamentals]);
 
+  // Rutas ETF: exposición efectiva (look-through X-Ray) antes y tras añadir el aporte a cada ETF.
+  const { effBefore, etfRoutes } = useMemo(() => {
+    if (!pholdState.length) return { effBefore: undefined as undefined | { effN: number; hhi: number; tech: number }, etfRoutes: [] as EtfRouteInput[] };
+    const instSec: Record<string, string | null> = {};
+    for (const h of holdings) instSec[h.ticker.toUpperCase()] = h.sector;
+    const isTech = (sec?: string | null) => { const s = (sec ?? "").toLowerCase(); return s.includes("tecnolog") || s.includes("technolog"); };
+    const metrics = (ph: PortfolioHolding[]) => {
+      const r = effectiveExposure(ph, xrayWeights);
+      const total = r.totalUsd || r.byCompany.reduce((s, c) => s + c.total, 0);
+      if (total <= 0) return { hhi: 0, effN: 0, tech: 0 };
+      const hhi = r.byCompany.reduce((s, c) => s + (c.total / total) ** 2, 0);
+      const tech = r.byCompany.filter((c) => isTech(c.sector ?? instSec[c.ticker.toUpperCase()])).reduce((s, c) => s + c.total, 0) / total;
+      return { hhi, effN: hhi > 0 ? 1 / hhi : 0, tech };
+    };
+    const before = metrics(pholdState);
+    const etfTickers = Array.from(new Set(xrayWeights.map((w) => w.etf.toUpperCase()))).filter((e) => pholdState.some((p) => p.ticker.toUpperCase() === e && p.isEtf));
+    const routes: EtfRouteInput[] = etfTickers.map((etf) => {
+      const ph2 = pholdState.map((p) => p.ticker.toUpperCase() === etf ? { ...p, valueUsd: p.valueUsd + cash } : p);
+      const after = metrics(ph2);
+      const cur = pholdState.find((p) => p.ticker.toUpperCase() === etf)?.valueUsd ?? 0;
+      return { ticker: etf, currentValue: cur, effNamesAfter: after.effN, hhiAfter: after.hhi, techAfter: after.tech };
+    });
+    return { effBefore: before, etfRoutes: routes };
+  }, [pholdState, xrayWeights, holdings, cash]);
+
   const advisor2 = useMemo(() => {
     const input: Advisor2Input = {
       holdings,
       scan: scan.map((s) => ({ ticker: s.ticker, name: s.name, sector: s.sector, composite: s.composite })),
       cash, constraints: { maxWeightAsset: maxAsset, maxWeightSector: maxSector },
-      fv: fvByTicker, proj: projByTicker, qual: qualByTicker, risk, scanAsOf,
+      fv: fvByTicker, proj: projByTicker, qual: qualByTicker, risk, etfRoutes, effBefore, scanAsOf,
     };
     return buildAdvice2(input);
-  }, [holdings, scan, cash, maxAsset, maxSector, fvByTicker, projByTicker, qualByTicker, risk, scanAsOf]);
+  }, [holdings, scan, cash, maxAsset, maxSector, fvByTicker, projByTicker, qualByTicker, risk, etfRoutes, effBefore, scanAsOf]);
 
   const positionReviews = useMemo<PositionReview[]>(() => {
     if (!posRaw.length) return [];

@@ -1,87 +1,83 @@
-// Investment Advisor 2.0 — motor de recomendaciones DETERMINÍSTICO y valuation-aware.
-// Integra, SIN confundir sus significados: Fair Value (margen de seguridad), calidad/actualidad
-// de fundamentales, riesgo y concentración, exposición sectorial, proyección estadística y el
-// score del scanner (atractivo relativo, NO alfa). Reglas transparentes con pesos razonados.
+// Investment Advisor 2.1 — recomendaciones DETERMINÍSTICAS, valuation-aware y GRADUADAS.
+// Integra Fair Value (margen de seguridad FCFE), calidad/actualidad, riesgo/concentración,
+// exposición efectiva (look-through de ETF), proyección y scanner. El Fair Value es una SEÑAL
+// IMPORTANTE pero NO una condición obligatoria universal para invertir.
 //
-// PRINCIPIOS (del roadmap):
-//  - Un ÚNICO DCF (Fair Value V1, preliminar) NO determina automáticamente COMPRAR ni VENDER.
-//    Toda acción fuerte exige EVIDENCIA CONVERGENTE (margen + atractivo + calidad/riesgo).
-//  - Los modelos A/B experimentales NO entran aquí (no se usan como señal).
-//  - Sin datos suficientes ⇒ abstención (MANTENER/ESPERAR), nunca compra a ciegas.
-//  - La suma de asignaciones = capital disponible EXACTAMENTE. Mantener efectivo es válido.
+// Cambios 2.1 (utilidad):
+//  - Valoración ≠ elegibilidad: se distinguen tenencias con valoración CONFIABLE, PRELIMINAR
+//    (FX/confianza/margen implausible), VEHÍCULO (ETF por cartera, no DCF) y SIN DATOS (abstención).
+//  - Ruta de aportación por ETF diversificado, evaluada por concentración efectiva y solapamiento,
+//    sin exigir Fair Value individual.
+//  - Reglas menos binarias: margen > +60% es ALERTA de revisión (no invalida otras señales);
+//    ACUMULAR admite confianza media sin exigir que todos los indicadores sean favorables.
+//  - Comparación explícita de rutas A (aumentar) / B (nuevas) / C (ETF diversificado) / D (liquidez),
+//    eligiendo la combinación más razonable y explicando por qué se descartan las demás.
+//  - El 100% en efectivo es una decisión JUSTIFICADA, no el residuo de filtros demasiado estrictos.
+//  - Los modelos A/B experimentales NO se usan como señal.
 
 import type { Holding, Constraints, RiskModel } from "./advisor";
 import { hhiFrom } from "./advisor";
 
 export type Action2 = "COMPRAR" | "ACUMULAR" | "MANTENER" | "REDUCIR" | "VENDER" | "ESPERAR";
+export type ValTier = "confiable" | "preliminar" | "vehiculo" | "sin-datos";
 
-// Resumen de Fair Value por ticker (derivado de fairValueDCF en la página).
 export interface FvSummary {
-  available: boolean;
-  priceComparable: boolean;
-  marginBase: number | null;          // valor base / precio − 1
-  marginConservative: number | null;
-  marginOptimista: number | null;
-  confidence: "Alta" | "Media" | "Baja" | null;
-  currency: string | null;
-  reason?: string;                    // si no disponible / no comparable
+  available: boolean; priceComparable: boolean;
+  marginBase: number | null; marginConservative: number | null; marginOptimista: number | null;
+  confidence: "Alta" | "Media" | "Baja" | null; currency: string | null; reason?: string;
 }
 export interface ProjSummary { ret12mP50: number; ret12mP5: number; ret12mP95: number; annVol: number; }
 export interface QualSummary { fresh: boolean; asOf: string | null; }
+// Métrica de ruta ETF (exposición efectiva look-through calculada en la página con X-Ray).
+export interface EtfRouteInput {
+  ticker: string; currentValue: number;
+  effNamesAfter: number; hhiAfter: number; techAfter: number;  // tras añadir el aporte
+  topSector?: string | null;
+}
 
 export interface Rec2 {
-  ticker: string; name: string | null; action: Action2;
-  why: string; evidence: string[]; risks: string[]; missing: string[];
-  confidence: "alta" | "media" | "baja";
-  marginLine: string; severity: number;
+  ticker: string; name: string | null; action: Action2; tier: ValTier;
+  why: string; favor: string[]; penalize: string[]; evidence: string[]; risks: string[]; missing: string[];
+  confidence: "alta" | "media" | "baja"; marginLine: string; severity: number;
 }
 export interface Alloc2 {
-  ticker: string; kind: "acumular" | "nueva"; amount: number; pctOfCash: number;
-  newWeight: number; reason: string; marginLine: string;
+  ticker: string; route: "A" | "B" | "C"; kind: "acumular" | "nueva" | "etf";
+  amount: number; pctOfCash: number; newWeight: number; reason: string; marginLine: string;
 }
 export interface Opp2 {
   ticker: string; name: string | null; sector: string | null; composite: number;
-  action: "COMPRAR" | "OBSERVAR" | "ESPERAR" | "INVESTIGAR";
-  marginLine: string; note: string; eligible: boolean;
+  action: "COMPRAR" | "OBSERVAR" | "ESPERAR" | "INVESTIGAR"; marginLine: string; note: string; eligible: boolean;
+}
+export interface RouteEval {
+  id: "A" | "B" | "C" | "D"; label: string; available: boolean; chosen: boolean;
+  amount: number; merit: string; whyNot: string | null; detail: string[];
 }
 export interface Advisor2Report {
-  monthSummary: string;
-  stance: "desplegar" | "parcial" | "esperar";
+  monthSummary: string; stance: "desplegar" | "parcial" | "esperar";
   portfolioValue: number; cash: number; invested: number; cashKept: number;
-  allocation: Alloc2[];
-  before: { hhi: number; effN: number; topWeight: number; topTicker: string | null };
-  after: { hhi: number; effN: number; topWeight: number; topTicker: string | null };
-  recommendations: Rec2[];
-  opportunities: Opp2[];
-  warnings: string[];
-  rules: string[];
-  dataUsed: string[];
+  allocation: Alloc2[]; routes: RouteEval[];
+  before: { effN: number; topWeight: number; topTicker: string | null };
+  after: { effN: number; topWeight: number; topTicker: string | null };
+  cashNote: string;
+  recommendations: Rec2[]; opportunities: Opp2[]; warnings: string[]; rules: string[]; dataUsed: string[];
 }
 
 export interface Advisor2Input {
   holdings: Holding[];
   scan: { ticker: string; name?: string | null; sector: string | null; composite: number }[];
-  cash: number;
-  constraints: Constraints;
+  cash: number; constraints: Constraints;
   fv: Record<string, FvSummary>;
   proj?: Record<string, ProjSummary>;
   qual?: Record<string, QualSummary>;
   risk?: RiskModel;
+  etfRoutes?: EtfRouteInput[];
+  effBefore?: { effN: number; hhi: number; tech: number };
   scanAsOf?: string;
 }
 
-// Umbrales (documentados y mostrados en la UI).
-const MARGIN_UNDER = 0.10;        // ≥ +10% ⇒ infravalorada
-const MARGIN_STRONG_UNDER = 0.20; // ≥ +20% ⇒ muy infravalorada
-const MARGIN_STRONG_OVER = -0.25; // ≤ −25% ⇒ muy sobrevalorada
-// Un margen al alza desmesurado (> +60%) con datos gratuitos casi siempre es un ARTEFACTO del DCF
-// (FCF cíclico/volátil, energía, defensivas de bajo múltiplo): NO es una oportunidad de compra.
-const MARGIN_IMPLAUSIBLE = 0.60;
-const SCAN_STRONG = 65;
-const SCAN_WEAK = 40;
-const MAX_RISK = 0.45;
-const STUB_W = 0.015;
-const MAX_ALLOC_ITEMS = 5;
+const MARGIN_UNDER = 0.10, MARGIN_STRONG_UNDER = 0.20, MARGIN_STRONG_OVER = -0.25, MARGIN_IMPLAUSIBLE = 0.60;
+const SCAN_STRONG = 65, SCAN_ATTRACTIVE = 55, SCAN_WEAK = 40, MAX_RISK = 0.45, STUB_W = 0.015, MAX_ALLOC_ITEMS = 5;
+const HHI_MATERIAL = 0.002; // mejora mínima de HHI efectivo para considerar que un ETF diversifica
 
 const pctS = (x: number) => `${(x * 100).toFixed(1)}%`;
 const usd = (x: number) => `${Math.round(x).toLocaleString("en-US")} USD`;
@@ -101,7 +97,6 @@ function marginLineOf(s: FvSummary | undefined): string {
   return `Margen de seguridad (base) ${m >= 0 ? "+" : ""}${pctS(m)} — ${bucket} (confianza ${s.confidence}).`;
 }
 
-// Redondeo a enteros que conserva EXACTAMENTE el total (mayor-resto).
 function roundToBudget(raw: { ticker: string; amount: number }[], budget: number): Record<string, number> {
   const target = Math.min(Math.round(budget), Math.round(raw.reduce((a, r) => a + r.amount, 0)));
   const parts = raw.map((r) => ({ t: r.ticker, floor: Math.floor(r.amount), frac: r.amount - Math.floor(r.amount) }));
@@ -113,8 +108,6 @@ function roundToBudget(raw: { ticker: string; amount: number }[], budget: number
   for (const p of parts) out[p.t] = p.floor;
   return out;
 }
-
-// Reparto equitativo con tope por nombre (diversificación), redistribuye sobrante.
 function waterfill(rooms: Map<string, number>, cash: number): Map<string, number> {
   const alloc = new Map<string, number>();
   for (const k of rooms.keys()) alloc.set(k, 0);
@@ -122,8 +115,7 @@ function waterfill(rooms: Map<string, number>, cash: number): Map<string, number
   let active = [...rooms.keys()].filter((k) => rooms.get(k)! > 1e-9);
   for (let guard = 0; guard < 200 && remaining > 1e-6 && active.length > 0; guard++) {
     const share = remaining / active.length;
-    const next: string[] = [];
-    let progressed = false;
+    const next: string[] = []; let progressed = false;
     for (const k of active) {
       const canTake = rooms.get(k)! - alloc.get(k)!;
       const take = Math.min(share, canTake);
@@ -137,7 +129,7 @@ function waterfill(rooms: Map<string, number>, cash: number): Map<string, number
 }
 
 export function buildAdvice2(inp: Advisor2Input): Advisor2Report {
-  const { holdings, scan, cash, constraints, fv, proj, qual, risk, scanAsOf } = inp;
+  const { holdings, scan, cash, constraints, fv, proj, qual, risk, etfRoutes, effBefore, scanAsOf } = inp;
   const scanBy = new Map(scan.map((s) => [s.ticker.toUpperCase(), s]));
   const held = new Set(holdings.map((h) => h.ticker.toUpperCase()));
   const V = holdings.reduce((a, h) => a + (h.marketValue ?? 0), 0);
@@ -146,187 +138,204 @@ export function buildAdvice2(inp: Advisor2Input): Advisor2Report {
   const denom = V + cashInt;
   const capPerAsset = constraints.maxWeightAsset * denom;
 
-  // ───────────────────────── Recomendaciones por tenencia (cartera actual)
   const recommendations: Rec2[] = [];
-  const accumulateCands: { ticker: string; current: number; composite: number }[] = [];
+  const accumA: { ticker: string; current: number; composite: number; margin: number; conf: string }[] = [];
 
   for (const h of holdings) {
     const t = h.ticker.toUpperCase();
-    const s = scanBy.get(t);
-    const fvS = fv[t];
-    const projS = proj?.[t];
-    const q = qual?.[t];
+    const s = scanBy.get(t); const fvS = fv[t]; const projS = proj?.[t]; const q = qual?.[t];
     const riskPct = riskBy.get(t) ?? null;
-    const mv = h.marketValue ?? 0;
-    const overW = h.weight > constraints.maxWeightAsset;
+    const mv = h.marketValue ?? 0; const overW = h.weight > constraints.maxWeightAsset;
     const highRisk = riskPct != null && riskPct > MAX_RISK;
     const mLine = marginLineOf(fvS);
-    const valUsable = !!fvS && fvS.available && fvS.priceComparable && fvS.marginBase != null && (fvS.confidence === "Alta" || fvS.confidence === "Media");
-    const m = valUsable ? fvS!.marginBase! : null;
     const composite = s?.composite ?? null;
-    const knownStale = !!q && q.fresh === false;   // sólo bloquea si se sabe que NO es reciente
+    const knownStale = !!q && q.fresh === false;
     const projLine = projS ? `Proyección 12m (estadística): mediana ${projS.ret12mP50 >= 0 ? "+" : ""}${pctS(projS.ret12mP50)}, rango ${pctS(projS.ret12mP5)}…+${pctS(projS.ret12mP95)}.` : null;
-    const commonMissing: string[] = [];
-    if (!fvS || !fvS.available) commonMissing.push("Fair Value no disponible (financiera o datos insuficientes).");
-    else if (!fvS.priceComparable) commonMissing.push("Margen no comparable: precio y valor en distinta moneda (falta FX fechado).");
-    if (q && !q.fresh) commonMissing.push(`Fundamentales no recientes (último ejercicio ${q.asOf ?? "s/f"}).`);
-    if (!composite && composite !== 0) commonMissing.push("Sin score del scanner (fuera del universo evaluado).");
+    // Tier de valoración
+    let tier: ValTier;
+    if (isEtf(h.assetClass) || isCommodity(h.ticker, h.assetClass)) tier = "vehiculo";
+    else if (!fvS || !fvS.available) tier = "sin-datos";
+    else if (!fvS.priceComparable || fvS.confidence === "Baja" || (fvS.marginBase != null && fvS.marginBase > MARGIN_IMPLAUSIBLE)) tier = "preliminar";
+    else tier = "confiable";
+    const reliable = tier === "confiable" && fvS!.marginBase != null;
+    const m = reliable ? fvS!.marginBase! : null;
 
-    // Vehículos (ETF/materia prima): sin valoración por empresa.
-    if (isEtf(h.assetClass) || isCommodity(h.ticker, h.assetClass)) {
-      const action: Action2 = overW || highRisk ? "REDUCIR" : "MANTENER";
+    // Vehículos (ETF / materia prima)
+    if (tier === "vehiculo") {
+      const act: Action2 = overW ? "REDUCIR" : "MANTENER";
       recommendations.push({
-        ticker: h.ticker, name: h.name, action,
-        why: action === "REDUCIR" ? `Recortar ${h.ticker}: concentración por encima de tu límite.` : `Mantener ${h.ticker}: cumple rol diversificador.`,
-        evidence: [`Peso ${pctS(h.weight)}${riskPct != null ? `, ${pctS(riskPct)} del riesgo` : ""}.`,
-          isCommodity(h.ticker, h.assetClass) ? "Materia prima: sin flujos; valor depende del spot." : "ETF: valoración look-through de subyacentes pendiente."],
-        risks: action === "REDUCIR" ? ["Recortar reduce diversificación si es tu único vehículo amplio."] : ["Posible solapamiento con otras posiciones (ver X-Ray)."],
-        missing: ["No aplica Fair Value por empresa a un vehículo diversificado."],
-        confidence: "media", marginLine: "Vehículo diversificado — sin Fair Value por empresa.",
-        severity: (action === "REDUCIR" ? 78 : 16) + h.weight * 40,
+        ticker: h.ticker, name: h.name, action: act, tier,
+        why: act === "REDUCIR" ? `Recortar ${h.ticker}: concentración por encima de tu límite.` : `Mantener ${h.ticker}: vehículo diversificado (se evalúa por cartera, no por DCF).`,
+        favor: act === "REDUCIR" ? [] : ["Aporta diversificación/look-through", isCommodity(h.ticker, h.assetClass) ? "Oro/plata: descorrelación y cobertura" : "Cesta amplia de empresas"],
+        penalize: [overW ? `Peso ${pctS(h.weight)} sobre el límite` : "Posible solapamiento con tus acciones (ver X-Ray)"],
+        evidence: [`Peso ${pctS(h.weight)}${riskPct != null ? `, ${pctS(riskPct)} del riesgo` : ""}.`, isCommodity(h.ticker, h.assetClass) ? "Materia prima: sin flujos; valor por spot." : "ETF: valoración look-through de subyacentes."],
+        risks: ["Posible solapamiento con otras posiciones."], missing: ["No aplica Fair Value por empresa a un vehículo."],
+        confidence: "media", marginLine: "Vehículo diversificado — evaluado por metodología de cartera.", severity: (act === "REDUCIR" ? 78 : 16) + h.weight * 40,
       });
       continue;
     }
-
-    // Higiene: posición ínfima → VENDER.
+    // Higiene
     if (mv > 0 && h.weight < STUB_W) {
       recommendations.push({
-        ticker: h.ticker, name: h.name, action: "VENDER",
-        why: `Cerrar ${h.ticker}: posición demasiado pequeña (${pctS(h.weight)}) para mover la aguja.`,
-        evidence: [`Peso ${pctS(h.weight)} (${usd(mv)}): añade complejidad sin impacto material.`, mLine],
-        risks: ["Mantener es razonable si piensas construir la posición pronto."],
-        missing: ["Decisión de higiene, no de valoración."],
-        confidence: "media", marginLine: mLine, severity: 40,
+        ticker: h.ticker, name: h.name, action: "VENDER", tier,
+        why: `Cerrar ${h.ticker}: posición ínfima (${pctS(h.weight)}).`,
+        favor: ["Simplifica la cartera"], penalize: [`Peso ${pctS(h.weight)}: impacto inmaterial`],
+        evidence: [`Peso ${pctS(h.weight)} (${usd(mv)}).`, mLine], risks: ["Mantener si construirás la posición pronto."],
+        missing: ["Higiene, no valoración."], confidence: "media", marginLine: mLine, severity: 40,
       });
       continue;
     }
-
-    // Gestión de RIESGO por concentración (independiente de valoración).
+    // Gestión de riesgo (dura)
     if (overW || highRisk) {
       recommendations.push({
-        ticker: h.ticker, name: h.name, action: "REDUCIR",
+        ticker: h.ticker, name: h.name, action: "REDUCIR", tier,
         why: `Recortar ${h.ticker}: ${overW ? `pesa ${pctS(h.weight)} (límite ${pctS(constraints.maxWeightAsset)})` : `concentra ${pctS(riskPct!)} del riesgo`}.`,
-        evidence: [
-          overW ? `Peso ${pctS(h.weight)} > límite ${pctS(constraints.maxWeightAsset)}.` : `Dentro del límite de peso, pero aporta ${pctS(riskPct!)} del riesgo (> ${pctS(MAX_RISK)}).`,
-          mLine, projLine ?? "Proyección no disponible.",
-        ].filter(Boolean),
-        risks: ["Recortar un ganador reduce el recorrido si sigue subiendo; considera impuestos/costos.",
-          valUsable && m! > MARGIN_UNDER ? "Parece infravalorada por Fair Value: el recorte es por riesgo, no porque esté cara." : ""].filter(Boolean),
-        missing: commonMissing,
-        confidence: highRisk ? "alta" : "media", marginLine: mLine,
-        severity: (highRisk ? 90 : 82) + h.weight * 50,
+        favor: ["Baja la concentración/riesgo de la cartera"],
+        penalize: [overW ? `Peso ${pctS(h.weight)} sobre el límite` : `Aporte al riesgo ${pctS(riskPct!)} > ${pctS(MAX_RISK)}`, reliable && m! > MARGIN_UNDER ? "Parece infravalorada: recorte por riesgo, no por precio" : ""].filter(Boolean),
+        evidence: [overW ? `Peso ${pctS(h.weight)} > límite.` : `Riesgo ${pctS(riskPct!)} (> ${pctS(MAX_RISK)}).`, mLine, projLine ?? ""].filter(Boolean),
+        risks: ["Recortar un ganador reduce recorrido; considera impuestos/costos."], missing: [],
+        confidence: highRisk ? "alta" : "media", marginLine: mLine, severity: (highRisk ? 90 : 82) + h.weight * 50,
       });
       continue;
     }
 
-    // Valoración usable (Fair Value disponible y comparable). La CONVERGENCIA con el scanner
-    // decide la acción fuerte; sin score (composite null) ⇒ no se actúa por un solo DCF.
-    if (valUsable && m != null) {
-      // Margen al alza implausible ⇒ artefacto del modelo: MANTENER y revisar (no compra).
-      if (m > MARGIN_IMPLAUSIBLE) {
+    const favor: string[] = []; const penalize: string[] = [];
+    if (composite != null) (composite >= SCAN_ATTRACTIVE ? favor : penalize).push(`Atractivo del scanner ${Math.round(composite)}/100`);
+    if (projS) (projS.ret12mP50 >= 0 ? favor : penalize).push(`Proyección 12m mediana ${pctS(projS.ret12mP50)} (estadística)`);
+    if (knownStale) penalize.push("Fundamentales no recientes");
+
+    if (reliable && m != null) {
+      // (El margen implausible se clasifica como tier "preliminar" y se trata más abajo con alerta.)
+      // ACUMULAR graduado: infravalorada (plausible) + atractivo ≥ débil, o razonable + atractivo sólido.
+      const undervalued = m >= MARGIN_UNDER;
+      const fairAndAttractive = m > -MARGIN_UNDER && composite != null && composite >= SCAN_ATTRACTIVE;
+      if ((undervalued || fairAndAttractive) && composite != null && composite >= SCAN_WEAK && !knownStale && mv < capPerAsset - 1e-6) {
+        favor.unshift(undervalued ? `Infravalorada (${m >= 0 ? "+" : ""}${pctS(m)})` : `Valoración razonable (${m >= 0 ? "+" : ""}${pctS(m)}) con atractivo sólido`);
         recommendations.push({
-          ticker: h.ticker, name: h.name, action: "MANTENER",
-          why: `Mantener ${h.ticker}: margen +${pctS(m)} implausible con datos gratuitos — probable artefacto del DCF (FCF volátil/cíclico).`,
-          evidence: [mLine, composite != null ? `Score ${Math.round(composite)}/100.` : "", projLine ?? "", `Peso ${pctS(h.weight)} dentro de límites.`].filter(Boolean),
-          risks: ["No se compra por un Fair Value desmesurado: el DCF sobrevalora FCF cíclicos/picos de margen."],
-          missing: [...commonMissing, "Valoración de cíclicas requiere FCF normalizado por ciclo (pendiente)."],
-          confidence: "baja", marginLine: mLine, severity: 24 + h.weight * 20,
+          ticker: h.ticker, name: h.name, action: "ACUMULAR", tier,
+          why: `Acumular ${h.ticker}: ${undervalued ? "infravalorada" : "razonablemente valorada"} y con atractivo relativo ${composite >= SCAN_STRONG ? "fuerte" : "suficiente"}.`,
+          favor, penalize: [...penalize, "Fair Value V1 preliminar (puede estrecharse)"],
+          evidence: [mLine, `Score ${Math.round(composite)}/100.`, "Fundamentales recientes.", projLine ?? ""].filter(Boolean),
+          risks: ["Fair Value V1 preliminar; el score no predice retorno."], missing: [],
+          confidence: (fvS!.confidence === "Alta" && m >= MARGIN_STRONG_UNDER) ? "alta" : "media", marginLine: mLine, severity: 60 + Math.min(20, m * 40) + composite / 20,
         });
+        accumA.push({ ticker: h.ticker, current: mv, composite, margin: m, conf: fvS!.confidence ?? "Media" });
         continue;
       }
-      // ACUMULAR: infravalorada (en banda plausible) Y atractivo no débil Y fundamentales recientes Y con espacio.
-      if (m >= MARGIN_UNDER && m <= MARGIN_IMPLAUSIBLE && composite != null && composite >= SCAN_WEAK && !knownStale && mv < capPerAsset - 1e-6) {
-        accumulateCands.push({ ticker: h.ticker, current: mv, composite });
-        recommendations.push({
-          ticker: h.ticker, name: h.name, action: "ACUMULAR",
-          why: `Acumular ${h.ticker}: infravalorada (${m >= 0 ? "+" : ""}${pctS(m)}) y con atractivo relativo suficiente.`,
-          evidence: [mLine, `Score ${Math.round(composite)}/100 (atractivo relativo, no alfa).`, knownStale ? "" : "Fundamentales recientes.", projLine ?? ""].filter(Boolean),
-          risks: ["El Fair Value V1 es preliminar (DCF de FCFE aproximado); el margen puede estrecharse con mejores datos.",
-            "El score es atractivo relativo, no una predicción de retorno."],
-          missing: commonMissing,
-          confidence: (fvS!.confidence === "Alta" && m >= MARGIN_STRONG_UNDER) ? "alta" : "media",
-          marginLine: mLine, severity: 60 + Math.min(20, m * 40) + composite / 20,
-        });
-        continue;
-      }
-      // REDUCIR por valoración CONVERGENTE: muy sobrevalorada Y atractivo DÉBIL (< 40), no sólo "no fuerte".
-      // Un DCF preliminar no recorta un nombre con atractivo medio/alto: exige convergencia clara.
+      // REDUCIR por valoración CONVERGENTE: muy sobrevalorada + atractivo DÉBIL.
       if (m <= MARGIN_STRONG_OVER && composite != null && composite < SCAN_WEAK) {
         recommendations.push({
-          ticker: h.ticker, name: h.name, action: "REDUCIR",
-          why: `Recortar parcialmente ${h.ticker}: muy sobrevalorada (${pctS(m)}) y atractivo relativo débil.`,
+          ticker: h.ticker, name: h.name, action: "REDUCIR", tier,
+          why: `Recortar parcialmente ${h.ticker}: muy sobrevalorada (${pctS(m)}) y atractivo débil.`,
+          favor: ["Reduce exposición a un nombre caro y poco atractivo"], penalize: [...penalize, "Fair Value V1 preliminar: recorte parcial, no venta total"],
           evidence: [mLine, `Score ${Math.round(composite)}/100 (< ${SCAN_WEAK}).`, projLine ?? ""].filter(Boolean),
-          risks: ["El Fair Value V1 es preliminar: NO se vende la posición entera por un solo DCF; recorte parcial.",
-            "Si el crecimiento supera tus supuestos, la sobrevaloración puede ser aparente."],
-          missing: commonMissing,
+          risks: ["Si el crecimiento supera tus supuestos, la sobrevaloración puede ser aparente."], missing: [],
           confidence: "media", marginLine: mLine, severity: 70 + Math.min(20, -m * 40),
         });
         continue;
       }
-      // MANTENER con matiz: sin score, infravalorada-pero-débil, sobrevalorada-pero-no-débil, o en rango.
-      const nuance = composite == null
-        ? `Fair Value disponible (margen ${m >= 0 ? "+" : ""}${pctS(m)}) pero sin score del scanner para confirmar convergencia: no se actúa por un solo DCF`
-        : m >= MARGIN_UNDER ? "infravalorada pero atractivo relativo débil: no se fuerza compra por un solo DCF"
-        : m <= MARGIN_STRONG_OVER ? "parece muy cara pero el atractivo relativo no es débil: no se vende por un solo DCF"
-        : m <= -MARGIN_UNDER ? "algo cara pero dentro de tolerancia: sin acción por un solo DCF"
-        : "precio en rango razonable del Fair Value";
+      // MANTENER con matiz
+      const nuance = m >= MARGIN_UNDER ? "infravalorada pero atractivo débil: no se fuerza compra"
+        : m <= MARGIN_STRONG_OVER ? "parece muy cara pero el atractivo no es débil: no se vende por un solo DCF"
+        : m <= -MARGIN_UNDER ? "algo cara pero dentro de tolerancia" : "precio en rango razonable del Fair Value";
       recommendations.push({
-        ticker: h.ticker, name: h.name, action: "MANTENER",
-        why: `Mantener ${h.ticker}: ${nuance}.`,
+        ticker: h.ticker, name: h.name, action: "MANTENER", tier,
+        why: `Mantener ${h.ticker}: ${nuance}.`, favor, penalize,
         evidence: [mLine, composite != null ? `Score ${Math.round(composite)}/100.` : "", projLine ?? "", `Peso ${pctS(h.weight)} dentro de límites.`].filter(Boolean),
-        risks: ["El Fair Value V1 es preliminar; una señal aislada no basta para actuar."],
-        missing: commonMissing,
+        risks: ["El Fair Value V1 es preliminar; una señal aislada no basta."], missing: [],
         confidence: "media", marginLine: mLine, severity: 22 + h.weight * 20,
       });
       continue;
     }
 
-    // Sin valoración usable → MANTENER prudente (sólo gestión de riesgo; sin compra a ciegas).
+    // Tier PRELIMINAR (FX / confianza baja / margen implausible): NO se descarta la inversión.
+    if (tier === "preliminar") {
+      const implausible = fvS!.marginBase != null && fvS!.marginBase > MARGIN_IMPLAUSIBLE;
+      const reasonTxt = implausible ? `margen +${pctS(fvS!.marginBase!)} implausible — ALERTA de revisión (artefacto del DCF: FCF volátil/cíclico)`
+        : !fvS!.priceComparable ? "precio y valor en distinta moneda (ADR/FX)" : "confianza baja";
+      recommendations.push({
+        ticker: h.ticker, name: h.name, action: "MANTENER", tier,
+        why: `Mantener ${h.ticker}: valoración preliminar — ${reasonTxt}; se gestiona por riesgo, no se descarta la inversión.`,
+        favor, penalize: [...penalize, implausible ? "Fair Value desmesurado: alerta de revisión, no de compra" : "Margen de seguridad no comparable/confiable todavía"],
+        evidence: [mLine, composite != null ? `Score ${Math.round(composite)}/100.` : "", projLine ?? "", `Peso ${pctS(h.weight)} dentro de límites.`].filter(Boolean),
+        risks: [implausible ? "El DCF sobrevalora FCF cíclicos/picos de margen: revisar con FCF normalizado." : "Sin margen comparable no se compra/vende por valoración; sólo gestión de riesgo."],
+        missing: [implausible ? "FCF normalizado por ciclo (valoración de cíclicas pendiente)." : !fvS!.priceComparable ? "FX fechado para comparar precio y valor (ADR/moneda)." : "Mejor cobertura de fundamentales para subir la confianza."],
+        confidence: "baja", marginLine: mLine, severity: 30 + h.weight * 20,
+      });
+      continue;
+    }
+    // Tier SIN-DATOS
     recommendations.push({
-      ticker: h.ticker, name: h.name, action: "MANTENER",
-      why: `Mantener ${h.ticker}: sin valoración fundada hoy, sólo gestión de riesgo.`,
-      evidence: [mLine, composite != null ? `Score ${Math.round(composite)}/100 (atractivo relativo).` : "Sin score.", projLine ?? "", `Peso ${pctS(h.weight)} dentro de límites.`].filter(Boolean),
-      risks: ["Decidir sin Fair Value sube el riesgo de error: no se compra ni vende por valoración."],
-      missing: commonMissing.length ? commonMissing : ["—"],
-      confidence: "baja", marginLine: mLine, severity: 30 + h.weight * 20,
+      ticker: h.ticker, name: h.name, action: "MANTENER", tier: "sin-datos",
+      why: `Mantener ${h.ticker}: sin datos para una valoración (financiera o insuficiente); abstención por valoración.`,
+      favor, penalize: [...penalize, "Sin Fair Value disponible"],
+      evidence: [mLine, composite != null ? `Score ${Math.round(composite)}/100.` : "Sin score.", `Peso ${pctS(h.weight)} dentro de límites.`].filter(Boolean),
+      risks: ["Sin Fair Value no se compra ni vende por valoración."], missing: ["Fair Value ausente (p. ej. banca/aseguradora o datos insuficientes)."],
+      confidence: "baja", marginLine: mLine, severity: 28 + h.weight * 20,
     });
   }
 
-  // ───────────────────────── Oportunidades fuera de cartera
+  // ───────── Oportunidades fuera de cartera (ruta B)
   const opportunities: Opp2[] = scan
     .filter((s) => !held.has(s.ticker.toUpperCase()) && s.composite >= SCAN_STRONG)
-    .sort((a, b) => b.composite - a.composite)
-    .slice(0, 8)
+    .sort((a, b) => b.composite - a.composite).slice(0, 8)
     .map((s) => {
-      const t = s.ticker.toUpperCase();
-      const fvS = fv[t];
-      const mLine = marginLineOf(fvS);
+      const t = s.ticker.toUpperCase(); const fvS = fv[t]; const mLine = marginLineOf(fvS);
       const usable = !!fvS && fvS.available && fvS.priceComparable && fvS.marginBase != null && (fvS.confidence === "Alta" || fvS.confidence === "Media");
       const m = usable ? fvS!.marginBase! : null;
       let action: Opp2["action"]; let note: string; let eligible = false;
-      if (!fvS || !fvS.available || !usable) {
-        action = "INVESTIGAR"; note = "Atractivo relativo alto, pero sin Fair Value comparable: no se compra sin valoración.";
-      } else if (m! > MARGIN_IMPLAUSIBLE) {
-        action = "INVESTIGAR"; note = `Atractivo alto y margen +${pctS(m!)} implausible (probable artefacto del DCF: FCF cíclico): revisar, no comprar.`;
-      } else if (m! >= MARGIN_UNDER) {
-        action = "COMPRAR"; eligible = true; note = `Atractivo alto e infravalorada (${m! >= 0 ? "+" : ""}${pctS(m!)}): candidata a desplegar capital.`;
-      } else if (m! <= -MARGIN_UNDER) {
-        action = "ESPERAR"; note = `Atractivo alto pero sobrevalorada (${pctS(m!)}): esperar mejor precio.`;
-      } else {
-        action = "OBSERVAR"; note = "Atractivo alto y precio en rango: en observación.";
-      }
+      if (!fvS || !fvS.available || !usable) { action = "INVESTIGAR"; note = "Atractivo alto pero sin Fair Value comparable: no se compra sin valoración."; }
+      else if (m! > MARGIN_IMPLAUSIBLE) { action = "INVESTIGAR"; note = `Atractivo alto y margen +${pctS(m!)} implausible (artefacto del DCF): revisar, no comprar.`; }
+      else if (m! >= MARGIN_UNDER) { action = "COMPRAR"; eligible = true; note = `Atractivo alto e infravalorada (${m! >= 0 ? "+" : ""}${pctS(m!)}): candidata a desplegar.`; }
+      else if (m! <= -MARGIN_UNDER) { action = "ESPERAR"; note = `Atractivo alto pero sobrevalorada (${pctS(m!)}): esperar mejor precio.`; }
+      else { action = "OBSERVAR"; note = "Atractivo alto y precio en rango: en observación."; }
       return { ticker: s.ticker, name: s.name ?? null, sector: s.sector, composite: s.composite, action, marginLine: mLine, note, eligible };
     });
 
-  // ───────────────────────── Asignación del aporte (exacta; efectivo permitido)
-  const cands: { ticker: string; kind: "acumular" | "nueva"; current: number; composite: number }[] = [];
-  for (const a of accumulateCands) cands.push({ ticker: a.ticker, kind: "acumular", current: a.current, composite: a.composite });
-  for (const o of opportunities) if (o.eligible) cands.push({ ticker: o.ticker, kind: "nueva", current: 0, composite: o.composite });
-  cands.sort((a, b) => b.composite - a.composite);
+  // ───────── Ruta C: mejor ETF diversificador (por concentración efectiva look-through)
+  let bestEtf: { r: EtfRouteInput; dHhi: number; dTech: number } | null = null;
+  if (effBefore && etfRoutes && etfRoutes.length) {
+    for (const r of etfRoutes) {
+      if (r.currentValue >= capPerAsset - 1e-6) continue;  // sin espacio bajo el tope
+      const dHhi = effBefore.hhi - r.hhiAfter;   // >0 = reduce concentración
+      const dTech = effBefore.tech - r.techAfter; // >0 = reduce tecnología
+      if (dHhi <= HHI_MATERIAL) continue;         // sólo si diversifica de forma material
+      if (!bestEtf || dHhi > bestEtf.dHhi) bestEtf = { r, dHhi, dTech };
+    }
+  }
+
+  // ───────── Evaluación y elección de rutas A/B/C/D
+  const bestA = accumA.sort((a, b) => (b.margin - a.margin) || (b.composite - a.composite))[0] ?? null;
+  const bestB = opportunities.find((o) => o.eligible) ?? null;
+  const routes: RouteEval[] = [];
+  // A
+  routes.push(bestA
+    ? { id: "A", label: "Aumentar posiciones existentes", available: true, chosen: false, amount: 0,
+        merit: `${bestA.ticker} reúne infravaloración (${bestA.margin >= 0 ? "+" : ""}${pctS(bestA.margin)}) y atractivo (${Math.round(bestA.composite)}/100).`, whyNot: null, detail: [] }
+    : { id: "A", label: "Aumentar posiciones existentes", available: false, chosen: false, amount: 0, merit: "", whyNot: "Tus acciones están caras (sobrevaloradas) o con valoración no comparable (ADR/FX): ninguna ofrece margen de seguridad hoy.", detail: [] });
+  // B
+  routes.push(bestB
+    ? { id: "B", label: "Comprar oportunidades nuevas", available: true, chosen: false, amount: 0, merit: `${bestB.ticker}: atractivo alto e infravalorada.`, whyNot: null, detail: [] }
+    : { id: "B", label: "Comprar oportunidades nuevas", available: false, chosen: false, amount: 0, merit: "", whyNot: "Las candidatas del scanner están sobrevaloradas, son financieras sin DCF, o tienen margen implausible (artefacto): ninguna es una compra creíble.", detail: [] });
+  // C
+  routes.push(bestEtf
+    ? { id: "C", label: "Aportar a ETF diversificado", available: true, chosen: false, amount: 0,
+        merit: `${bestEtf.r.ticker} reduce la concentración efectiva (${effN(effBefore!.hhi).toFixed(1)}→${effN(bestEtf.r.hhiAfter).toFixed(1)} nombres) ${bestEtf.dTech > 0 ? `y baja la exposición tecnológica (${pctS(effBefore!.tech)}→${pctS(bestEtf.r.techAfter)})` : `(ojo: sube tecnología a ${pctS(bestEtf.r.techAfter)})`}.`,
+        whyNot: null, detail: [] }
+    : { id: "C", label: "Aportar a ETF diversificado", available: false, chosen: false, amount: 0, merit: "", whyNot: "Los ETF disponibles no mejorarían materialmente tu diversificación efectiva (o concentrarían más tecnología).", detail: [] });
+  // D
+  routes.push({ id: "D", label: "Mantener liquidez", available: true, chosen: false, amount: 0, merit: "Preserva opción de comprar más barato y no empeora la cartera.", whyNot: null, detail: [] });
+
+  // Elección: candidatas elegibles (A: acumular, B: oportunidades, C: mejor ETF). Si ninguna aporta valor ⇒ D.
+  type Cand = { ticker: string; route: "A" | "B" | "C"; kind: Alloc2["kind"]; current: number; rank: number };
+  const cands: Cand[] = [];
+  for (const a of accumA) cands.push({ ticker: a.ticker, route: "A", kind: "acumular", current: a.current, rank: 100 + a.margin * 100 });
+  for (const o of opportunities) if (o.eligible) cands.push({ ticker: o.ticker, route: "B", kind: "nueva", current: 0, rank: 80 + o.composite / 10 });
+  if (bestEtf) cands.push({ ticker: bestEtf.r.ticker, route: "C", kind: "etf", current: bestEtf.r.currentValue, rank: 70 + bestEtf.dHhi * 1000 });
+  cands.sort((a, b) => b.rank - a.rank);
   const selected = cands.slice(0, MAX_ALLOC_ITEMS);
 
-  let allocation: Alloc2[] = [];
-  let invested = 0;
+  let allocation: Alloc2[] = []; let invested = 0;
   if (cashInt > 0 && selected.length > 0) {
     const rooms = new Map<string, number>();
     for (const c of selected) rooms.set(c.ticker, Math.max(0, capPerAsset - c.current));
@@ -335,83 +344,70 @@ export function buildAdvice2(inp: Advisor2Input): Advisor2Report {
     const rounded = roundToBudget(raw, cashInt);
     invested = Object.values(rounded).reduce((a, b) => a + b, 0);
     allocation = selected.filter((c) => (rounded[c.ticker] ?? 0) > 0).map((c) => {
-      const amt = rounded[c.ticker];
-      const newVal = c.current + amt;
-      const fvS = fv[c.ticker.toUpperCase()];
-      return {
-        ticker: c.ticker, kind: c.kind, amount: amt, pctOfCash: cashInt > 0 ? amt / cashInt : 0,
-        newWeight: denom > 0 ? newVal / denom : 0,
-        reason: c.kind === "acumular"
-          ? "Infravalorada y atractiva: aumentar; monto por diversificación (partes iguales con tope por activo)."
-          : "Candidata nueva infravalorada y atractiva: monto por diversificación con tope por activo.",
-        marginLine: marginLineOf(fvS),
-      };
+      const amt = rounded[c.ticker]; const newVal = c.current + amt; const fvS = fv[c.ticker.toUpperCase()];
+      const reason = c.route === "C" ? `Diversificación: reduce tu concentración efectiva con la menor exposición tecnológica entre los ETF disponibles.`
+        : c.route === "A" ? "Aumentar: infravalorada/razonable y atractiva; monto por diversificación con tope por activo."
+        : "Candidata nueva infravalorada y atractiva; monto por diversificación con tope por activo.";
+      for (const rt of routes) if (rt.id === c.route) { rt.chosen = true; rt.amount += amt; }
+      return { ticker: c.ticker, route: c.route, kind: c.kind, amount: amt, pctOfCash: cashInt > 0 ? amt / cashInt : 0, newWeight: denom > 0 ? newVal / denom : 0, reason, marginLine: c.route === "C" ? "Evaluado por metodología de cartera (look-through), no por DCF." : marginLineOf(fvS) };
     });
   }
   const cashKept = cashInt - invested;
+  if (cashKept > 0) for (const rt of routes) if (rt.id === "D") { rt.chosen = true; rt.amount = cashKept; }
 
-  // Concentración antes/después
-  const beforeW = holdings.filter((h) => h.marketValue).map((h) => h.weight);
-  const beforeHhi = hhiFrom(beforeW);
+  // Concentración efectiva antes/después (la caja NO es una posición: se informa aparte).
+  const beforeEffN = effBefore ? effN(effBefore.hhi) : effN(hhiFrom(holdings.filter((h) => h.marketValue).map((h) => h.weight)));
+  let afterEffN = beforeEffN;
+  const chosenEtf = allocation.find((a) => a.route === "C");
+  if (chosenEtf && etfRoutes) { const r = etfRoutes.find((e) => e.ticker.toUpperCase() === chosenEtf.ticker.toUpperCase()); if (r) afterEffN = r.effNamesAfter; }
   const topBeforeH = holdings.filter((h) => h.marketValue).sort((a, b) => b.weight - a.weight)[0] ?? null;
   const afterVals: Record<string, number> = {};
   for (const h of holdings) afterVals[h.ticker] = h.marketValue ?? 0;
   for (const it of allocation) afterVals[it.ticker] = (afterVals[it.ticker] ?? 0) + it.amount;
-  const afterTotal = Object.values(afterVals).reduce((a, b) => a + b, 0) + cashKept;
-  const afterEntries = Object.entries(afterVals).map(([t, v]) => ({ t, w: afterTotal > 0 ? v / afterTotal : 0 }));
-  const afterHhi = hhiFrom(afterEntries.map((e) => e.w));
-  const topAfter = [...afterEntries].sort((a, b) => b.w - a.w)[0] ?? null;
+  const afterTotalInvested = Object.values(afterVals).reduce((a, b) => a + b, 0);
+  const topAfter = Object.entries(afterVals).map(([t, v]) => ({ t, w: afterTotalInvested > 0 ? v / afterTotalInvested : 0 })).sort((a, b) => b.w - a.w)[0] ?? null;
 
-  // Resumen del mes + postura
-  let stance: Advisor2Report["stance"]; let monthSummary: string;
-  const strongActions = recommendations.filter((r) => r.action === "REDUCIR" || r.action === "VENDER");
-  if (invested <= 0) {
-    stance = "esperar";
-    monthSummary = cashInt > 0
-      ? `Mantener el aporte en liquidez: hoy ninguna posición ni candidata reúne evidencia convergente (margen + atractivo + calidad) para comprar.${strongActions.length ? ` Atención: ${strongActions.length} posición(es) a revisar por riesgo/valoración.` : ""}`
-      : "Sin aporte a desplegar este mes; revisa las recomendaciones por posición.";
-  } else {
-    stance = cashKept > 0 ? "parcial" : "desplegar";
-    monthSummary = `Desplegar ${usd(invested)} de ${usd(cashInt)} en ${allocation.length} instrumento(s) con evidencia convergente${cashKept > 0 ? `; mantener ${usd(cashKept)} en liquidez` : ""}. Concentración efectiva ${effN(beforeHhi).toFixed(1)}→${effN(afterHhi).toFixed(1)} posiciones.`;
+  const stance: Advisor2Report["stance"] = invested <= 0 ? "esperar" : cashKept > 0 ? "parcial" : "desplegar";
+  const cashNote = "La concentración se mide sobre las posiciones invertidas (look-through). El efectivo no es una posición: no diluye el peso de tus acciones; se informa aparte como liquidez disponible.";
+  let monthSummary: string;
+  if (invested <= 0) monthSummary = cashInt > 0
+    ? "Mantener el aporte en liquidez es la decisión justificada hoy: aumentar tus acciones (caras), comprar candidatas nuevas (sin margen creíble) o aportar a un ETF (sin mejora de diversificación) no superan a esperar."
+    : "Sin aporte a desplegar; revisa las recomendaciones por posición.";
+  else {
+    const chosen = routes.filter((r) => r.chosen && r.id !== "D").map((r) => r.id);
+    monthSummary = `Desplegar ${usd(invested)} de ${usd(cashInt)} por la ruta ${chosen.join("+")} (${allocation.map((a) => a.ticker).join(", ")})${cashKept > 0 ? `; mantener ${usd(cashKept)} en liquidez` : ""}. Diversificación efectiva ${beforeEffN.toFixed(1)}→${afterEffN.toFixed(1)} nombres.`;
   }
 
-  // Avisos por datos incompletos
   const warnings: string[] = [];
-  const noFv = holdings.filter((h) => !isEtf(h.assetClass) && !isCommodity(h.ticker, h.assetClass) && (!fv[h.ticker.toUpperCase()]?.available)).map((h) => h.ticker);
   const noComp = holdings.filter((h) => { const s = fv[h.ticker.toUpperCase()]; return s?.available && !s.priceComparable; }).map((h) => h.ticker);
-  const noScan = holdings.filter((h) => h.marketValue != null && !scanBy.has(h.ticker.toUpperCase())).map((h) => h.ticker);
-  const stale = holdings.filter((h) => qual?.[h.ticker.toUpperCase()]?.fresh === false).map((h) => h.ticker);
-  if (noFv.length) warnings.push(`Sin Fair Value (no se decide por valoración): ${noFv.join(", ")}.`);
-  if (noComp.length) warnings.push(`Margen no comparable por moneda (falta FX fechado): ${noComp.join(", ")}.`);
-  if (noScan.length) warnings.push(`Fuera del universo del scanner: ${noScan.join(", ")}.`);
-  if (stale.length) warnings.push(`Fundamentales no recientes: ${stale.join(", ")}.`);
+  const noFv = holdings.filter((h) => !isEtf(h.assetClass) && !isCommodity(h.ticker, h.assetClass) && !fv[h.ticker.toUpperCase()]?.available).map((h) => h.ticker);
+  if (noComp.length) warnings.push(`Valoración preliminar por moneda (ADR/FX, no se descarta la inversión): ${noComp.join(", ")}.`);
+  if (noFv.length) warnings.push(`Sin Fair Value (abstención por valoración): ${noFv.join(", ")}.`);
   if (!scanAsOf) warnings.push("Fecha del scanner no disponible en esta carga.");
-  warnings.push("Fair Value V1 es preliminar (DCF de FCFE aproximado); los modelos A/B experimentales NO se usan como señal.");
+  warnings.push("Fair Value V1 es preliminar (DCF de FCFE con OCF−CAPEX aproximado); los modelos A/B experimentales NO se usan como señal.");
 
   const rules = [
-    `Margen de seguridad: infravalorada ≥ +${pctS(MARGIN_UNDER)}, muy infravalorada ≥ +${pctS(MARGIN_STRONG_UNDER)}, muy sobrevalorada ≤ ${pctS(MARGIN_STRONG_OVER)}.`,
-    `Atractivo (scanner): fuerte ≥ ${SCAN_STRONG}/100, débil < ${SCAN_WEAK}/100. Es atractivo relativo, no alfa.`,
-    `ACUMULAR exige CONVERGENCIA: infravalorada + atractivo ≥ ${SCAN_WEAK} + fundamentales recientes + espacio bajo el tope por activo (${pctS(constraints.maxWeightAsset)}).`,
-    `REDUCIR por valoración exige convergencia (muy sobrevalorada + atractivo < ${SCAN_STRONG}); nunca venta total por un solo DCF.`,
-    `REDUCIR por riesgo: peso > ${pctS(constraints.maxWeightAsset)} o aporte al riesgo > ${pctS(MAX_RISK)} (independiente de valoración).`,
-    "Sin Fair Value comparable o con confianza baja ⇒ abstención (MANTENER/INVESTIGAR). El efectivo es una opción válida.",
-    "Monto por diversificación (partes iguales con tope por activo); el score filtra/ordena, NO dimensiona.",
+    "Valoración ≠ elegibilidad: confiable / preliminar (FX, confianza) / vehículo (ETF por cartera) / sin datos. La ausencia de FX, score o Fair Value NO implica que la inversión no convenga.",
+    `ACUMULAR (graduado): infravalorada ≥ +${pctS(MARGIN_UNDER)} con atractivo ≥ ${SCAN_WEAK}, o razonable con atractivo ≥ ${SCAN_ATTRACTIVE}. No exige que todos los indicadores sean favorables.`,
+    `Margen > +${pctS(MARGIN_IMPLAUSIBLE)} ⇒ ALERTA de revisión (artefacto del DCF), no invalida otras señales ni genera compra.`,
+    `Ruta ETF: se elige el ETF que más reduce la concentración efectiva (look-through) con menor exposición tecnológica; no exige Fair Value individual.`,
+    "Restricciones duras (se mantienen): errores de datos, monedas incompatibles para comparar, peso/riesgo material por encima de tus límites.",
+    "Se comparan A (aumentar) / B (nuevas) / C (ETF) / D (liquidez) y se elige la combinación más razonable; el 100% en efectivo es una decisión justificada, no un residuo.",
   ];
   const dataUsed = [
     `Posiciones reales (valor ${usd(V)}; ${holdings.length} instrumento(s)).`,
-    `Fair Value: DCF de FCFE (OCF−CAPEX aprox.) por empresa, margen vs. precio sólo si comparten moneda.`,
-    scanAsOf ? `Scanner del ${scanAsOf} (atractivo relativo multifactor).` : "Scanner: snapshot más reciente.",
-    risk ? "Riesgo: covarianzas históricas (motor de Proyección, precios ajustados)." : "Sin modelo de riesgo cargado.",
+    "Fair Value: DCF de FCFE por empresa; exposición efectiva por X-Ray (look-through de ETF).",
+    scanAsOf ? `Scanner del ${scanAsOf} (atractivo relativo).` : "Scanner: snapshot más reciente.",
+    risk ? "Riesgo: covarianzas históricas (motor de Proyección)." : "Sin modelo de riesgo cargado.",
     `Límites: ${pctS(constraints.maxWeightAsset)} por activo, ${pctS(constraints.maxWeightSector)} por sector.`,
   ];
 
   recommendations.sort((a, b) => b.severity - a.severity);
-
   return {
     monthSummary, stance, portfolioValue: V, cash: cashInt, invested, cashKept,
-    allocation,
-    before: { hhi: beforeHhi, effN: effN(beforeHhi), topWeight: topBeforeH?.weight ?? 0, topTicker: topBeforeH?.ticker ?? null },
-    after: { hhi: afterHhi, effN: effN(afterHhi), topWeight: topAfter?.w ?? 0, topTicker: topAfter?.t ?? null },
-    recommendations, opportunities, warnings, rules, dataUsed,
+    allocation, routes,
+    before: { effN: beforeEffN, topWeight: topBeforeH?.weight ?? 0, topTicker: topBeforeH?.ticker ?? null },
+    after: { effN: afterEffN, topWeight: topAfter?.w ?? 0, topTicker: topAfter?.t ?? null },
+    cashNote, recommendations, opportunities, warnings, rules, dataUsed,
   };
 }

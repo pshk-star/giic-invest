@@ -119,7 +119,7 @@ describe("buildAdvice2 — abstención, riesgo e higiene", () => {
     }));
     const rec = r.recommendations.find((x) => x.ticker === "AAA")!;
     expect(rec.action).toBe("REDUCIR");
-    expect(rec.risks.join(" ")).toMatch(/infravalorada|riesgo/i);
+    expect(rec.penalize.join(" ")).toMatch(/infravalorada|peso/i);
   });
 
   it("posición ínfima ⇒ VENDER (higiene)", () => {
@@ -150,6 +150,49 @@ describe("buildAdvice2 — guarda de margen implausible (artefacto del DCF)", ()
     const opp = r.opportunities.find((o) => o.ticker === "EOG")!;
     expect(opp.action).toBe("INVESTIGAR");
     expect(opp.eligible).toBe(false);
+  });
+});
+
+describe("buildAdvice2 — ruta ETF diversificada (2.1) y graduación", () => {
+  it("ETF que reduce la concentración efectiva ⇒ ruta C elegida y aporte asignado", () => {
+    const r = buildAdvice2(base({
+      holdings: [hold("NVDA", 10000, 0.5, "Technology"), { ticker: "SCHD", name: "SCHD", sector: null, assetClass: "etf", marketValue: 4000, weight: 0.2, priceAsOf: "2026-11-06" }], cash: 3000,
+      scan: [{ ticker: "NVDA", sector: "Technology", composite: 58 }],
+      fv: { NVDA: fv({ marginBase: -0.5 }) },
+      effBefore: { effN: 12.8, hhi: 0.078, tech: 0.153 },
+      etfRoutes: [{ ticker: "SCHD", currentValue: 4000, effNamesAfter: 14.9, hhiAfter: 0.067, techAfter: 0.148 }],
+    }));
+    expect(r.invested).toBe(3000);
+    expect(r.allocation.some((a) => a.ticker === "SCHD" && a.route === "C")).toBe(true);
+    expect(r.routes.find((x) => x.id === "C")!.chosen).toBe(true);
+    expect(r.invested + r.cashKept).toBe(3000);
+  });
+
+  it("ETF que NO mejora diversificación ⇒ ruta C no disponible; si nada más, ESPERAR", () => {
+    const r = buildAdvice2(base({
+      holdings: [hold("NVDA", 10000, 1, "Technology")], cash: 3000,
+      scan: [{ ticker: "NVDA", sector: "Technology", composite: 58 }],
+      fv: { NVDA: fv({ marginBase: -0.5 }) },
+      effBefore: { effN: 12.8, hhi: 0.078, tech: 0.153 },
+      etfRoutes: [{ ticker: "QQQ", currentValue: 5000, effNamesAfter: 12.7, hhiAfter: 0.079, techAfter: 0.192 }], // sube concentración
+    }));
+    expect(r.routes.find((x) => x.id === "C")!.available).toBe(false);
+    expect(r.invested).toBe(0);
+    expect(r.stance).toBe("esperar");
+  });
+
+  it("razonablemente valorada (margen ~0) + atractivo sólido ⇒ ACUMULAR graduado", () => {
+    const r = buildAdvice2(base({
+      holdings: [hold("AAA", 1000, 0.1), hold("BBB", 9000, 0.9, "Health")], cash: 3000,
+      scan: [{ ticker: "AAA", sector: "Tech", composite: 62 }],
+      fv: { AAA: fv({ marginBase: 0.02, confidence: "Media" }) },  // dentro de ±10%
+    }));
+    expect(r.recommendations.find((x) => x.ticker === "AAA")!.action).toBe("ACUMULAR");
+  });
+
+  it("comparación de rutas A/B/C/D siempre presente", () => {
+    const r = buildAdvice2(base({ holdings: [hold("AAA", 10000, 1)], scan: [], fv: {} }));
+    expect(r.routes.map((x) => x.id).sort()).toEqual(["A", "B", "C", "D"]);
   });
 });
 
