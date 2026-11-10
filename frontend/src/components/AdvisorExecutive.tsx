@@ -1,15 +1,20 @@
 import { useState } from "react";
 import { Panel } from "./Panel";
-import type { Advisor2Report, Rec2, Action2, Opp2, RouteEval } from "../core/advisor2";
+import type { Advisor2Report, Rec2, Opp2, RouteEval, PositionAction, ContribAction } from "../core/advisor2";
 import { money, pct } from "../format";
 
-const ACTION: Record<Action2, { tone: string; bg: string; border: string }> = {
-  COMPRAR:  { tone: "text-term-good", bg: "bg-term-good/10", border: "border-term-good/40" },
-  ACUMULAR: { tone: "text-term-good", bg: "bg-term-good/10", border: "border-term-good/40" },
-  MANTENER: { tone: "text-term-accent", bg: "bg-term-panel2/60", border: "border-term-border" },
-  REDUCIR:  { tone: "text-term-warn", bg: "bg-term-warn/10", border: "border-term-warn/40" },
-  VENDER:   { tone: "text-term-crit", bg: "bg-term-crit/10", border: "border-term-crit/40" },
-  ESPERAR:  { tone: "text-term-muted", bg: "bg-term-panel2/40", border: "border-term-border" },
+const POS: Record<PositionAction, { tone: string; border: string }> = {
+  MANTENER: { tone: "text-term-accent", border: "border-term-border" },
+  REDUCIR:  { tone: "text-term-warn", border: "border-term-warn/40" },
+  VENDER:   { tone: "text-term-crit", border: "border-term-crit/40" },
+  REVISAR:  { tone: "text-term-info", border: "border-term-info/40" },
+};
+const CONTRIB: Record<ContribAction, { tone: string }> = {
+  ACUMULAR: { tone: "text-term-good" }, COMPRAR: { tone: "text-term-good" }, ESPERAR: { tone: "text-term-muted" },
+};
+const CARD_BG: Record<PositionAction, string> = {
+  MANTENER: "bg-term-panel2/50 border-term-border", REDUCIR: "bg-term-warn/8 border-term-warn/40",
+  VENDER: "bg-term-crit/8 border-term-crit/40", REVISAR: "bg-term-info/8 border-term-info/40",
 };
 const OPP: Record<Opp2["action"], { tone: string; label: string }> = {
   COMPRAR: { tone: "text-term-good", label: "COMPRAR" },
@@ -23,18 +28,29 @@ const ROUTE_NAME: Record<RouteEval["id"], string> = { A: "A · Aumentar existent
 
 function RecCard({ r }: { r: Rec2 }) {
   const [open, setOpen] = useState(false);
-  const st = ACTION[r.action];
+  const ps = POS[r.positionAction]; const cs = CONTRIB[r.contribAction];
+  const contribLabel = r.contribAction === "ACUMULAR" && r.contribAmount != null ? `ACUMULAR ${money(r.contribAmount)}` : r.contribAction;
   return (
-    <div className={`rounded border ${st.border} ${st.bg} p-3`}>
+    <div className={`rounded border p-3 ${CARD_BG[r.positionAction]}`}>
       <button onClick={() => setOpen(!open)} className="w-full text-left">
-        <div className="flex items-center gap-2">
-          <span className={`font-mono text-[11px] font-semibold px-1.5 py-[1px] rounded border ${st.border} ${st.tone}`}>{r.action}</span>
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="font-mono text-sm text-term-fg">{r.ticker}</span>
           <span className="text-[9px] text-term-faint border border-term-border rounded px-1">{TIER[r.tier]}</span>
           <span className={`ml-auto text-[10px] ${CONF[r.confidence]}`}>confianza {r.confidence}</span>
           <span className="text-term-faint text-[10px]">{open ? "▲" : "▼"}</span>
         </div>
-        <div className="text-[12px] text-term-muted mt-1 leading-snug">{r.why}</div>
+        <div className="grid sm:grid-cols-2 gap-1.5 mt-2">
+          <div className="rounded border border-term-border/60 bg-term-bg/30 p-1.5">
+            <div className="text-[9px] text-term-faint uppercase tracking-wide">Posición existente</div>
+            <div className={`font-mono text-[12px] font-semibold ${ps.tone}`}>{r.positionAction}</div>
+            <div className="text-[11px] text-term-muted leading-snug mt-0.5">{r.positionWhy}</div>
+          </div>
+          <div className="rounded border border-term-border/60 bg-term-bg/30 p-1.5">
+            <div className="text-[9px] text-term-faint uppercase tracking-wide">Aporte nuevo</div>
+            <div className={`font-mono text-[12px] font-semibold ${cs.tone}`}>{contribLabel}</div>
+            <div className="text-[11px] text-term-muted leading-snug mt-0.5">{r.contribWhy}</div>
+          </div>
+        </div>
         {(r.favor.length > 0 || r.penalize.length > 0) && (
           <div className="flex flex-wrap gap-1.5 mt-1.5">
             {r.favor.map((f, i) => <span key={`f${i}`} className="text-[10px] text-term-good border border-term-good/30 rounded px-1.5 py-[1px]">+ {f}</span>)}
@@ -68,7 +84,7 @@ export function AdvisorExecutive({ report: r }: { report: Advisor2Report }) {
   const stanceTone = r.stance === "desplegar" ? "text-term-good" : r.stance === "parcial" ? "text-term-accent" : "text-term-muted";
   return (
     <div className="flex flex-col gap-3">
-      <Panel title="Recomendación del mes · Investment Advisor 2.1">
+      <Panel title="Recomendación del mes · Investment Advisor 2.2">
         <div className={`text-sm ${stanceTone} font-medium leading-snug`}>{r.monthSummary}</div>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3">
           <div className="rounded border border-term-border bg-term-panel2/40 p-2.5"><div className="text-[10px] text-term-muted">Cartera</div><div className="text-base font-mono text-term-fg">{money(r.portfolioValue)}</div></div>
@@ -117,7 +133,7 @@ export function AdvisorExecutive({ report: r }: { report: Advisor2Report }) {
         <div className="text-[10px] text-term-faint mt-2">{r.cashNote}</div>
       </Panel>
 
-      <Panel title="Acciones recomendadas por posición (toca para ver evidencia)">
+      <Panel title="Decisiones por instrumento · posición existente + aporte nuevo (toca para ver evidencia)">
         <div className="grid gap-2">{r.recommendations.map((rec) => <RecCard key={rec.ticker} r={rec} />)}</div>
       </Panel>
 
