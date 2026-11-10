@@ -114,6 +114,50 @@ def extract_eodhd(obj: dict) -> dict:
             "eps_basis_ambigua": True}   # EODHD no garantiza reportado-diluido; se marca ambiguo
 
 
+def eodhd_annual_series_full(obj: dict) -> dict:
+    """Serie anual COMPLETA por campo desde el JSON crudo de EODHD (TODOS los años, no sólo el último).
+    Aditivo para P1.5.1; no altera extract_eodhd/fetch. Devuelve {'currency': ccy, 'by_field':
+    {campo: {period_iso: valor}}}. Signos crudos de EODHD (capex suele venir negativo; el consumidor
+    decide abs()). No fabrica: campo ausente → no se emite ese período."""
+    fin = (obj or {}).get("Financials", {}) or {}
+    inc = (fin.get("Income_Statement", {}) or {}).get("yearly", {}) or {}
+    bal = (fin.get("Balance_Sheet", {}) or {}).get("yearly", {}) or {}
+    cf = (fin.get("Cash_Flow", {}) or {}).get("yearly", {}) or {}
+    ccy = ((fin.get("Income_Statement", {}) or {}).get("currency_symbol")
+           or (obj.get("General", {}) or {}).get("CurrencyCode"))
+    by: Dict[str, dict] = {}
+
+    def put(field, period, val):
+        if val is not None:
+            by.setdefault(field, {})[period] = val
+
+    for k, irow in inc.items():
+        if not isinstance(irow, dict):
+            continue
+        period = irow.get("date") or k
+        brow = bal.get(k) or bal.get(period) or {}
+        crow = cf.get(k) or cf.get(period) or {}
+        put("revenue", period, _num(irow, ["totalRevenue"]))
+        put("net_income", period, _num(irow, ["netIncome"]))
+        put("operating_income", period, _num(irow, ["operatingIncome", "ebit"]))
+        put("pretax", period, _num(irow, ["incomeBeforeTax"]))
+        put("tax", period, _num(irow, ["incomeTaxExpense"]))
+        put("interest", period, _num(irow, ["interestExpense"]))
+        put("ocf", period, _num(crow, ["totalCashFromOperatingActivities"]))
+        put("capex", period, _num(crow, ["capitalExpenditures"]))
+        put("dna", period, _num(crow, ["depreciation", "depreciationAndAmortization"]))
+        put("wc_change", period, _num(crow, ["changeInWorkingCapital"]))
+        put("sbc", period, _num(crow, ["stockBasedCompensation"]))
+        put("cash", period, _num(brow, ["cashAndEquivalents", "cash", "cashAndShortTermInvestments"]))
+        td = _num(brow, ["shortLongTermDebtTotal"])
+        if td is None:
+            lt = _num(brow, ["longTermDebt"]); st = _num(brow, ["shortTermDebt", "shortLongTermDebt"])
+            td = (lt or 0) + (st or 0) if (lt is not None or st is not None) else None
+        put("total_debt", period, td)
+        put("shares", period, _num(brow, ["commonStockSharesOutstanding"]))
+    return {"currency": ccy, "by_field": by}
+
+
 class EodhdFundamentalsConnector:
     """Conector EODHD (COMMERCIAL, gate de costo). Emite anual e interino con procedencia; calidad
     `parcial` (la conciliación oficial la sube o la marca). No emite acciones diluidas ponderadas."""
@@ -160,6 +204,17 @@ class EodhdFundamentalsConnector:
             if obj and isinstance(obj, dict) and obj.get("Financials"):
                 return s, adr, obj
         return None, adr, None
+
+    def annual_series(self, ticker: str) -> dict:
+        """Serie anual COMPLETA por campo (P1.5.1). Reutiliza el objeto cacheado de _resolve
+        (sin fetch extra si ya se consultó). {} si no hay datos."""
+        try:
+            _sym, _adr, obj = self._resolve(ticker)
+        except Exception:
+            obj = None
+        if obj is None:
+            return {}
+        return eodhd_annual_series_full(obj)
 
     def fetch(self, tickers: List[str], fields: Optional[List[str]] = None,
               context: Optional[Dict[str, dict]] = None) -> Dict[str, Dict[str, ProvenancedField]]:

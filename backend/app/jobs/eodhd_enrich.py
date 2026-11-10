@@ -170,29 +170,27 @@ def eodhd_user_info(key: str) -> dict:
         return {"error": type(e).__name__}
 
 
-# Mapa campo EODHD (anual) → clave núcleo, para el fallback del año reciente (p. ej. TSM FY2025).
-_EODHD_ANNUAL_MAP = {"revenue_annual": "revenue", "net_income_annual": "net_income",
-                     "ocf_annual": "ocf", "capex_annual": "capex",
-                     "cash_annual": "cash", "total_debt_annual": "total_debt"}
-
-
-def _build_fcff_inputs(facts, tax, ccy, edgar_hist, data_end, f_payload, enriched=None) -> dict:
-    """Capa ADITIVA FCFF (P1.5.1). Defensiva: cualquier fallo NO rompe el payload productivo.
-    NO toca history.annual ni valuation.ts; los Fair Values productivos no cambian."""
+def _is_financial(sic) -> bool:
+    """Instituciones financieras (SIC 6000-6799): el FCFF no aplica (se usa exceso de retorno/DDM)."""
     try:
-        eodhd_annual = None
-        if enriched:
-            ea: dict = {}
-            for k, core in _EODHD_ANNUAL_MAP.items():
-                fld = enriched.get(k) or {}
-                if fld.get("value") is not None and fld.get("period"):
-                    ea.setdefault(core, {})[str(fld["period"])[:10]] = fld["value"]
-            eodhd_annual = ea or None
+        return 6000 <= int(str(sic)) <= 6799
+    except (ValueError, TypeError):
+        return False
+
+
+def _build_fcff_inputs(facts, tax, ccy, edgar_hist, data_end, f_payload,
+                       eodhd_full=None, is_financial=False) -> dict:
+    """Capa ADITIVA FCFF (P1.5.1). Defensiva: cualquier fallo NO rompe el payload productivo.
+    NO toca history.annual ni valuation.ts; los Fair Values productivos no cambian.
+    `eodhd_full` = serie anual completa del conector (dict con 'by_field'), sólo cuando EODHD ya se
+    consultó en este instrumento (reutiliza caché; sin fetch extra)."""
+    try:
         shares = (f_payload or {}).get("diluted_shares")
         mcap = (f_payload or {}).get("market_cap")
-        return assemble_fcff_inputs(facts, tax, ccy, edgar_hist, data_end, shares, mcap, eodhd_annual)
+        return assemble_fcff_inputs(facts, tax, ccy, edgar_hist, data_end, shares, mcap,
+                                    eodhd_full=eodhd_full, is_financial=is_financial)
     except Exception as e:  # nunca romper producción por la capa aditiva
-        return {"schema": "fcff_inputs_v1", "error": f"{type(e).__name__}: {str(e)[:120]}"}
+        return {"schema": "fcff_inputs_v2", "error": f"{type(e).__name__}: {str(e)[:120]}"}
 
 
 def enrich_one(prov: EDGARProvider, conn, t: str, eval_date: date) -> dict:
@@ -239,7 +237,8 @@ def enrich_one(prov: EDGARProvider, conn, t: str, eval_date: date) -> dict:
         return {"ticker": t, "status": "edgar_suficiente", "eodhd_called": False,
                 "edgar_vigencia": rec["estado"], "edgar_data_end": data_end.isoformat() if data_end else None,
                 "edgar_history": edgar_hist, "moneda_edgar": ccy,
-                "fcff_inputs": _build_fcff_inputs(facts, tax, ccy, edgar_hist, data_end, asdict(f), None),
+                "fcff_inputs": _build_fcff_inputs(facts, tax, ccy, edgar_hist, data_end, asdict(f),
+                                                  eodhd_full=None, is_financial=_is_financial(sic)),
                 "nota": "EDGAR vigente en todos los campos núcleo/balance; EODHD no se consulta"}
 
     # EODHD: una consulta por instrumento (el conector resuelve símbolo/ADR y cachea).
@@ -281,7 +280,8 @@ def enrich_one(prov: EDGARProvider, conn, t: str, eval_date: date) -> dict:
         "campos_rechazados": rechazados, "diferencias_vs_payload_actual": diffs,
         "edgar_states": edgar_states, "enrichment_block": enrichment_block,
         "edgar_history": edgar_hist,
-        "fcff_inputs": _build_fcff_inputs(facts, tax, ccy, edgar_hist, data_end, edgar_payload, enriched),
+        "fcff_inputs": _build_fcff_inputs(facts, tax, ccy, edgar_hist, data_end, edgar_payload,
+                                          eodhd_full=conn.annual_series(t), is_financial=_is_financial(sic)),
     }
 
 
