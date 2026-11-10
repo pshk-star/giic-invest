@@ -144,3 +144,39 @@ def paired_cluster_bootstrap(points: List[dict], m1: str, m2: str, comp: str,
             "mean_diff_abs_error": round(point, 5), "ci90": [round(lo, 5), round(hi, 5)],
             "significativo": bool(lo > 0 or hi < 0),
             "mejor": (m2 if point > 0 else m1) if (lo > 0 or hi < 0) else "empate"}
+
+
+COMPONENTS = ["rev", "margin", "ebit", "reinv", "fcff"]
+
+
+def audit(points: List[dict]) -> dict:
+    out = {"independencia": independence(points), "por_componente": {}, "fcff_acumulado": {},
+           "comparaciones_emparejadas": {}}
+    for model in ("A", "C", "D"):
+        out["por_componente"][model] = {
+            comp: {f"h{h}": component_metrics(points, model, comp, h) for h in (1, 2, 3)}
+            for comp in COMPONENTS}
+        out["fcff_acumulado"][model] = cumulative_fcff(points, model)
+    for (m1, m2) in (("A", "D"), ("A", "C"), ("C", "D")):
+        out["comparaciones_emparejadas"][f"{m1}_vs_{m2}"] = {
+            comp: paired_cluster_bootstrap(points, m1, m2, comp) for comp in COMPONENTS}
+    return out
+
+
+def main(argv=None):
+    import argparse
+    import json
+    import sys
+    p = argparse.ArgumentParser()
+    p.add_argument("--dump", required=True, help="JSON de puntos crudos de forecast_backtest")
+    args = p.parse_args(argv)
+    data = json.load(open(args.dump))
+    pts = data.get("points", data) if isinstance(data, dict) else data
+    print(json.dumps({"P1.8.1": "auditoría estadística", "n": len(pts), **audit(pts)},
+                     ensure_ascii=False, indent=1, default=str))
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())

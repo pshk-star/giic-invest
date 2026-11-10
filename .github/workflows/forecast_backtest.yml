@@ -30,7 +30,9 @@ jobs:
         env:
           EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
         run: python -m app.research.forecast_backtest --universe ${{ inputs.universe }} --dump /tmp/bt_points.json
-      - name: Subir puntos crudos como artefacto (para auditoría P1.8.1)
+      - name: Auditoría estadística P1.8.1 (sobre los puntos crudos)
+        run: python -m app.research.forecast_audit --dump /tmp/bt_points.json
+      - name: Subir puntos crudos como artefacto
         if: always()
         uses: actions/upload-artifact@v4
         with:
