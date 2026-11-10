@@ -159,8 +159,8 @@ export function buildAdvice2(inp: Advisor2Input): Advisor2Report {
       penalize.push(isCommodity(h.ticker, h.assetClass) ? "Sin flujos: valor por spot" : "Posible solapamiento con tus acciones");
       risks.push("Posible solapamiento (ver X-Ray)."); missing.push("No aplica Fair Value por empresa a un vehículo.");
     } else if (mv > 0 && h.weight < STUB_W) {
-      positionAction = "VENDER"; positionWhy = `Posición ínfima (${pctS(h.weight)}, ${usd(mv)}): su impacto es inmaterial.`;
-      favor.push("Simplifica la cartera"); penalize.push("Impacto inmaterial"); risks.push("Mantener si construirás la posición pronto."); missing.push("Higiene, no valoración.");
+      positionAction = "REVISAR"; positionWhy = `Posición ínfima (${pctS(h.weight)}, ${usd(mv)}): tamaño inmaterial → revisar. Una venta exige además una razón económica o de riesgo, no sólo el tamaño.`;
+      confidence = "baja"; favor.push("Revisar posición de tamaño inmaterial"); penalize.push("Tamaño inmaterial"); risks.push("No se vende sólo por tamaño: hace falta señal de valoración o de riesgo."); missing.push("Justificación económica/riesgo para decidir una venta.");
     } else if (overW || highRisk) {
       positionAction = "REDUCIR"; positionWhy = `${overW ? `Pesa ${pctS(h.weight)} (límite ${pctS(constraints.maxWeightAsset)})` : `Concentra ${pctS(riskPct!)} del riesgo (> ${pctS(MAX_RISK)})`}.`;
       confidence = highRisk ? "alta" : "media"; favor.push("Baja la concentración/riesgo"); penalize.push(overW ? "Peso sobre el límite" : "Riesgo dominante");

@@ -39,6 +39,7 @@ const ACTION_STYLE: Record<Decision["action"], { label: string; tone: string }> 
   MANTENER: { label: "MANTENER", tone: "text-term-accent" },
   REDUCIR: { label: "REDUCIR", tone: "text-term-warn" },
   VENDER: { label: "VENDER", tone: "text-term-crit" },
+  REVISAR: { label: "REVISAR", tone: "text-term-info" },
   NO_HACER_NADA: { label: "NO HACER NADA", tone: "text-term-muted" },
 };
 

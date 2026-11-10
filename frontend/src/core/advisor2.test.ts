@@ -58,10 +58,11 @@ describe("advisor2.2 — dos decisiones separadas (posición vs aporte)", () => 
   });
 });
 
-describe("advisor2.2 — todas las acciones de POSICIÓN son alcanzables", () => {
-  it("VENDER: posición ínfima", () => {
+describe("advisor2.2 — acciones de POSICIÓN (VENDER ya no se dispara sólo por tamaño)", () => {
+  it("REVISAR (no VENDER): posición ínfima — el tamaño ya no implica venta automática", () => {
     const r = buildAdvice2(base({ holdings: [hold("AAA", 50, 0.005), hold("BBB", 10000, 0.995)], fv: {} }));
-    expect(recOf(r, "AAA").positionAction).toBe("VENDER");
+    expect(recOf(r, "AAA").positionAction).toBe("REVISAR");
+    expect(recOf(r, "AAA").positionAction).not.toBe("VENDER");
   });
   it("REDUCIR: peso por encima del límite", () => {
     const r = buildAdvice2(base({ holdings: [hold("AAA", 40000, 0.4)], fv: { AAA: fv({ marginBase: 0.3 }) } }));

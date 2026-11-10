@@ -137,9 +137,10 @@ describe("decisiones priorizadas (vocabulario completo)", () => {
     expect(r.decisions.some((d) => d.action === "COMPRAR" && d.ticker === "MU")).toBe(true);
   });
 
-  it("una posición ínfima genera VENDER (higiene)", () => {
+  it("una posición ínfima genera REVISAR (higiene), nunca VENDER automático", () => {
     const r = buildAdvice([h("BIG", 9900, 0.99, "Tech"), h("STUB", 100, 0.01, "Tech")], [], 0, C);
-    expect(r.decisions.some((d) => d.action === "VENDER" && d.ticker === "STUB")).toBe(true);
+    expect(r.decisions.some((d) => d.action === "REVISAR" && d.ticker === "STUB")).toBe(true);
+    expect(r.decisions.some((d) => d.action === "VENDER" && d.ticker === "STUB")).toBe(false);
   });
 
   it("cartera equilibrada sin capital: termina en MANTENER o NO_HACER_NADA, nunca vacío", () => {

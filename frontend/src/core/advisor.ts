@@ -57,7 +57,7 @@ export interface RiskModel {
 }
 
 export type DecisionAction =
-  | "COMPRAR" | "AUMENTAR" | "MANTENER" | "REDUCIR" | "VENDER" | "NO_HACER_NADA";
+  | "COMPRAR" | "AUMENTAR" | "MANTENER" | "REDUCIR" | "VENDER" | "REVISAR" | "NO_HACER_NADA";
 
 // Decisión priorizada y explicable (lo que el roadmap pide como entregable central).
 export interface Decision {
@@ -584,25 +584,27 @@ function buildDecisions(inp: DecisionInput): Decision[] {
     }
   }
 
-  // 5) VENDER posiciones ínfimas (higiene de cartera)
+  // 5) REVISAR posiciones ínfimas: el tamaño reducido activa revisión, NO una venta automática.
+  //    Una venta exige además una justificación económica o de riesgo (no sólo el tamaño).
   for (const h of holdings) {
     if (!h.marketValue) continue;
     if (h.weight < STUB_W) {
       const s = scanBy.get(h.ticker.toUpperCase());
       out.push({
-        id: `sell-${h.ticker}`, action: "VENDER", ticker: h.ticker, label: h.ticker,
-        headline: `${h.ticker} pesa ${pctStr(h.weight)}: demasiado pequeña para mover la aguja.`,
-        priority: 0, severity: 42,
+        id: `review-${h.ticker}`, action: "REVISAR", ticker: h.ticker, label: h.ticker,
+        headline: `${h.ticker} pesa ${pctStr(h.weight)}: tamaño inmaterial — revisar, no vender sólo por el tamaño.`,
+        priority: 0, severity: 30,
         rationale: [
-          `Peso ${pctStr(h.weight)} (${usd(h.marketValue)}): añade complejidad sin impacto material.`,
+          `Peso ${pctStr(h.weight)} (${usd(h.marketValue)}): impacto inmaterial en la cartera.`,
+          "Una venta requiere además una razón económica (valoración) o de riesgo, no sólo el tamaño.",
           s ? `Score ${Math.round(s.composite)}/100.` : "Sin score en el scanner.",
         ],
         metricNow: `Peso ${pctStr(h.weight)}`, reference: `Posición mínima relevante ${pctStr(STUB_W)}`,
-        suggestedDeltaUsd: -Math.round(h.marketValue), suggestedTargetWeight: 0,
-        expectedImpact: "Cerrarla simplifica la cartera; el efecto en riesgo/retorno es insignificante por su tamaño.",
-        confidence: "media",
-        whatWouldChange: ["Mantener es razonable si piensas construir la posición pronto.", "Considera costos e impuestos de la venta."],
-        dataSources: srcBase, limitations: ["Decisión de higiene de cartera, no una señal de valoración."],
+        suggestedDeltaUsd: 0, suggestedTargetWeight: h.weight,
+        expectedImpact: "Revisar: el tamaño por sí solo no justifica vender; decide por valoración o riesgo.",
+        confidence: "baja",
+        whatWouldChange: ["Vender sólo si hay señal de valoración (muy cara + atractivo débil) o de riesgo.", "Mantener/construir es razonable si piensas ampliar la posición.", "Considera costos e impuestos de cualquier operación."],
+        dataSources: srcBase, limitations: ["Señal de higiene (tamaño), no una conclusión de valoración."],
       });
     }
   }
