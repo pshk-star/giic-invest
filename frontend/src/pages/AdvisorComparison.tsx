@@ -9,30 +9,34 @@ import {
 } from "../data";
 import { derivePositions } from "../core/portfolio-tx";
 import { buildAdvisor3, type Adv3Input, type Adv3Valuation } from "../core/advisor3";
-import type { CompanyValuation, ModelBlock } from "../core/fundval";
+import type { CompanyValuation } from "../core/fundval";
 import { money, pct, num } from "../format";
 
 const ETF = ["etf", "fund", "etn", "mutualfund"];
 
 function alignedReturns(hist: Record<string, { as_of: string; close: number }[]>): Record<string, number[]> {
   const maps: Record<string, Map<string, number>> = {};
-  let common: Set<string> | null = null;
+  const keyLists: string[][] = [];
   for (const [t, bars] of Object.entries(hist)) {
     const m = new Map<string, number>(bars.map((b) => [b.as_of, b.close] as [string, number]));
     maps[t] = m;
-    const s = new Set<string>(m.keys());
-    common = common ? new Set<string>([...common].filter((d) => s.has(d))) : s;
+    keyLists.push(Array.from(m.keys()));
   }
-  const dates: string[] = [...(common ?? new Set<string>())].sort();
+  let dates: string[] = keyLists.length ? keyLists[0] : [];
+  for (let i = 1; i < keyLists.length; i++) {
+    const s = new Set<string>(keyLists[i]);
+    dates = dates.filter((d) => s.has(d));
+  }
+  dates = [...dates].sort();
   const out: Record<string, number[]> = {};
   for (const [t, m] of Object.entries(maps)) {
-    const px = dates.map((d) => m.get(d)!);
+    const px = dates.map((d) => m.get(d) ?? 0);
     out[t] = px.slice(1).map((p, i) => (px[i] > 0 ? p / px[i] - 1 : 0));
   }
   return out;
 }
 
-function modelMargin(cv: CompanyValuation | undefined, modelo: string): { m: number | null; c: ModelBlock["confianza"] } {
+function modelMargin(cv: CompanyValuation | undefined, modelo: string): { m: number | null; c: string | null | undefined } {
   const b = cv?.modelos.find((x) => x.modelo === modelo);
   if (!b || b.disponible === false || b.margen_seguridad_pct == null) return { m: null, c: null };
   return { m: b.margen_seguridad_pct / 100, c: b.confianza };
