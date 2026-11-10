@@ -12,10 +12,13 @@ import { CompanyFicha } from "./pages/Ficha";
 import { Lab } from "./pages/Lab";
 import { Forecast } from "./pages/Forecast";
 import { FundamentalValuation } from "./pages/FundamentalValuation";
+import { AdvisorComparison } from "./pages/AdvisorComparison";
 
-// P1.9 — feature flag REVERSIBLE: VITE_FF_FUNDVAL=1 muestra la vista de valoración fundamental
-// (experimental). Ausente o distinto de "1" => oculta (por defecto apagada). No toca nada más.
+// Feature flags REVERSIBLES (por defecto apagados; no tocan nada más):
+//  P1.9 VITE_FF_FUNDVAL=1  => vista de valoración fundamental.
+//  P2.1 VITE_FF_ADVISOR3=1 => Advisor 3.0 (experimental); Advisor 2.2 permanece como referencia.
 const FF_FUNDVAL = import.meta.env.VITE_FF_FUNDVAL === "1";
+const FF_ADVISOR3 = import.meta.env.VITE_FF_ADVISOR3 === "1";
 
 const tabs = [
   { to: "/command", label: "Dashboard" },
@@ -26,6 +29,7 @@ const tabs = [
   { to: "/opportunities", label: "Oportunidades" },
   { to: "/lab", label: "Laboratorio" },
   ...(FF_FUNDVAL ? [{ to: "/fundamental", label: "Valoración ⚗" }] : []),
+  ...(FF_ADVISOR3 ? [{ to: "/advisor3", label: "Advisor 3.0 ⚗" }] : []),
 ];
 
 export default function App() {
@@ -91,6 +95,7 @@ export default function App() {
           <Route path="/forecast" element={<Forecast />} />
           <Route path="/lab" element={<Lab />} />
           {FF_FUNDVAL && <Route path="/fundamental" element={<FundamentalValuation />} />}
+          {FF_ADVISOR3 && <Route path="/advisor3" element={<AdvisorComparison />} />}
         </Routes>
       </main>
     </div>
