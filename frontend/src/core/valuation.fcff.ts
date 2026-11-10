@@ -152,7 +152,7 @@ export function fairValueFcff(base: CompanyBase, a: Assumptions, m: MarketParams
   const spread = fv > 0 ? (opt - cons) / fv : 99;
   let confidence: "alta" | "media" | "baja";
   if (base.eligibility === "degraded" || spread > 2.0 || baseS.projection.terminalWeight > 0.75) confidence = "baja";
-  else if (spread > 1.1 || baseS.projection.terminalWeight > 0.6) confidence = "media";
+  else if (spread > 1.0 || baseS.projection.terminalWeight >= 0.6) confidence = "media";
   else confidence = "alta";
 
   return {
