@@ -55,6 +55,29 @@ def test_incoherent_implied_margin_falls_back_and_degrades():
     assert abs(p["m"][0] - 0.30) < 1e-9   # cae a m0
 
 
+def test_implausible_consensus_level_flagged_but_rate_used():
+    # nivel rev_cy en escala errónea (9.5 vs base 1000) pero tasa declarada sana => se usa la tasa, se marca
+    c = Consensus(currency="USD", rev_cy=9.5, g_cy=0.30, g_ny=0.20, eps_cy=2.0, eps_ny=2.5, n_analysts=28)
+    p = consensus_path(_b(), _a(), c, gT=0.041)
+    assert p["available"] and abs(p["g"][0] - 0.30) < 1e-9   # usa la TASA, no el nivel
+    assert any("implausible" in d for d in p["data_quality"])
+
+
+def test_absurd_derived_growth_abstains():
+    # sin tasa declarada y nivel roto => g1 derivado absurdo => abstención (no FV disparatado)
+    c = Consensus(currency="USD", rev_cy=70000.0, eps_cy=2.0)  # 70x base => g1=69
+    p = consensus_path(_b(), _a(), c, gT=0.041)
+    assert p["available"] is False and p["confidence"] == "na"
+
+
+def test_eps_zero_treated_as_missing():
+    c = Consensus(currency="USD", rev_cy=1200.0, rev_ny=1400.0, g_cy=0.20, g_ny=0.17,
+                  eps_cy=0.0, eps_ny=0.0, n_analysts=29)
+    p = consensus_path(_b(), _a(), c, gT=0.041)
+    assert p["available"] and abs(p["m"][0] - 0.30) < 1e-9   # eps=0 => margen m0 (no 'incoherente')
+    assert p["confidence"] == "baja"
+
+
 def test_combined_weights_blend_documented():
     assert abs(COMBINED_WEIGHTS[0] - 0.70) < 1e-9 and COMBINED_WEIGHTS[4] == 0.0
     c = Consensus(currency="USD", rev_cy=1200.0, rev_ny=1400.0, g_cy=0.20, g_ny=0.17,

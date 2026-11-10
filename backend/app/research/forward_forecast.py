@@ -69,40 +69,63 @@ def _fade(start: float, end: float, i: int, i0: int, years: int) -> float:
     return start + (end - start) * (i - i0) / (years - i0)
 
 
+# Banda de crecimiento anual plausible para estas megacaps. Fuera de ella, el dato de consenso se
+# considera no fiable (p.ej. nivel de ingresos de consenso en escala errónea => tasa derivada absurda).
+GROWTH_CAP = 0.80
+GROWTH_FLOOR = -0.50
+
+
+def _plausible_growth(g: Optional[float]) -> bool:
+    return g is not None and GROWTH_FLOOR <= g <= GROWTH_CAP
+
+
 def consensus_path(base: Base, a: Assump, c: Consensus, gT: float) -> dict:
-    """Escenario A. Años 1-2 del consenso (ingresos + margen reconciliado); 3..N fade a terminal.
-    Devuelve g[], m[], y metadatos de confianza/procedencia."""
+    """Escenario A. Usa la TASA de crecimiento declarada por el consenso (NO los niveles absolutos
+    de ingresos, poco fiables/escala errónea en el proveedor); años 1-2 de consenso, 3..N fade a
+    terminal. El margen se reconcilia desde el EPS contra la revenue DERIVADA (reportado×tasa), no
+    contra el nivel de consenso. Controles de moneda, plausibilidad y coherencia degradan o abstienen."""
     years = a.years
     notes: List[str] = []
+    data_quality: List[str] = []
     conf = "media"
-    # ---- crecimiento ----
+    # ---- control de moneda (primero: si no coincide con los flujos, abstención) ----
+    if c.currency and c.currency != base.ccy:
+        return {"available": False, "reason": f"moneda de consenso {c.currency} ≠ moneda de flujos {base.ccy}; abstención",
+                "confidence": "na", "data_quality": data_quality}
+    # ---- data-quality de NIVELES (solo para MARCAR; no se usan para el crecimiento) ----
+    if c.rev_cy and not (0.3 * base.revenue <= c.rev_cy <= 3.0 * base.revenue):
+        data_quality.append(f"nivel rev_cy de consenso implausible vs reportado (ratio {c.rev_cy/base.revenue:.3f}); "
+                            "se ignora el NIVEL y se usa la TASA declarada")
+    # ---- crecimiento: tasa declarada; fallback a nivel solo si no hay tasa ----
     g1 = c.g_cy if c.g_cy is not None else ((c.rev_cy / base.revenue - 1.0) if c.rev_cy else None)
     g2 = c.g_ny if c.g_ny is not None else ((c.rev_ny / c.rev_cy - 1.0) if (c.rev_ny and c.rev_cy) else None)
-    if g1 is None:
-        return {"available": False, "reason": "sin ingresos de consenso (CY)", "confidence": "na"}
-    if g2 is None:
-        g2 = gT + (g1 - gT) * 0.6   # sin NY: decaimiento suave del CY
-        notes.append("NY ausente: g2 estimado por decaimiento de g1")
+    if not _plausible_growth(g1):
+        return {"available": False, "reason": f"crecimiento CY de consenso no plausible ({g1}); no utilizable",
+                "confidence": "na", "data_quality": data_quality}
+    if not _plausible_growth(g2):
+        g2 = gT + (g1 - gT) * 0.6   # sin NY fiable: decaimiento suave del CY
+        notes.append("NY ausente/implausible: g2 por decaimiento de g1")
         conf = "baja"
     g = [g1, g2] + [_fade(g2, gT, i, 2, years) for i in range(3, years + 1)]
-    # ---- margen (reconciliación EPS→EBIT, acotado) ----
-    rec_cy = reconcile_eps_to_ebit(c.eps_cy, base.shares, c.rev_cy, base.interest, base.tax_rate)
-    rec_ny = reconcile_eps_to_ebit(c.eps_ny, base.shares, c.rev_ny, base.interest, base.tax_rate)
+    # ---- margen: reconciliación EPS→EBIT contra revenue DERIVADA (reportado×tasa), acotado ----
+    rev_y1 = base.revenue * (1 + g1)
+    rev_y2 = rev_y1 * (1 + g2)
+    eps_cy = c.eps_cy if (c.eps_cy and c.eps_cy > 0) else None   # eps<=0/ausente => sin reconciliación
+    eps_ny = c.eps_ny if (c.eps_ny and c.eps_ny > 0) else None
+    rec_cy = reconcile_eps_to_ebit(eps_cy, base.shares, rev_y1, base.interest, base.tax_rate)
+    rec_ny = reconcile_eps_to_ebit(eps_ny, base.shares, rev_y2, base.interest, base.tax_rate)
     m1, ok1 = _coherent_margin(rec_cy["margin"] if rec_cy else None, base.ebit_margin0)
     m2, ok2 = _coherent_margin(rec_ny["margin"] if rec_ny else None, base.ebit_margin0)
     if ok1 is False or ok2 is False:
         notes.append("margen EBIT implícito del consenso INCOHERENTE vs reportado: se usa m0 y se degrada confianza")
         conf = "baja"
     if rec_cy is None:
-        notes.append("sin EPS de consenso: margen = m0 reportado")
+        notes.append("sin EPS de consenso utilizable: margen = m0 reportado"); conf = "baja" if conf == "media" else conf
     m = [m1, m2] + [_fade(m2, a.margin_terminal, i, 2, years) for i in range(3, years + 1)]
-    # ---- controles de moneda y período fiscal ----
-    if c.currency and c.currency != base.ccy:
-        return {"available": False, "reason": f"moneda de consenso {c.currency} ≠ moneda de flujos {base.ccy}; abstención",
-                "confidence": "na"}
     return {"available": True, "g": g, "m": m, "confidence": conf, "notes": notes,
-            "reconcile": {"cy": rec_cy, "ny": rec_ny},
-            "provenance": {"g1": "consenso CY", "g2": "consenso NY" if c.g_ny is not None or c.rev_ny else "derivado",
+            "data_quality": data_quality, "reconcile": {"cy": rec_cy, "ny": rec_ny},
+            "provenance": {"g1": "tasa consenso CY", "g2": "tasa consenso NY" if c.g_ny is not None else "derivado",
+                           "revenue_for_margin": "reportado×tasa (no nivel de consenso)",
                            "margin": "reconciliado EPS→EBIT (acotado)" if rec_cy else "m0 reportado",
                            "n_analysts": c.n_analysts}}
 
