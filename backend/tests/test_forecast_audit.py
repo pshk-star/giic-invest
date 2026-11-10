@@ -63,6 +63,24 @@ def test_paired_insufficient_flagged():
     assert r.get("insuficiente") is True
 
 
+def test_decompose_point_exact_reconciliation():
+    from app.research.forecast_audit import decompose_point
+    # FCFF = Rev·m·(1−t) − R. Construyo f y a con t distinta vía fcff/reinv/ebit coherentes.
+    def mk(rev, m, t, R):
+        ebit = rev * m; nopat = ebit * (1 - t); fcff = nopat - R
+        return rev, m, ebit, R, fcff
+    rev_f, m_f, ebit_f, R_f, fcff_f = mk(120, 0.32, 0.16, 7)
+    rev_a, m_a, ebit_a, R_a, fcff_a = mk(100, 0.30, 0.15, 5)
+    pt = {"rev_f": rev_f, "rev_a": rev_a, "margin_f": m_f, "margin_a": m_a,
+          "ebit_f": ebit_f, "ebit_a": ebit_a, "reinv_f": R_f, "reinv_a": R_a,
+          "fcff_f": fcff_f, "fcff_a": fcff_a}
+    d = decompose_point(pt)
+    recon = d["rev"] + d["margin"] + d["tax"] + d["reinv"] + d["interaction"]
+    assert abs(recon - d["total"]) < 1e-9                      # reconciliación exacta
+    assert abs(d["total"] - (fcff_f - fcff_a) / rev_a) < 1e-9
+    assert abs(d["reinv"] - (-(R_f - R_a) / rev_a)) < 1e-9     # mayor reinversión ⇒ contribución negativa
+
+
 def test_independence_counts():
     pts = [_pt("X", "2020", h, "A", 100, 100, 10, 10) for h in (1, 2, 3)]
     pts += [_pt("X", "2021", h, "A", 100, 100, 10, 10) for h in (1, 2, 3)]

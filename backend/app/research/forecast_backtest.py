@@ -77,6 +77,7 @@ def backtest_company(ticker: str, ccy: str, series: List[dict], sector: str = "O
                 a_rev = series[j]["revenue"]; a_m = series[j].get("ebit_margin")
                 a_ebit = series[j].get("ebit"); a_reinv = _reinvestment(series[j])
                 a_fcff = actual_fcff(series, j)
+                sj = series[j]
                 f = proj[h]
                 pts.append({
                     "ticker": ticker, "ccy": ccy, "sector": sector, "fx_usd": fx,
@@ -87,6 +88,9 @@ def backtest_company(ticker: str, ccy: str, series: List[dict], sector: str = "O
                     "margin_f": f.get("ebit_margin"), "margin_a": a_m,
                     "ebit_f": f.get("ebit"), "ebit_a": a_ebit,
                     "reinv_f": f.get("reinvest"), "reinv_a": a_reinv,
+                    # componentes crudos del año real para diagnóstico de reinversión (#3)
+                    "capex_a": (abs(sj["capex"]) if sj.get("capex") is not None else None),
+                    "dna_a": sj.get("dna"), "wc_a": sj.get("wc_change"), "s2c_used": proj.get("s2c"),
                     "fcff_f": f.get("fcff"), "fcff_a": a_fcff,
                     # error relativo heredado (para continuidad con P1.8)
                     "err_rev": rel_error(f["revenue"], a_rev),

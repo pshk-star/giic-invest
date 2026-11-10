@@ -132,6 +132,7 @@ def project(model: str, series: List[dict], ti: int, gT: float,
     for h in horizons:
         out[h] = cum.get(h)
     out["g1"] = g1
+    out["s2c"] = s2c
     return out
 
 

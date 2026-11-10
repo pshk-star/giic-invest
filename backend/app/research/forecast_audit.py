@@ -149,6 +149,110 @@ def paired_cluster_bootstrap(points: List[dict], m1: str, m2: str, comp: str,
 COMPONENTS = ["rev", "margin", "ebit", "reinv", "fcff"]
 
 
+# ---------------------------------------------------------------------------
+# P1.8.2 — descomposición causal EXACTA del error de FCFF.
+# FCFF = Rev·m·(1−t) − R.  Error = FCFF_f − FCFF_a. Baseline = actual; efectos de primer orden
+# + término de INTERACCIÓN explícito (remanente exacto, sin residual oculto).
+# ---------------------------------------------------------------------------
+def decompose_point(pt: dict) -> Optional[dict]:
+    rev_f, rev_a = pt.get("rev_f"), pt.get("rev_a")
+    m_f, m_a = pt.get("margin_f"), pt.get("margin_a")
+    ebit_f, ebit_a = pt.get("ebit_f"), pt.get("ebit_a")
+    reinv_f, reinv_a = pt.get("reinv_f"), pt.get("reinv_a")
+    fcff_f, fcff_a = pt.get("fcff_f"), pt.get("fcff_a")
+    if None in (rev_f, rev_a, m_f, m_a, ebit_f, ebit_a, reinv_f, reinv_a, fcff_f, fcff_a):
+        return None
+    if not (rev_a and rev_f and ebit_a and ebit_f):
+        return None
+    # tasa fiscal efectiva recuperada: NOPAT = FCFF + reinversión ; t = 1 − NOPAT/EBIT
+    t_f = 1 - (fcff_f + reinv_f) / ebit_f
+    t_a = 1 - (fcff_a + reinv_a) / ebit_a
+    # efectos de primer orden (baseline actual)
+    c_rev = m_a * (1 - t_a) * (rev_f - rev_a)              # ingresos (NOPAT via Rev)
+    c_margin = rev_a * (1 - t_a) * (m_f - m_a)             # margen EBIT
+    c_tax = rev_a * m_a * (-(t_f - t_a))                   # impuestos (mayor t ⇒ menor FCFF)
+    c_reinv = -(reinv_f - reinv_a)                         # reinversión (mayor R ⇒ menor FCFF)
+    total = fcff_f - fcff_a
+    interaction = total - (c_rev + c_margin + c_tax + c_reinv)
+    s = rev_a
+    return {"rev": c_rev / s, "margin": c_margin / s, "tax": c_tax / s, "reinv": c_reinv / s,
+            "interaction": interaction / s, "total": total / s}
+
+
+def bias_decomposition(points: List[dict], model: str, horizon: Optional[int] = None) -> dict:
+    sub = [p for p in points if p["model"] == model and (horizon is None or p["h"] == horizon)]
+    decs = [d for d in (decompose_point(p) for p in sub) if d]
+    if not decs:
+        return {"n": 0}
+    keys = ["rev", "margin", "tax", "reinv", "interaction", "total"]
+    out = {"n": len(decs)}
+    for k in keys:
+        vals = [d[k] for d in decs]
+        out[k] = {"mediana": round(median(vals), 4), "media": round(sum(vals) / len(vals), 4)}
+    # reconciliación exacta: suma de componentes == total (por construcción)
+    recon = [abs((d["rev"] + d["margin"] + d["tax"] + d["reinv"] + d["interaction"]) - d["total"]) for d in decs]
+    out["max_error_reconciliacion"] = round(max(recon), 9)
+    return out
+
+
+def reinvestment_analysis(points: List[dict], model: str) -> dict:
+    sub = [p for p in points if p["model"] == model and p.get("reinv_f") is not None
+           and p.get("reinv_a") is not None and p.get("rev_a")]
+    if not sub:
+        return {"n": 0}
+    diff = [(p["reinv_f"] - p["reinv_a"]) / p["rev_a"] for p in sub]       # >0 ⇒ sobreestima reinversión
+    rf = [p["reinv_f"] / p["rev_a"] for p in sub]
+    ra = [p["reinv_a"] / p["rev_a"] for p in sub]
+    # composición del R real (como % de ingresos): capex, −D&A, ΔWC
+    comp = [p for p in sub if p.get("capex_a") is not None and p.get("dna_a") is not None and p.get("wc_a") is not None]
+    cx = [p["capex_a"] / p["rev_a"] for p in comp]
+    dn = [p["dna_a"] / p["rev_a"] for p in comp]
+    wc = [p["wc_a"] / p["rev_a"] for p in comp]
+    s2c = [p["s2c_used"] for p in sub if p.get("s2c_used")]
+    return {"n": len(sub),
+            "reinv_f_pct_ingresos_mediana": round(median(rf), 4),
+            "reinv_a_pct_ingresos_mediana": round(median(ra), 4),
+            "sobreestimacion_mediana_pct_ingresos": round(median(diff), 4),
+            "composicion_R_real_%ingresos": {"capex": round(median(cx), 4) if cx else None,
+                                             "D&A": round(median(dn), 4) if dn else None,
+                                             "deltaWC": round(median(wc), 4) if wc else None},
+            "s2c_usado_mediana": round(median(s2c), 3) if s2c else None}
+
+
+def bias_robustness(points: List[dict], model: str) -> dict:
+    """Bias de FCFF escalado por ingresos (mediana del 'total' de la descomposición), robustez."""
+    def med_total(pts):
+        decs = [d for d in (decompose_point(p) for p in pts) if d]
+        return round(median([d["total"] for d in decs]), 4) if decs else None
+    base = [p for p in points if p["model"] == model]
+    companies = sorted({p["ticker"] for p in base})
+    loo = {}
+    for c in companies:
+        loo[c] = med_total([p for p in base if p["ticker"] != c])
+    loo_vals = [v for v in loo.values() if v is not None]
+    by_sector = {}
+    for sec in sorted({p.get("sector", "Otro") for p in base}):
+        by_sector[sec] = med_total([p for p in base if p.get("sector") == sec])
+    by_h = {f"h{h}": med_total([p for p in base if p["h"] == h]) for h in (1, 2, 3)}
+    pos = med_total([p for p in base if (p.get("fcff_a") or 0) > 0])
+    neg = med_total([p for p in base if (p.get("fcff_a") or 0) <= 0])
+    return {"global": med_total(base),
+            "leave_one_out_rango": [min(loo_vals), max(loo_vals)] if loo_vals else None,
+            "por_sector": by_sector, "por_horizonte": by_h,
+            "fcff_real_positivo": pos, "fcff_real_negativo": neg,
+            "nota": "valores = mediana del error FCFF escalado por ingresos (negativo ⇒ subestima)"}
+
+
+def bias_audit(points: List[dict]) -> dict:
+    out = {}
+    for model in ("A", "D"):
+        out[model] = {"descomposicion_global": bias_decomposition(points, model),
+                      "descomposicion_por_horizonte": {f"h{h}": bias_decomposition(points, model, h) for h in (1, 2, 3)},
+                      "reinversion": reinvestment_analysis(points, model),
+                      "robustez": bias_robustness(points, model)}
+    return out
+
+
 def audit(points: List[dict]) -> dict:
     out = {"independencia": independence(points), "por_componente": {}, "fcff_acumulado": {},
            "comparaciones_emparejadas": {}}
@@ -172,7 +276,8 @@ def main(argv=None):
     args = p.parse_args(argv)
     data = json.load(open(args.dump))
     pts = data.get("points", data) if isinstance(data, dict) else data
-    print(json.dumps({"P1.8.1": "auditoría estadística", "n": len(pts), **audit(pts)},
+    print(json.dumps({"P1.8.1": "auditoría estadística", "n": len(pts), **audit(pts),
+                      "P1.8.2_bias": bias_audit(pts)},
                      ensure_ascii=False, indent=1, default=str))
     return 0
 
