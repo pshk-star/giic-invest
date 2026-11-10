@@ -27,6 +27,10 @@ jobs:
         env:
           EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
         run: python -m app.jobs.eodhd_period_diag | tee /tmp/periods.json || true
+      - name: P1.7 sondeo read-only de datos prospectivos EODHD (las 5)
+        env:
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+        run: python -m app.research.eodhd_forward_probe | tee /tmp/fwdprobe.json || true
       - name: Dry-run enriquecimiento EODHD (comparación sin escribir)
         env:
           EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
