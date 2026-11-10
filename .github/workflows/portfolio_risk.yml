@@ -1,0 +1,26 @@
+name: GIIC P2.0 riesgo de portafolio (métricas, sin recomendaciones)
+
+# Corre el motor de riesgo sobre price_history (Supabase). Solo lectura. No genera recomendaciones.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  risk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install httpx
+      - name: Reporte de riesgo de portafolio
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python -m app.jobs.portfolio_risk_report
