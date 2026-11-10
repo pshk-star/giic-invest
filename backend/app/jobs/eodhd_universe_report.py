@@ -207,6 +207,7 @@ def dump_advisor() -> dict:
     inst = inst + cinst
     funds = w.select_rows("fundamentals", select="ticker,payload", params={"order": "ticker", "ticker": finq}) if allf else []
     settings = w.select_rows("settings", select="capital_available,max_weight_per_asset,max_weight_per_sector", params={"order": "user_id"})
+    xray = w.select_rows("etf_holdings", select="etf,ticker,weight,sector,asset_class,name", params={"order": "etf", "etf": inq}) if held else []
     FKEEP = ("pe_ttm", "eps", "eps_annual", "eps_ttm", "fcf_annual", "fcf_ttm", "net_debt",
              "cash_and_sti", "operating_margin", "net_margin", "rev_growth_yoy", "roe", "roic",
              "fcf_yield", "diluted_shares", "market_cap", "currency", "as_of", "source_kind")
@@ -217,7 +218,7 @@ def dump_advisor() -> dict:
         d["enrichment"] = p.get("enrichment"); d["history"] = p.get("history")
         fund_out[(r.get("ticker") or "").upper()] = d
     return {"transactions": txns, "corporate_actions": ca, "prices": prices,
-            "instruments": inst, "scan": scan, "fundamentals": fund_out, "settings": settings}
+            "instruments": inst, "scan": scan, "fundamentals": fund_out, "settings": settings, "xray": xray}
 
 
 def main(argv=None):
