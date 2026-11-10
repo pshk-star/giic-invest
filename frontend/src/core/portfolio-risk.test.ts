@@ -42,7 +42,7 @@ describe("portfolio-risk (paridad con Python)", () => {
 
   it("impacto marginal (reducir A -0.1) coincide con Python", () => {
     const mi = marginalImpact(weights, returns, "A", -0.1, { A: { sector: "T" }, B: { sector: "T" }, C: { sector: "E" } });
-    expect(mi.deltaVol).toBeCloseTo(-0.0132, 4);
+    expect(mi.deltaVol).toBeCloseTo(-0.01328, 4);   // Python sin redondear = -0.013280 (el fixture lo tenía redondeado a -0.0132)
   });
 
   it("beta: activo = 2×benchmark => 2", () => {
