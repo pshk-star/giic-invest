@@ -79,10 +79,12 @@ describe("fcff · sensibilidad, reverse DCF", () => {
     expect(grid[2][1]).toBeLessThan(grid[0][1]);   // WACC +1% < WACC −1%
     expect(grid[1][2]).toBeGreaterThan(grid[1][0]); // gT +0.5pp > gT −0.5pp
   });
-  it("reverse DCF: g1 que iguala el precio es monótono (precio mayor ⇒ g1 mayor)", () => {
-    const g_lo = reverseG1(base(), A, M, 100);
-    const g_hi = reverseG1(base(), A, M, 300);
-    expect(g_hi).toBeGreaterThan(g_lo);
+  it("reverse DCF: precio=FV ⇒ g1≈base; precio mayor ⇒ g1 mayor (monótono)", () => {
+    const fv = valueScenario(base(), A, M).bridge.perShareUsd;
+    const g_base = reverseG1(base(), A, M, fv);        // precio = FV base ⇒ recupera g1 base
+    const g_hi = reverseG1(base(), A, M, fv * 1.6);    // precio por encima ⇒ exige más crecimiento
+    expect(g_base).toBeCloseTo(A.g1, 2);
+    expect(g_hi).toBeGreaterThan(g_base);
   });
 });
 
