@@ -45,20 +45,37 @@ def classify(hist: dict) -> dict:
         v = (hist[p] or {}).get("beforeAfterMarket")
         if v:
             bam_vals[v] = bam_vals.get(v, 0) + 1
-    # PIT estricto exige reportDate en (casi) todos los trimestres con estimación+actual.
     usable = [p for p in periods if (hist[p] or {}).get("epsEstimate") is not None
               and (hist[p] or {}).get("epsActual") is not None
               and (hist[p] or {}).get("reportDate")]
-    strict = len(usable) >= 12 and with_report >= 0.9 * max(1, with_act)
+    structural = len(usable) >= 12 and with_report >= 0.9 * max(1, with_act)
+    # DISTINCIÓN HONESTA (corrección P1.7.2 #7):
+    #  - epsActual en reportDate es un HECHO REPORTADO => PIT genuino.
+    #  - reportDate presente => podemos anclar temporalmente la sorpresa.
+    #  - PERO epsEstimate siendo el CONSENSO DISPONIBLE ANTES del anuncio NO está verificado:
+    #    EODHD NO entrega un historial versionado del consenso; no podemos descartar que el
+    #    estimate del endpoint sea un valor actualizado/retroactivo. Por tanto la SORPRESA es
+    #    PIT en su componente 'actual' y en el drift de precio, pero el componente derivado del
+    #    ESTIMATE (SUE, surprise%) es EXPLORATORIO hasta probar disponibilidad pre-anuncio.
+    surprise_component = "PIT" if structural else "INCOMPLETO"
+    consensus_preannounce = "NO_VERIFICADO"  # requiere fuente con historial versionado del consenso
+    overall = "EXPLORATORIO"  # mientras el consenso pre-anuncio no se verifique, el modelo C es exploratorio
     return {
         "n_quarters": n, "range": [periods[0], periods[-1]] if periods else None,
         "with_reportDate": with_report, "with_beforeAfterMarket": with_bam,
         "beforeAfterMarket_values": bam_vals,
         "with_epsEstimate": with_est, "with_epsActual": with_act,
-        "usable_pit_quarters": len(usable),
-        "classification": "PIT_ESTRICTO" if strict else "EXPLORATORIO",
-        "reason": ("reportDate+estimate+actual presentes en >=12 trimestres"
-                   if strict else "falta reportDate/estimate/actual consistente => exploratorio"),
+        "usable_structural_quarters": len(usable),
+        "componente_sorpresa_actual_pit": surprise_component,
+        "consenso_preanuncio": consensus_preannounce,
+        "classification": overall,
+        "reason": ("Estructura completa (reportDate+estimate+actual en >=12 trimestres): el ACTUAL "
+                   "y el drift de precio son PIT; el ESTIMATE pre-anuncio NO está verificado "
+                   "(EODHD no versiona el consenso) => clasificación global EXPLORATORIA."
+                   if structural else "Falta reportDate/estimate/actual consistente => exploratorio."),
+        "evidencia_requerida_para_pit_estricto": ("historial versionado del consenso con fecha de "
+                   "disponibilidad por estimación (snapshot propio en pit_snapshots a futuro, o una "
+                   "fuente que selle la fecha de cada revisión de consenso ANTES del reporte)."),
         "recent_samples": [{"period": p, **{k: (hist[p] or {}).get(k) for k in
                             ("reportDate", "beforeAfterMarket", "epsEstimate", "epsActual",
                              "epsDifference", "surprisePercent")}} for p in periods[-3:]],

@@ -89,11 +89,15 @@ def test_surprise_pit_classification():
                  "epsEstimate": 1.0, "epsActual": 1.2, "epsDifference": 0.2, "surprisePercent": 20.0}
                  for m in range(1, 7)})
     res = classify(hist)
-    assert res["classification"] == "PIT_ESTRICTO"   # >=12 trimestres con reportDate+est+actual
+    # Honestidad (P1.7.2 #7): estructura completa NO implica PIT estricto del consenso.
+    assert res["classification"] == "EXPLORATORIO"            # consenso pre-anuncio no verificado
+    assert res["componente_sorpresa_actual_pit"] == "PIT"     # el actual/drift sí son PIT
+    assert res["consenso_preanuncio"] == "NO_VERIFICADO"
     assert res["with_beforeAfterMarket"] == res["n_quarters"]
-    # sin reportDate => exploratorio
+    # sin reportDate => exploratorio y componente incompleto
     bad = {"2024-01-01": {"epsEstimate": 1.0, "epsActual": 1.1}}
     assert classify(bad)["classification"] == "EXPLORATORIO"
+    assert classify(bad)["componente_sorpresa_actual_pit"] == "INCOMPLETO"
 
 
 def test_model_c_frozen_spec_not_in_production_plan():

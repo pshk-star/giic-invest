@@ -1,0 +1,34 @@
+name: GIIC P1.7.2 FCFF prospectivo (consenso/GIIC/combinado) — experimental
+
+# Reporte experimental: FV P1.6 vs consenso vs GIIC vs combinado para las 5, con atribución por
+# bloque (crecimiento/márgenes/reinversión/WACC). Consenso EODHD vivo (valora HOY). NO productivo,
+# NO calibrado a mercado. Solo lectura.
+on:
+  workflow_dispatch:
+    inputs:
+      tickers:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  fcff_forward:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-job.txt
+      - name: FCFF prospectivo P1.7.2
+        env:
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.tickers }}" ]; then ARGS="--tickers ${{ inputs.tickers }}"; fi
+          python -m app.research.fcff_forward_report $ARGS
