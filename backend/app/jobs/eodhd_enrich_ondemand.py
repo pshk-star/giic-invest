@@ -48,6 +48,20 @@ def run(ticker: str, commit: bool = False) -> dict:
            "tiene_enrichment": bool((new_payload or {}).get("enrichment")),
            "source_kind": (new_payload or {}).get("source_kind", "edgar+eodhd"),
            "tiene_history": bool((new_payload or {}).get("history"))}
+    fi = (new_payload or {}).get("fcff_inputs") or {}
+    if fi.get("error"):
+        out["fcff_coverage"] = {"error": fi["error"]}
+    elif fi:
+        elig = fi.get("eligibility", {}); merged = fi.get("merged_history", {})
+        last = sorted(merged)[-1] if merged else None
+        extra = (fi.get("extra_by_year", {}) or {}).get(last, {})
+        out["fcff_coverage"] = {
+            "ultimo": last, "elegibilidad": elig.get("status"),
+            "faltan": elig.get("missing_critical"), "na": elig.get("na"), "stale": elig.get("stale"),
+            "merge_state": fi.get("merge_log", {}).get("state"),
+            "campos_presentes": sorted(k for k, v in extra.items() if v.get("value") is not None),
+            "escala_issue": fi.get("integrity", {}).get("shares_scale_issue"),
+        }
     if new_payload is None:
         out["estado"] = "sin_datos (ni EDGAR ni EODHD)"; return out
     if will_write:
