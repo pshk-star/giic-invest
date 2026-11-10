@@ -179,16 +179,36 @@ def main(argv=None):
     res = {"P1.9": "valoración fundamental (experimental, no productiva)", "generado": PRICE_DATE,
            "no_calibrado_a_mercado": True, "resultados": resultados}
     if args.write:
-        # Best-effort: una escritura fallida (p.ej. tabla sin migrar) NO debe perder el payload.
+        # Reutiliza pit_snapshots (infra existente, sin DDL): append-only, dedupe por UNIQUE,
+        # legible por autenticados. kind='fundamental_valuation'; el frontend lee el snapshot más
+        # reciente por ticker. Best-effort: un fallo no pierde el payload (ya impreso).
+        from datetime import datetime, timezone
         try:
             from app.jobs.supabase_writer import SupabaseWriter
             w = SupabaseWriter(os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""))
-            rows = [{"ticker": t, "as_of": PRICE_DATE, "payload": v} for t, v in resultados.items()]
-            n = w.upsert("fundamental_valuation", rows, on_conflict="ticker")
-            res["escritura"] = {"ok": True, "upserted": n, "tabla": "fundamental_valuation"}
+            snap = date.today().isoformat()
+            rows = [{"kind": "fundamental_valuation", "ticker": t, "observation_date": PRICE_DATE,
+                     "published_at": PRICE_DATE, "snapshot_date": snap,
+                     "captured_at": datetime.now(timezone.utc).isoformat(),
+                     "source": "P1.9", "data_version": PRICE_DATE, "payload": v}
+                    for t, v in resultados.items()]
+            n = w.insert_append("pit_snapshots", rows,
+                                on_conflict="kind,ticker,observation_date,snapshot_date")
+            res["escritura"] = {"ok": True, "insertados": n, "tabla": "pit_snapshots",
+                                "kind": "fundamental_valuation", "snapshot_date": snap}
+            # Verificación de lectura (#2): releer de Supabase y comparar FVs con lo calculado.
+            back = w.select_rows("pit_snapshots", select="ticker,payload",
+                                 params={"kind": "eq.fundamental_valuation",
+                                         "snapshot_date": f"eq.{snap}"})
+            def _fvs(cv):
+                return {m["modelo"]: m.get("fair_value_usd") for m in cv.get("modelos", [])
+                        if m.get("fair_value_usd") is not None}
+            stored = {r["ticker"]: _fvs(r["payload"]) for r in back}
+            calc = {t: _fvs(v) for t, v in resultados.items()}
+            match = all(stored.get(t) == calc.get(t) for t in calc)
+            res["verificacion_lectura"] = {"coincide": match, "tickers_releidos": len(stored)}
         except Exception as e:
-            res["escritura"] = {"ok": False, "error": f"{type(e).__name__}: {str(e)[:160]}",
-                                "nota": "¿migración 0014 aplicada en Supabase?"}
+            res["escritura"] = {"ok": False, "error": f"{type(e).__name__}: {str(e)[:160]}"}
     print(json.dumps(res, ensure_ascii=False, indent=1, default=str))
     return 0
 

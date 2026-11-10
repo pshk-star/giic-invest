@@ -68,6 +68,19 @@ export function confidenceTone(c?: string): string {
   return "text-term-muted";
 }
 
+// #4 — un margen de seguridad POSITIVO con confianza BAJA NO debe verse como señal de compra.
+// Regla: solo se colorea en verde (sugiere infravaloración) si la confianza es media/alta. Con
+// confianza baja (o sin confianza), el margen se muestra NEUTRO y etiquetado "no concluyente".
+export interface MarginView { cls: string; label: string; neutral: boolean }
+export function marginView(marginPct: number | null | undefined, confianza?: string): MarginView {
+  if (marginPct == null) return { cls: "text-term-muted", label: "—", neutral: true };
+  const low = confianza === "baja" || confianza == null || confianza === "producción";
+  const base = `margen seg. ${marginPct.toFixed(1)}%`;
+  if (low) return { cls: "text-term-muted", label: `${base} · no concluyente (confianza ${confianza ?? "n/d"})`, neutral: true };
+  if (marginPct > 0) return { cls: "text-emerald-400", label: base, neutral: false };
+  return { cls: "text-rose-400", label: base, neutral: false };
+}
+
 // Lista de modelos disponibles (con FV) para una empresa.
 export function availableModels(c: CompanyValuation): ModelBlock[] {
   return c.modelos.filter((m) => m.disponible !== false && m.fair_value_usd != null);

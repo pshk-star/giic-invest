@@ -433,16 +433,22 @@ export async function getLatestRun(): Promise<any | null> {
   return data?.[0] ?? null;
 }
 
-// P1.9 — Valoración fundamental (experimental). Payload calculado en backend; se renderiza tal cual.
+// P1.9 — Valoración fundamental (experimental). El payload lo calcula el backend y se guarda en
+// pit_snapshots (kind='fundamental_valuation'); aquí se lee el snapshot MÁS RECIENTE por ticker y
+// se renderiza tal cual (sin recálculo en el frontend).
 export async function getFundamentalValuations(): Promise<import("./core/fundval").FundValPayload> {
   const { data, error } = await supabase
-    .from("fundamental_valuation").select("ticker,as_of,payload").order("ticker");
+    .from("pit_snapshots").select("ticker,snapshot_date,observation_date,payload")
+    .eq("kind", "fundamental_valuation")
+    .order("snapshot_date", { ascending: false });
   if (error) throw error;
   const resultados: Record<string, import("./core/fundval").CompanyValuation> = {};
   let generado: string | undefined;
   for (const r of (data ?? []) as any[]) {
-    resultados[r.ticker] = r.payload;
-    generado = r.as_of ?? generado;
+    if (!resultados[r.ticker]) {            // primer visto = snapshot más reciente (orden desc)
+      resultados[r.ticker] = r.payload;
+      generado = generado ?? r.observation_date ?? r.snapshot_date;
+    }
   }
   return { resultados, generado, no_calibrado_a_mercado: true };
 }

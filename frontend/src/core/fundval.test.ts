@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  availableModels, productiveBlock, isRecommendationFree, confidenceTone, MODEL_LABEL,
+  availableModels, productiveBlock, isRecommendationFree, confidenceTone, marginView, MODEL_LABEL,
   type CompanyValuation,
 } from "./fundval";
 
@@ -42,6 +42,19 @@ describe("fundval (render-only helpers)", () => {
     expect(confidenceTone("alta")).toContain("emerald");
     expect(confidenceTone("baja")).toContain("rose");
     expect(MODEL_LABEL["FCFF_corregido"]).toContain("corregida");
+  });
+
+  it("#4: margen positivo con confianza BAJA no se pinta como señal de compra", () => {
+    const low = marginView(49.6, "baja");       // NVDA combinado: +49.6% pero confianza baja
+    expect(low.neutral).toBe(true);
+    expect(low.cls).not.toContain("emerald");    // NO verde
+    expect(low.label).toContain("no concluyente");
+    const good = marginView(20, "media");        // margen positivo con confianza media => verde
+    expect(good.neutral).toBe(false);
+    expect(good.cls).toContain("emerald");
+    const over = marginView(-30, "media");       // sobrevalorado => rose
+    expect(over.cls).toContain("rose");
+    expect(marginView(null, "media").label).toBe("—");
   });
 
   it("payload sin modelos disponibles no rompe (empresa recién creada)", () => {
