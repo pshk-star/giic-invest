@@ -1,0 +1,26 @@
+name: GIIC P1.7.3 diagnóstico de consenso EODHD (read-only)
+
+# Vuelca los campos prospectivos crudos de EODHD para las 5 y los contrasta con lo reportado.
+# Solo lectura; no escribe en Supabase. Para diagnosticar la calidad del consenso (P1.7.3).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install httpx
+      - name: Diagnóstico de consenso EODHD
+        env:
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+        run: python -m app.research.eodhd_consensus_diag
