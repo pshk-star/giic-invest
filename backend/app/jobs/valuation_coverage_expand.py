@@ -50,9 +50,14 @@ def run(write: bool) -> dict:
     scan = w.select_rows("v_latest_scan", select="ticker,sector", params={"order": "rank"})
     scan_tk = [str(r["ticker"]).upper() for r in scan if r.get("ticker")]
     port_tk = w.get_transaction_tickers()
-    existing_rows = w.select_rows("pit_snapshots", select="ticker",
+    existing_rows = w.select_rows("pit_snapshots", select="ticker,payload",
                                   params={"kind": "eq.fundamental_valuation", "order": "ticker"})
-    already = sorted({str(r["ticker"]).upper() for r in existing_rows})
+    # 'already' = solo valoraciones PRODUCTIVAS/P1.9 (origen != P2.4): esas NO se re-escriben (payloads
+    # ricos intactos). Las de origen P2.4 SÍ se re-valoran para incorporar correcciones del driver.
+    already = sorted({str(r["ticker"]).upper() for r in existing_rows
+                      if (r.get("payload") or {}).get("origen") != "P2.4_data_driven"})
+    valued_p24 = sorted({str(r["ticker"]).upper() for r in existing_rows
+                         if (r.get("payload") or {}).get("origen") == "P2.4_data_driven"})
     universe = sorted(set(scan_tk) | set(port_tk) | set(already))
 
     instruments = {str(r["ticker"]).upper(): r for r in
@@ -151,8 +156,8 @@ def run(write: bool) -> dict:
     valued = status_tally["confiable"] + status_tally["experimental"]
     return {
         "as_of_run": time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime()),
-        "cobertura_antes": {"empresas_elegibles": len(eligible), "ya_valoradas": len(already),
-                            "ya_valoradas_tickers": already},
+        "cobertura_antes": {"empresas_elegibles": len(eligible), "ya_valoradas_productivas": len(already),
+                            "ya_valoradas_productivas_tickers": already, "revaloradas_P2.4": len(valued_p24)},
         "procesadas": len(todo),
         "status_tally": status_tally,
         "insuficientes_por_motivo": insuff_reasons,
