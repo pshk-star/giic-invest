@@ -64,15 +64,16 @@ function classify(e: ScanEntry, valExp: ReturnType<typeof governingValuation>, m
 
 // Política específica de ETFs/vehículos (no por FCFF): rol, solapamiento, concentración. Costos y
 // liquidez: no disponibles en los datos ⇒ se explicita, no se inventan.
-function etfPolicy(weight: number, sectorW: number, maxPos: number, maxSector: number, info?: EtfInfo): { action: PositionAction; why: string } {
+// Evalúa cada ETF por su NATURALEZA (rol, solapamiento, peso), no por carecer de FCFF ni por agrupar
+// todos los vehículos en un pseudo-sector. La concentración agregada de vehículos se reporta aparte.
+function etfPolicy(weight: number, maxPos: number, info?: EtfInfo): { action: PositionAction; why: string } {
   const i = info ?? { role: "otro", overlapPct: 0, equityPct: null };
   const roleTxt = i.role === "commodity" ? "exposición a metal/commodity (cobertura/diversificación)"
     : i.role === "equity_amplio" ? "exposición amplia a renta variable" : i.role === "sector" ? "exposición sectorial" : "vehículo";
   const costNote = " Costos (TER) y liquidez: no disponibles en los datos — considéralos antes de operar.";
   if (weight > maxPos) return { action: "REDUCIR", why: `ETF de ${roleTxt} por encima del tope por activo (${(weight * 100).toFixed(0)}% > ${(maxPos * 100).toFixed(0)}%): reducir.` + costNote };
   if (i.role === "equity_amplio" && i.overlapPct > 0.15) return { action: "REDUCIR", why: `ETF de ${roleTxt} con solapamiento alto con tus posiciones directas (${(i.overlapPct * 100).toFixed(0)}%): exposición duplicada, conviene reducir.` + costNote };
-  if (sectorW > maxSector) return { action: "REVISAR", why: `ETF de ${roleTxt} en un sector por encima del límite (${(sectorW * 100).toFixed(0)}%): revisar su rol.` + costNote };
-  return { action: "MANTENER", why: `ETF de ${roleTxt} dentro de límites y sin solapamiento excesivo: cumple su función en la cartera.` + costNote };
+  return { action: "MANTENER", why: `ETF de ${roleTxt} dentro del tope por activo y sin solapamiento excesivo (${(i.overlapPct * 100).toFixed(0)}%): cumple su función en la cartera.` + costNote };
 }
 
 export function buildUnifiedAdvisor(args: BuildAdvisorArgs): AdvisorReport {
@@ -92,8 +93,8 @@ export function buildUnifiedAdvisor(args: BuildAdvisorArgs): AdvisorReport {
   const positions = scanInput.portfolio.positions;
   const portfolioValue = positions.reduce((s, p) => s + p.marketValue, 0) + scanInput.portfolio.cash;
   const weightOf = (mv: number) => (portfolioValue > 0 ? mv / portfolioValue : 0);
-  const sectorWeights: Record<string, number> = {};
-  for (const p of positions) sectorWeights[p.sector ?? "na"] = (sectorWeights[p.sector ?? "na"] ?? 0) + weightOf(p.marketValue);
+  const isEtfAC = (ac?: string | null) => ["etf", "fund", "etn", "mutualfund"].includes((ac ?? "").toLowerCase());
+  const vehicleWeight = positions.filter((p) => isEtfAC(p.assetClass)).reduce((s, p) => s + weightOf(p.marketValue), 0);
 
   const returns = alignReturns(scanInput.priceHistory, positions.map((p) => p.ticker));
   const adv3Input: Adv3Input = {
@@ -105,7 +106,6 @@ export function buildUnifiedAdvisor(args: BuildAdvisorArgs): AdvisorReport {
   const plan = buildAllocationPlan(scanInput, report, contribution);   // asignación ejecutable (productiva)
 
   // --- acciones por posición (una sola decisión; ETF con política propia; recortes cuantificados) ---
-  const isEtfCls = (ac?: string | null) => ["etf", "fund", "etn", "mutualfund"].includes((ac ?? "").toLowerCase());
   const positionRecs: PositionRec[] = adv3.positionDecisions.map((d) => {
     const p = positions.find((x) => x.ticker === d.ticker)!;
     const w = weightOf(p.marketValue);
@@ -114,8 +114,8 @@ export function buildUnifiedAdvisor(args: BuildAdvisorArgs): AdvisorReport {
     // Para reducir/vender, el porqué incluye el detalle CUANTIFICADO (motivos completos); si no, el principal.
     let why = (d.action === "REDUCIR" || d.action === "VENDER") ? d.explain.motivos.join(" ") : (d.explain.motivos[0] ?? "");
     let trimPct = d.trimPct; let trimAmount = d.trimAmount;
-    if (isEtfCls(p.assetClass)) {
-      const pol = etfPolicy(w, sectorWeights[p.sector ?? "na"] ?? w, c.maxPositionWeight, c.maxSectorWeight, args.etfInfo?.[p.ticker]);
+    if (isEtfAC(p.assetClass)) {
+      const pol = etfPolicy(w, c.maxPositionWeight, args.etfInfo?.[p.ticker]);
       action = pol.action; why = pol.why; trimPct = null; trimAmount = null;
     } else {
       const buyCand = passesValueGate(scanInput.valuation[d.ticker], c.minMarginToBuy, execPol) && w < c.maxPositionWeight;
@@ -155,6 +155,7 @@ export function buildUnifiedAdvisor(args: BuildAdvisorArgs): AdvisorReport {
   const risks: string[] = [];
   if (report.hasConcentrationProblem) risks.push("Concentración elevada en la cartera (un nombre o sector por encima del límite).");
   risks.push(`Volatilidad anual estimada ${(report.baseVol * 100).toFixed(0)}%, HHI sector ${report.baseHhiSector.toFixed(3)}.`);
+  if (vehicleWeight > c.maxSectorWeight) risks.push(`Los vehículos (ETF) suman ${(vehicleWeight * 100).toFixed(0)}% de la cartera (incluye renta variable amplia y metales): revisa la concentración agregada en vehículos.`);
   if (researchCandidates.length) risks.push(`${researchCandidates.length} candidata(s) de investigación (FCFF experimental) FUERA de la asignación ejecutable: no se compran hasta tener valoración productiva/análisis profundo.`);
   const needData = positionRecs.filter((p) => p.action === "VENDER" || p.action === "REDUCIR");
   if (needData.length) risks.push("Las ventas/reducciones no incorporan horizonte, costos/impuestos ni alternativas de reinversión (datos no disponibles): considéralos antes de ejecutar.");
