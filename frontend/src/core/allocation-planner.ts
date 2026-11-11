@@ -85,7 +85,8 @@ function priority(e: ScanEntry): number {
   return Math.max(0, (e.margin ?? 0) * (CONF_W[e.confidence ?? "baja"] ?? 0.3));
 }
 
-// Reparte `budget` PROPORCIONAL al atractivo (margen×confianza; NO retorno esperado) para DIVERSIFICAR,
+// HEURÍSTICA (no optimización demostrada): reparte `budget` PROPORCIONAL al atractivo (margen×confianza;
+// NO retorno esperado ni rendimiento optimizado) para DIVERSIFICAR,
 // aplicando topes por empresa, sector, exposición duplicada y valoración experimental. El sobrante de un
 // tope queda en EFECTIVO (no se vuelca en otro nombre). Determinista.
 function distribute(ctx: Ctx, cands: ScanEntry[], budget: number, contribution: number): AllocLeg[] {
@@ -206,7 +207,7 @@ export function buildAllocationPlan(inp: ScanInput, report: ScannerReport, contr
     contribution, cash, portfolioValue, baseVol: ctx.baseVol, baseHhiSector: ctx.baseHhi,
     proposals, chosen, discarded,
     guardrails: [
-      "No optimiza rentabilidad esperada (sin estimaciones predictivas validadas); el priority es atractivo (margen×confianza), no retorno.",
+      "HEURÍSTICA de asignación (margen×confianza), NO optimización demostrada de retornos: no hay estimaciones predictivas validadas y el priority no es un retorno esperado.",
       "Un margen positivo no es compra automática: solo entra el universo accionable (pasó la política de valoración).",
       "La baja confianza se limita al 15% del aporte; la exposición duplicada vía ETF se descarta por encima del 10%.",
       "Límites por empresa y sector respetados; conservación exacta de capital (Σ importes + efectivo = aporte).",
