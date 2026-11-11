@@ -74,7 +74,7 @@ const DIVERSIFY_MIN = 0.002;   // reducción mínima de HHI sector para que un E
 // Umbrales auditables, reutilizables por el Opportunity Scanner (P2.2) sin duplicar criterios.
 export const ADV3_THRESHOLDS = { STUB_W, UNDER, OVER, STRONG_OVER, RISK_TRIM, DISAGREE_MAG, DIVERSIFY_MIN } as const;
 
-export // Desacuerdo entre el DCF productivo y el FCFF experimental. No ignora la discrepancia: la clasifica.
+// Desacuerdo entre el DCF productivo y el FCFF experimental. No ignora la discrepancia: la clasifica.
 export function modelDisagreement(v: Adv3Valuation | undefined): { material: boolean; kind: "direccional" | "magnitud" | null; gap: number | null } {
   if (!v || v.productiveMargin == null || v.fcffMargin == null) return { material: false, kind: null, gap: null };
   const p = v.productiveMargin, f = v.fcffMargin, gap = Math.abs(p - f);
