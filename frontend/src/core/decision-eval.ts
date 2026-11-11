@@ -40,12 +40,6 @@ function priceAsOf(bars: Bar[] | undefined, date: string): number | null {
   return out;
 }
 
-// Serie de cierres en (emission, target] para vol/drawdown de la ventana.
-function windowCloses(bars: Bar[] | undefined, start: string, end: string): number[] {
-  if (!bars) return [];
-  return bars.filter((b) => b.as_of > start && b.as_of <= end).map((b) => b.close);
-}
-
 function ret(p0: number | null, p1: number | null): number | null {
   if (p0 == null || p1 == null || p0 <= 0) return null;
   return p1 / p0 - 1;

@@ -14,6 +14,7 @@ import { Forecast } from "./pages/Forecast";
 import { FundamentalValuation } from "./pages/FundamentalValuation";
 import { AdvisorComparison } from "./pages/AdvisorComparison";
 import { OpportunityScanner } from "./pages/OpportunityScanner";
+import { DecisionHistory } from "./pages/DecisionHistory";
 
 // Feature flags REVERSIBLES (por defecto apagados; no tocan nada más):
 //  P1.9 VITE_FF_FUNDVAL=1  => vista de valoración fundamental.
@@ -22,6 +23,7 @@ import { OpportunityScanner } from "./pages/OpportunityScanner";
 const FF_FUNDVAL = import.meta.env.VITE_FF_FUNDVAL === "1";
 const FF_ADVISOR3 = import.meta.env.VITE_FF_ADVISOR3 === "1";
 const FF_SCANNER = import.meta.env.VITE_FF_SCANNER === "1";
+const FF_DECISIONS = import.meta.env.VITE_FF_DECISIONS === "1";
 
 const tabs = [
   { to: "/command", label: "Dashboard" },
@@ -34,6 +36,7 @@ const tabs = [
   ...(FF_FUNDVAL ? [{ to: "/fundamental", label: "Valoración ⚗" }] : []),
   ...(FF_ADVISOR3 ? [{ to: "/advisor3", label: "Advisor 3.0 ⚗" }] : []),
   ...(FF_SCANNER ? [{ to: "/scanner", label: "Scanner ⚗" }] : []),
+  ...(FF_DECISIONS ? [{ to: "/decisiones", label: "Decisiones ⚗" }] : []),
 ];
 
 export default function App() {
@@ -101,6 +104,7 @@ export default function App() {
           {FF_FUNDVAL && <Route path="/fundamental" element={<FundamentalValuation />} />}
           {FF_ADVISOR3 && <Route path="/advisor3" element={<AdvisorComparison />} />}
           {FF_SCANNER && <Route path="/scanner" element={<OpportunityScanner />} />}
+          {FF_DECISIONS && <Route path="/decisiones" element={<DecisionHistory />} />}
         </Routes>
       </main>
     </div>

@@ -436,6 +436,17 @@ export async function getLatestRun(): Promise<any | null> {
 // P1.9 — Valoración fundamental (experimental). El payload lo calcula el backend y se guarda en
 // pit_snapshots (kind='fundamental_valuation'); aquí se lee el snapshot MÁS RECIENTE por ticker y
 // se renderiza tal cual (sin recálculo en el frontend).
+// P2.6 — registros de decisión (inmutables). Lectura autenticada; el frontend NO escribe (service role).
+export async function getDecisionRecords(): Promise<import("./core/decision-record").DecisionRecord[]> {
+  const { data, error } = await supabase
+    .from("pit_snapshots").select("payload,snapshot_date,captured_at")
+    .eq("kind", "decision_record")
+    .order("snapshot_date", { ascending: false })
+    .order("captured_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((r: any) => r.payload as import("./core/decision-record").DecisionRecord);
+}
+
 export async function getFundamentalValuations(): Promise<import("./core/fundval").FundValPayload> {
   const { data, error } = await supabase
     .from("pit_snapshots").select("ticker,snapshot_date,observation_date,captured_at,payload")

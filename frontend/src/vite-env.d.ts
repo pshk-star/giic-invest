@@ -11,6 +11,8 @@ interface ImportMetaEnv {
   readonly VITE_FF_VALPOLICY?: string;
   // P2.5 — plan de asignación multiposición (experimental, reversible).
   readonly VITE_FF_ALLOC?: string;
+  // P2.6 — historial de decisiones y resultados (experimental, reversible).
+  readonly VITE_FF_DECISIONS?: string;
 }
 interface ImportMeta {
   readonly env: ImportMetaEnv;

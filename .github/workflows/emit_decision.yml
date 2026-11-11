@@ -1,0 +1,38 @@
+name: GIIC P2.6 emitir decisión (rol de servicio)
+
+# Registra una recomendación INMUTABLE (decision_record) reutilizando el motor TS. No ejecuta
+# operaciones; la recomendación es SIMULADA. Idempotente por decisionId.
+on:
+  workflow_dispatch:
+    inputs:
+      aporte:
+        description: "Aporte USD"
+        type: string
+        default: "3000"
+      fallback:
+        description: "FCFF fallback (política P2.4)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  emit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Emitir decisión
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          APORTE: ${{ inputs.aporte }}
+          FF_VALPOLICY: ${{ inputs.fallback && '1' || '0' }}
+        run: npm run emit:decision
