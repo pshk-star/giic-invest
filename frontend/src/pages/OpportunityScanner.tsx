@@ -17,7 +17,14 @@ import type { CompanyValuation } from "../core/fundval";
 import { money, pct, num } from "../format";
 
 const ETF = ["etf", "fund", "etn", "mutualfund"];
-const MAX_UNIVERSE = 35;   // acota las llamadas de historial (reutiliza infra, sin servicios nuevos)
+const HIST_CONCURRENCY = 20;   // concurrencia de historial (sin tope de universo; evita degradar rendimiento)
+
+// Resuelve promesas en lotes para no saturar la red al cargar el universo completo.
+async function inBatches<T, R>(items: T[], size: number, fn: (x: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = [];
+  for (let i = 0; i < items.length; i += size) out.push(...await Promise.all(items.slice(i, i + size).map(fn)));
+  return out;
+}
 
 function kindOf(assetClass: string | null | undefined, sector: string | null | undefined): InstrumentKind {
   if (ETF.includes((assetClass ?? "").toLowerCase())) return "etf";
@@ -49,10 +56,10 @@ export function OpportunityScanner() {
       const txns = await getTransactions();
       const ptk = [...new Set(txns.map((t) => t.ticker.toUpperCase()))];
       const [scan, fv] = await Promise.all([getLatestScan().catch(() => []), getFundamentalValuations()]);
-      // universo = cartera ∪ monitoreadas (scan por rank) ∪ nombres con valoración; acotado
+      // universo = cartera ∪ monitoreadas (scan completo) ∪ nombres con valoración. SIN tope artificial.
       const scanTk = scan.sort((a, b) => a.rank - b.rank).map((s) => s.ticker.toUpperCase());
       const fvTk = Object.keys(fv.resultados);
-      const universe = [...new Set([...ptk, ...scanTk, ...fvTk])].slice(0, MAX_UNIVERSE);
+      const universe = [...new Set([...ptk, ...scanTk, ...fvTk])];
       const [instruments, prices, splits, fundamentals] = await Promise.all([
         getInstruments(universe), getPrices(universe), getCorporateActions(ptk), getFundamentals(universe),
       ]);
@@ -61,9 +68,9 @@ export function OpportunityScanner() {
       const total = positionsAll.reduce((s, p) => s + (p.marketValue ?? 0), 0);
       const cashGuess = 0; // efectivo configurable abajo; el motor lo usa para impacto sobre caja
 
-      // histories (cartera + candidatos acotados)
-      const histTk = [...new Set([...positionsAll.map((p) => p.ticker), ...universe])].slice(0, MAX_UNIVERSE);
-      const histArr = await Promise.all(histTk.map((t) => getPriceHistory(t).catch(() => [])));
+      // histories (cartera + todo el universo), en lotes para no degradar el rendimiento
+      const histTk = [...new Set([...positionsAll.map((p) => p.ticker), ...universe])];
+      const histArr = await inBatches(histTk, HIST_CONCURRENCY, (t) => getPriceHistory(t).catch(() => []));
       const priceHistory: Record<string, { as_of: string; close: number }[]> = {};
       histTk.forEach((t, i) => { priceHistory[t] = histArr[i].map((b) => ({ as_of: b.as_of, close: Number(b.close) })); });
 
@@ -187,6 +194,23 @@ export function OpportunityScanner() {
         cartera sobre el universo monitoreado. <strong>Alimenta Advisor 3.0; no ejecuta operaciones ni decide.</strong>
         Solo el FV productivo con confianza habilita accionabilidad por valor; un margen positivo no es compra automática.
       </div>
+
+      <Panel title={`Cobertura del universo · ${r.coverage.evaluated}/${r.coverage.total} evaluados · ${r.coverage.excluded} excluidos`}>
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4 text-xs mb-2">
+          <div><span className="text-term-muted">Empresas elegibles</span><div className="text-sm">{r.coverage.eligibleCompanies}</div></div>
+          <div><span className="text-term-muted">Con FV productivo / FCFF</span><div className="text-sm">{r.coverage.withProductiveFv} / {r.coverage.withFcff}</div></div>
+          <div><span className="text-term-muted">Con fundamentales / historial</span><div className="text-sm">{r.coverage.withFundamentals} / {r.coverage.withReturns}</div></div>
+          <div><span className="text-term-muted">Bloqueados solo por DCF productivo</span><div className="text-sm text-term-warn">{r.coverage.blockedByProductiveVeto.count}</div></div>
+        </div>
+        <div className="flex flex-wrap gap-2 text-[11px]">
+          {([["accionable", "text-term-accent"], ["atractivo_no_accionable", "text-term-warn"], ["evaluable_no_atractivo", "text-term-muted"], ["no_evaluable", "text-term-crit"]] as const).map(([k, tone]) => (
+            <span key={k} className={`px-2 py-0.5 rounded bg-term-panel2 ${tone}`}>{k.replace(/_/g, " ")}: {r.coverage.classification[k]}</span>
+          ))}
+        </div>
+        {r.coverage.blockedByProductiveVeto.count ? (
+          <div className="text-[11px] text-term-muted mt-2">Bloqueados por DCF antiguo (insumo P2.4): {r.coverage.blockedByProductiveVeto.tickers.join(", ")}.</div>
+        ) : null}
+      </Panel>
 
       <Panel title={`Cartera · valor ${money(r.portfolioValue, "USD")} · vol ${pct(r.baseVol)} · HHI sector ${num(r.baseHhiSector, 3)}${r.hasConcentrationProblem ? " · ⚠ concentración elevada" : ""}`}>
         <div className="flex flex-wrap gap-3 items-center text-xs">

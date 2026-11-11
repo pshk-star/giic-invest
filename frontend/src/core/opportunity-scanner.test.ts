@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildScanner, type ScanInput } from "./opportunity-scanner";
+import { buildAdvisor3, type Adv3Input } from "./advisor3";
 
 const DATES = Array.from({ length: 30 }, (_, k) => `2026-01-${String(k + 1).padStart(2, "0")}`);
 const series = (base: number, amp: number, phase: number) =>
@@ -163,5 +164,78 @@ describe("P2.2 Opportunity Scanner", () => {
     expect(r.dataProvenance.length).toBeGreaterThan(0);
     const acc = r.rankings.find((x) => x.id === "accionable")!;
     expect(acc.entries.map((e) => e.ticker)).not.toContain("NODATA");
+  });
+
+  // ---------- P2.3 — Cobertura y validación end-to-end ----------
+
+  it("P2.3 cobertura: cuenta universo, evaluados, excluidos y disponibilidad de datos", () => {
+    const r = buildScanner(baseInput());
+    expect(r.coverage.total).toBe(8);
+    expect(r.coverage.evaluated).toBe(7);
+    expect(r.coverage.excluded).toBe(1);
+    expect(r.coverage.withProductiveFv).toBe(3);   // NVDA, KO, AAPL
+    expect(r.coverage.withFcff).toBe(1);           // XYZ
+    expect(r.coverage.eligibleCompanies).toBe(6);  // NVDA,KO,AAPL,JPM,XYZ,NODATA (empresa/banco)
+  });
+
+  it("P2.3 clasificación de 4 vías: suma igual al universo total", () => {
+    const r = buildScanner(baseInput());
+    const c = r.coverage.classification;
+    expect(c.no_evaluable + c.evaluable_no_atractivo + c.atractivo_no_accionable + c.accionable).toBe(r.coverage.total);
+    expect(c.no_evaluable).toBeGreaterThanOrEqual(1);   // NODATA
+    expect(c.accionable).toBeGreaterThanOrEqual(1);      // AAPL/KO
+  });
+
+  it("P2.3 bloqueo por DCF productivo: FCFF atractivo + sin FV productivo => atractivo_no_accionable", () => {
+    const inp = baseInput();
+    inp.valuation.JPM = { productiveMargin: null, productiveConfidence: null, fcffMargin: 0.25, fcffConfidence: "media", priceComparable: true };
+    const r = buildScanner(inp);
+    const jpm = r.entries.find((e) => e.ticker === "JPM")!;
+    expect(jpm.blockedByProductiveVeto).toBe(true);
+    expect(jpm.classification).toBe("atractivo_no_accionable");
+    expect(jpm.actionable).toBe(false);                  // la regla NO se cambia en P2.3
+    expect(r.coverage.blockedByProductiveVeto.tickers).toContain("JPM");
+  });
+
+  it("P2.3 FCFF de baja confianza NO cuenta como bloqueo (no es atractivo de verdad)", () => {
+    const r = buildScanner(baseInput());
+    const xyz = r.entries.find((e) => e.ticker === "XYZ")!;   // fcff +30% pero confianza baja
+    expect(xyz.blockedByProductiveVeto).toBe(false);
+  });
+
+  it("P2.3 consistencia Scanner↔Advisor 3.0: un nombre accionable por VALOR es candidato de compra en Advisor 3.0", () => {
+    const inp = baseInput();
+    const r = buildScanner(inp);
+    const ko = r.entries.find((e) => e.ticker === "KO")!;
+    expect(ko.actionable && ko.actionableBasis === "valor").toBe(true);
+    // mismo criterio (passesValueGate) en Advisor 3.0: KO debe aparecer como candidato desplegable
+    const toRet = (bars: { close: number }[]) => bars.slice(1).map((b, i) => bars[i].close > 0 ? b.close / bars[i].close - 1 : 0);
+    const advReturns = Object.fromEntries(inp.portfolio.positions.map((p) => [p.ticker, toRet(inp.priceHistory[p.ticker] ?? [])]));
+    const adv: Adv3Input = {
+      positions: inp.portfolio.positions,
+      cash: 0, contribution: 3000, returns: advReturns,
+      valuation: inp.valuation,
+      quality: Object.fromEntries(inp.portfolio.positions.map((p) => [p.ticker, { eligible: true, fresh: true }])),
+      constraints: inp.constraints,
+    };
+    const a3 = buildAdvisor3(adv);
+    const deployedTickers = new Set(a3.allocation.options.flatMap((o) => o.items.map((i) => i.ticker)));
+    expect(deployedTickers.has("KO")).toBe(true);
+  });
+
+  it("P2.3 rendimiento: evaluar el universo es O(n) y no lanza con universo mayor", () => {
+    const inp = baseInput();
+    // duplica el universo con nombres sintéticos fuera de cartera, con y sin datos
+    for (let i = 0; i < 40; i++) {
+      const t = `SYN${i}`;
+      inp.candidates.push({ ticker: t, name: t, sector: i % 2 ? "Tech" : "Health", country: "US", currency: "USD", assetClass: "equity", kind: "empresa", inPortfolio: false, composite: null });
+      inp.priceHistory[t] = DATES.map((d, k) => ({ as_of: d, close: 50 * (1 + 0.1 * Math.sin(i + k * 0.4)) }));
+      if (i % 3 === 0) inp.valuation[t] = { productiveMargin: 0.12, productiveConfidence: "media", priceComparable: true };
+    }
+    const t0 = Date.now();
+    const r = buildScanner(inp);
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(r.coverage.total).toBe(48);
+    expect(r.coverage.evaluated).toBeGreaterThanOrEqual(47);
   });
 });

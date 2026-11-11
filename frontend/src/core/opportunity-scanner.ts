@@ -8,7 +8,7 @@
 //  - datos faltantes REDUCEN confianza / impiden accionabilidad, nunca inflan el score.
 // Tres clasificaciones SEPARADAS (no un score único opaco): fundamental, diversificación, accionable.
 import {
-  effectiveMargin, modelDisagreement, isEtf, passesValueGate, ADV3_THRESHOLDS,
+  effectiveMargin, modelDisagreement, isEtf, passesValueGate, sufficient, ADV3_THRESHOLDS,
   type Adv3Valuation, type Adv3Constraints, type Adv3Position, type Conf,
 } from "./advisor3";
 import { riskContributions, concentration } from "./portfolio-risk";
@@ -47,6 +47,8 @@ export interface SimPoint {
   cashBefore: number; cashIfFunded: number; exceedsCash: boolean;  // impacto sobre efectivo si se financia con caja
 }
 
+export type ScanClassification = "no_evaluable" | "evaluable_no_atractivo" | "atractivo_no_accionable" | "accionable";
+
 export interface ScanEntry {
   ticker: string; name?: string | null; sector?: string | null; kind: InstrumentKind; inPortfolio: boolean;
   margin: number | null; marginSource: string; confidence: Conf; disagreement: "direccional" | "magnitud" | null;
@@ -54,15 +56,25 @@ export interface ScanEntry {
   fundamentalScore: number | null;
   diversificationScore: number | null;
   actionable: boolean; actionableBasis: "valor" | "diversificador" | null;
+  eligible: boolean;                 // tipo valorable por fundamentales (empresa/banco)
+  classification: ScanClassification;
+  blockedByProductiveVeto: boolean;  // FCFF lo haría atractivo pero el FV productivo (antiguo) lo impide
   reasons: string[]; missing: string[]; whatWouldChange: string[];
   sims: SimPoint[];
 }
 export interface ScanRanking { id: "fundamental" | "diversificacion" | "accionable"; label: string; entries: ScanEntry[]; note: string }
+export interface ScanCoverage {
+  total: number; evaluated: number; excluded: number; eligibleCompanies: number;
+  withAnyValuation: number; withProductiveFv: number; withFcff: number; withFundamentals: number; withReturns: number;
+  classification: Record<ScanClassification, number>;
+  blockedByProductiveVeto: { count: number; tickers: string[] };
+}
 export interface ScannerReport {
   asOf: string;
   universeSize: number; evaluated: number;
   portfolioValue: number; cash: number;
   baseVol: number; baseHhiSector: number; hasConcentrationProblem: boolean;
+  coverage: ScanCoverage;
   entries: ScanEntry[];
   rankings: ScanRanking[];
   excluded: { ticker: string; reason: string }[];
@@ -129,7 +141,15 @@ export function buildScanner(inp: ScanInput, asOf = new Date().toISOString().sli
     return Number(dup.toFixed(4));
   }
 
-  function simulate(c: ScanCandidate, amount: number): SimPoint {
+  // Alinea retornos UNA vez por candidato (no depende del monto): clave para no degradar el rendimiento
+  // al evaluar el universo completo sin tope (P2.3, punto 8).
+  function candidateReturns(c: ScanCandidate): Record<string, number[]> {
+    const inPos = positions.some((p) => p.ticker === c.ticker);
+    const tk = inPos ? positions.map((p) => p.ticker) : [...positions.map((p) => p.ticker), c.ticker];
+    return alignReturns(priceHistory, tk);
+  }
+
+  function simulate(c: ScanCandidate, amount: number, simReturns: Record<string, number[]>): SimPoint {
     const inPos = positions.find((p) => p.ticker === c.ticker);
     const mvBefore = inPos?.marketValue ?? 0;
     const totalAfter = portfolioValue + amount;
@@ -138,7 +158,6 @@ export function buildScanner(inp: ScanInput, asOf = new Date().toISOString().sli
     const nmeta: Record<string, { sector?: string; country?: string; currency?: string }> = { ...meta };
     for (const p of positions) nw[p.ticker] = (p.marketValue + (p.ticker === c.ticker ? amount : 0)) / totalAfter;
     if (!inPos) { nw[c.ticker] = amount / totalAfter; nmeta[c.ticker] = { sector: c.sector ?? "na", country: c.country ?? "na", currency: c.currency ?? "USD" }; }
-    const simReturns = alignReturns(priceHistory, Object.keys(nw));
     const afterRc = riskContributions(nw, simReturns);
     const afterConc = concentration(nw, nmeta, "sector");
     const marginal = afterRc.byPosition[c.ticker]?.contribPct ?? null;
@@ -159,6 +178,8 @@ export function buildScanner(inp: ScanInput, asOf = new Date().toISOString().sli
 
   const entries: ScanEntry[] = [];
   const excluded: { ticker: string; reason: string }[] = [];
+  const cov = { withAnyValuation: 0, withProductiveFv: 0, withFcff: 0, withFundamentals: 0, withReturns: 0, eligibleCompanies: 0 };
+  const blockedTickers: string[] = [];
 
   for (const c of candidates) {
     const val = valuation[c.ticker];
@@ -168,13 +189,26 @@ export function buildScanner(inp: ScanInput, asOf = new Date().toISOString().sli
     const hasReturns = !!priceHistory[c.ticker] && priceHistory[c.ticker].length >= 2;
     const reasons: string[] = []; const missing: string[] = []; const whatWouldChange: string[] = [];
 
+    // cobertura (sobre TODO el universo, antes de excluir)
+    const hasProd = val?.productiveMargin != null;
+    const hasFcff = val?.fcffMargin != null;
+    const hasFund = f.roic != null || f.revGrowth != null || f.netMargin != null;
+    const eligible = c.kind === "empresa" || c.kind === "banco";
+    if (hasProd) cov.withProductiveFv++;
+    if (hasFcff) cov.withFcff++;
+    if (hasProd || hasFcff) cov.withAnyValuation++;
+    if (hasFund) cov.withFundamentals++;
+    if (hasReturns) cov.withReturns++;
+    if (eligible) cov.eligibleCompanies++;
+
     // candidato sin NINGÚN dato utilizable: ni valoración ni historial → excluido (no se inventa score)
     if (em.margin == null && !hasReturns && c.kind !== "etf") {
       excluded.push({ ticker: c.ticker, reason: "sin valoración ni historial de precios: no clasificable" });
       continue;
     }
 
-    const sims = contributions.map((a) => simulate(c, a));
+    const simReturns = candidateReturns(c);
+    const sims = contributions.map((a) => simulate(c, a, simReturns));
     const simMax = sims[sims.length - 1];
 
     // confianza: parte de la valoración; se DEGRADA si faltan fundamentales
@@ -231,11 +265,30 @@ export function buildScanner(inp: ScanInput, asOf = new Date().toISOString().sli
     }
     whatWouldChange.push(fundMissing ? "fundamentales (ROIC/crecimiento/margen) elevarían la confianza." : "un cambio de margen o convergencia de modelos movería la clasificación.");
 
+    // Bloqueado SOLO por el DCF productivo (antiguo): el FCFF lo haría atractivo, pero el FV productivo
+    // falta, es poco atractivo o discrepa direccionalmente. NO se cambia la regla aquí: es el insumo de P2.4.
+    const fcffAttractive = val?.fcffMargin != null && val.fcffMargin >= minMargin && sufficient(val?.fcffConfidence ?? null);
+    const usableProd = em.source === "productivo" && em.margin != null;
+    const blockedByProductiveVeto = eligible && !actionable && !!fcffAttractive
+      && (!usableProd || (em.margin != null && em.margin < minMargin) || dis.kind === "direccional");
+    if (blockedByProductiveVeto) { blockedTickers.push(c.ticker); reasons.push("BLOQUEADO solo por el DCF productivo: el FCFF lo haría atractivo; sin cambiar la regla (insumo de P2.4)."); }
+
+    // Clasificación de 4 vías
+    const attractiveByProd = passesValueGate(val, minMargin);
+    let classification: ScanClassification;
+    if (eligible) {
+      classification = actionable ? "accionable"
+        : (attractiveByProd || blockedByProductiveVeto) ? "atractivo_no_accionable" : "evaluable_no_atractivo";
+    } else {
+      classification = actionable ? "accionable" : (hasReturns ? "evaluable_no_atractivo" : "no_evaluable");
+    }
+
     entries.push({
       ticker: c.ticker, name: c.name, sector: c.sector, kind: c.kind, inPortfolio: c.inPortfolio,
       margin: em.margin, marginSource: em.source, confidence, disagreement: dis.kind,
       quality: { roic: f.roic ?? null, revGrowth: f.revGrowth ?? null, netMargin: f.netMargin ?? null, operatingMargin: f.operatingMargin ?? null, fcfTtm: f.fcfTtm ?? null },
       fundamentalScore, diversificationScore, actionable, actionableBasis,
+      eligible, classification, blockedByProductiveVeto,
       reasons, missing, whatWouldChange, sims,
     });
   }
@@ -266,11 +319,22 @@ export function buildScanner(inp: ScanInput, asOf = new Date().toISOString().sli
       note: "Pasan los controles de Advisor 3.0: empresas por VALOR (FV productivo + confianza, sin desacuerdo material) y ETF por DIVERSIFICACIÓN. Datos insuficientes = no accionable." },
   ];
 
+  const classCounts: Record<ScanClassification, number> = { no_evaluable: excluded.length, evaluable_no_atractivo: 0, atractivo_no_accionable: 0, accionable: 0 };
+  for (const e of entries) classCounts[e.classification]++;
+  const coverage: ScanCoverage = {
+    total: candidates.length, evaluated: entries.length, excluded: excluded.length, eligibleCompanies: cov.eligibleCompanies,
+    withAnyValuation: cov.withAnyValuation, withProductiveFv: cov.withProductiveFv, withFcff: cov.withFcff,
+    withFundamentals: cov.withFundamentals, withReturns: cov.withReturns,
+    classification: classCounts,
+    blockedByProductiveVeto: { count: blockedTickers.length, tickers: blockedTickers.slice().sort() },
+  };
+
   return {
     asOf,
     universeSize: candidates.length, evaluated: entries.length,
     portfolioValue, cash,
     baseVol: Number(baseVol.toFixed(4)), baseHhiSector: Number(baseHhi.toFixed(4)), hasConcentrationProblem: hasConcProblem,
+    coverage,
     entries, rankings, excluded,
     dataProvenance: [
       "universo: v_latest_scan (scanner cuantitativo) ∪ cartera ∪ ETF",
