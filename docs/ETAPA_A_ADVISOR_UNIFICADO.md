@@ -2,7 +2,7 @@
 
 **Estado:** funcional con **datos reales**, experimental y reversible (flag `VITE_FF_UNIFIED`, ruta
 `/asesor`). Reutiliza los motores existentes (Scanner, Advisor 3.0, asignación, política de valoración,
-riesgo) sin duplicar lógica. **Advisor 2.2 y funciones productivas intactas.** CI verde (295 frontend).
+riesgo) sin duplicar lógica. **Advisor 2.2 y funciones productivas intactas.** CI verde (300 frontend).
 Recomendaciones **SIMULADAS**, no ejecutadas.
 
 ---
@@ -33,40 +33,58 @@ acción sobre posición existente, compra nueva y prioridad de investigación. S
 **comparten la misma política** (no hay voces contradictorias). ACUMULAR = posición en cartera
 infravalorada con holgura de peso.
 
-## Resultado real (vista previa, perfil demo moderado, aporte USD 3.000)
+## Correcciones aplicadas (tras revisión) y resultado real
 
-**Resumen:** *"Hoy: desplegar USD 2.129 en 5 nombres y conservar USD 871. 4 a reducir. 5 a revisar."*
-Postura: **desplegar**. Topes 0.30/empresa, 0.45/sector (tolerancia moderado), margen mínimo 0.10.
+Tres correcciones (sin tocar Fair Values ni reconstruir motores), demostradas con **datos reales** y
+**perfil PERSISTIDO** (`perfil_demo: false`, round-trip `settings`→motor; posiciones reales):
 
-**Acciones sobre la cartera (real):** ASML **VENDER** (−49.5%), TSM/NVDA/NFLX **REDUCIR** (−74%/−49%/−42%),
-META **MANTENER** (−8%), ETFs (QQQ, SCHD, GLD, VOO, SLV) **REVISAR** (sin FV; se evalúan por rol).
+**1. No se recomienda comprar lo que está pendiente de análisis.** La asignación EJECUTABLE usa solo
+valoraciones **productivas/confiables**. Los nombres con FCFF experimental (LOW, AMGN, EOG, HD, UPS)
+quedan como **candidatas de investigación — NO comprables**. Taxonomía explícita: compra_recomendada /
+oportunidad_analizada / candidata_investigacion / poco_atractiva / evidencia_insuficiente.
 
-**Dinero nuevo:** LOW $450, AMGN $450, EOG $450, HD $450, UPS $329; efectivo $871.
+**2. VENDER/REDUCIR con sustento.** Ninguna venta automática por margen negativo: sobrevaloración
+**extrema** (≤ −45 %) ⇒ **REDUCIR** por alta sensibilidad, no VENDER; VENDER exige corroboración de un
+2º modelo y datos completos (los datos faltantes NO corroboran). **REDUCIR cuantificado** y con
+incertidumbre explícita (horizonte, costos/impuestos, reinversión no incorporados).
 
-**Oportunidades:** LOW/AMGN/EOG/HD/UPS = *pendiente de análisis* **comprables** (FCFF experimental,
-asignación acotada); FCX/MRK/AMT/PEP/LMT = *pendiente de análisis* no comprables. Ninguna se trata como
-confiable sin análisis profundo, pero tampoco quedan excluidas.
+**3. ETFs por su naturaleza.** Rol (renta variable amplia vs metal/commodity), solapamiento con
+posiciones directas y peso; **no** REVISAR por carecer de FCFF. Costos/liquidez marcados como no
+disponibles. La concentración agregada de vehículos se reporta como riesgo aparte.
 
-**Riesgos:** concentración elevada; vol anual ~23%, HHI sector 0.341; 5 nombres de la asignación se
-apoyan en valoración experimental (acotada a propósito).
+**Ejecución real (perfil persistido, aporte USD 3.000):**
+- **Resumen:** *"Hoy: mantener la cartera y CONSERVAR el efectivo — las oportunidades no superan el
+  umbral; 4 posiciones a reducir."* Postura: **esperar** (dinero nuevo → **efectivo**).
+- **Cartera:** TSM **REDUCIR −37 % (≈$1.720)**, NVDA **−25 % (≈$1.145)**, ASML **−25 % (≈$942)**, NFLX
+  **−21 % (≈$224)** — todas con incertidumbre explícita; **ninguna VENDER**. META MANTENER. ETFs
+  QQQ/SCHD/VOO (renta variable amplia, solapamiento 11,5 %/0 %/9,9 %) y GLD/SLV (metal) **MANTENER**.
+- **Dinero nuevo:** **efectivo $3.000** (ninguna compra sobre valoración incompleta).
+- **Investigación:** LOW, AMGN, EOG, HD, UPS (señal FCFF preliminar; requieren valoración productiva/
+  análisis profundo antes de ser comprables).
 
-**Lectura honesta:** hoy **todas** las compras nuevas son *experimentales* (FCFF), porque solo 5
-empresas tienen FV productivo y están sobrevaloradas. Por eso la asignación es conservadora (sleeves
-pequeños + efectivo). Subir la convicción es exactamente el objetivo de la **Etapa B** (evaluación
-escalonada y ampliación de cobertura fundamental).
+**Por qué ESPERAR es la respuesta honesta hoy:** la evaluación es amplia (universo 54, 35 valoradas),
+pero solo 5 empresas tienen FV productivo (confiable) y están **sobrevaloradas**; el resto tiene FV
+experimental, que **no** habilita compra. Por eso GIIC recomienda efectivo + una lista de investigación,
+en vez de forzar compras. Ampliar la cobertura de evidencia **sólida** es el objetivo de la **Etapa B**.
 
-## Pruebas (`advisor-engine.test.ts`, 11)
+## Pruebas (`advisor-engine.test.ts`, 16)
 
 Perfil: deriva constraints por tolerancia / topes del perfil, capital a invertir, datos faltantes,
 mapeo de settings. Orquestador: una acción por posición; ACUMULAR vs REDUCIR; clasificación
 atractiva/pendiente/poco/insuficiente; asignación integrada con conservación exacta; coherencia (sin
 contradicción); constraints desde el perfil con procedencia; ESPERAR sin oportunidades.
 
-## Criterio de aceptación de la Etapa A — estado
+## Criterios de aceptación de la Etapa A — estado
 
-1. Recomendación por posición ✅  2. Oportunidades priorizadas ✅  3. Asignación concreta ✅
-4. Explicación financiera y de riesgo ✅  5. Pendientes de análisis ✅.
-(El historial verificable, criterio 6, ya existe en P2.6 y se integrará en la Etapa C.)
+Prueba funcional end-to-end (datos reales, perfil persistido) que demuestra:
+- Perfil persistente conectado ✅ (`perfil_demo: false`).
+- Recomendaciones coherentes entre módulos ✅ (una sola política).
+- Ninguna compra basada exclusivamente en valoración incompleta ✅ (experimental → investigación).
+- Ventas y reducciones justificadas y **cuantificadas** ✅ (% y USD, con incertidumbre).
+- ETFs evaluados según su naturaleza ✅ (rol/solapamiento, no por falta de FCFF).
+- Asignación de capital coherente con las recomendaciones ✅ (efectivo, sin forzar compras).
+- Separación simulación/ejecución ✅ (`simulated`).
+- Ninguna dependencia de parámetros financieros manuales ✅ (topes del perfil/tolerancia).
 
 ## Archivos y siguiente paso
 
