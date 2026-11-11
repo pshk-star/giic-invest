@@ -111,14 +111,15 @@ export function buildUnifiedAdvisor(args: BuildAdvisorArgs): AdvisorReport {
     const w = weightOf(p.marketValue);
     const g = governingValuation(scanInput.valuation[d.ticker], execPol);
     let action = d.action as PositionAction;
-    let why = d.explain.motivos[0] ?? "";
+    // Para reducir/vender, el porqué incluye el detalle CUANTIFICADO (motivos completos); si no, el principal.
+    let why = (d.action === "REDUCIR" || d.action === "VENDER") ? d.explain.motivos.join(" ") : (d.explain.motivos[0] ?? "");
     let trimPct = d.trimPct; let trimAmount = d.trimAmount;
     if (isEtfCls(p.assetClass)) {
       const pol = etfPolicy(p.ticker, w, sectorWeights[p.sector ?? "na"] ?? w, c.maxPositionWeight, c.maxSectorWeight, args.etfInfo?.[p.ticker]);
       action = pol.action; why = pol.why; trimPct = null; trimAmount = null;
     } else {
       const buyCand = passesValueGate(scanInput.valuation[d.ticker], c.minMarginToBuy, execPol) && w < c.maxPositionWeight;
-      if (action === "MANTENER" && buyCand) { action = "ACUMULAR"; why = `Infravalorada (FV productivo) con holgura de peso: acumular. ${why}`; }
+      if (action === "MANTENER" && buyCand) { action = "ACUMULAR"; why = `Infravalorada (FV productivo) con holgura de peso: acumular. ${d.explain.motivos[0] ?? ""}`; }
     }
     return { ticker: d.ticker, name: p.name, sector: p.sector ?? null, action, weight: Number(w.toFixed(4)),
              riskContribPct: Number((d.riskContribPct ?? 0).toFixed(4)), margin: g.margin, source: g.source, confidence: g.conf,
