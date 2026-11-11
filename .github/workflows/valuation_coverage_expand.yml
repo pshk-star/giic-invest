@@ -1,0 +1,33 @@
+name: GIIC P2.4 ampliación de cobertura de valoración (data-driven)
+
+# Corre el driver data-driven sobre el universo elegible (EODHD reportado) y mide cobertura
+# antes/después. 'dry_run=true' NO escribe. No modifica valuation.ts ni Advisor. Nada es recomendación.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "No escribir (solo diagnóstico)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  expand:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install httpx
+      - name: Ampliar cobertura de valoración
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+        run: python -m app.jobs.valuation_coverage_expand ${{ inputs.dry_run && '--dry-run' || '' }}
