@@ -6,7 +6,7 @@ import { Panel } from "../components/Panel";
 import { getDecisionRecords, getPriceHistory } from "../data";
 import type { DecisionRecord } from "../core/decision-record";
 import { evaluateDecision, type PriceMap, type DecisionEvaluation } from "../core/decision-eval";
-import { money, pct, num } from "../format";
+import { money, pct } from "../format";
 
 export function DecisionHistory() {
   const [recs, setRecs] = useState<DecisionRecord[] | null>(null);
