@@ -64,7 +64,7 @@ function classify(e: ScanEntry, valExp: ReturnType<typeof governingValuation>, m
 
 // Política específica de ETFs/vehículos (no por FCFF): rol, solapamiento, concentración. Costos y
 // liquidez: no disponibles en los datos ⇒ se explicita, no se inventan.
-function etfPolicy(ticker: string, weight: number, sectorW: number, maxPos: number, maxSector: number, info?: EtfInfo): { action: PositionAction; why: string } {
+function etfPolicy(weight: number, sectorW: number, maxPos: number, maxSector: number, info?: EtfInfo): { action: PositionAction; why: string } {
   const i = info ?? { role: "otro", overlapPct: 0, equityPct: null };
   const roleTxt = i.role === "commodity" ? "exposición a metal/commodity (cobertura/diversificación)"
     : i.role === "equity_amplio" ? "exposición amplia a renta variable" : i.role === "sector" ? "exposición sectorial" : "vehículo";
@@ -115,7 +115,7 @@ export function buildUnifiedAdvisor(args: BuildAdvisorArgs): AdvisorReport {
     let why = (d.action === "REDUCIR" || d.action === "VENDER") ? d.explain.motivos.join(" ") : (d.explain.motivos[0] ?? "");
     let trimPct = d.trimPct; let trimAmount = d.trimAmount;
     if (isEtfCls(p.assetClass)) {
-      const pol = etfPolicy(p.ticker, w, sectorWeights[p.sector ?? "na"] ?? w, c.maxPositionWeight, c.maxSectorWeight, args.etfInfo?.[p.ticker]);
+      const pol = etfPolicy(w, sectorWeights[p.sector ?? "na"] ?? w, c.maxPositionWeight, c.maxSectorWeight, args.etfInfo?.[p.ticker]);
       action = pol.action; why = pol.why; trimPct = null; trimAmount = null;
     } else {
       const buyCand = passesValueGate(scanInput.valuation[d.ticker], c.minMarginToBuy, execPol) && w < c.maxPositionWeight;
