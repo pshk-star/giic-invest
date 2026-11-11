@@ -109,6 +109,10 @@ def run(write: bool) -> dict:
             per_ticker.append({"ticker": t, "status": "error_fuente", "detalle": f"{type(e).__name__}"})
             continue
 
+        # observation_date = fecha fiscal REAL del dato (no el día de captura). Da una clave única
+        # distinta por versión de dato y permite re-insertar valores corregidos (append-only).
+        rev_periods = sorted((series.get("revenue") or {}).keys())
+        obs_date = rev_periods[-1] if rev_periods else today
         r = build(t, ccy or "", px, series, adr=adr)
         status_tally[r.status] = status_tally.get(r.status, 0) + 1
         rec = {"ticker": t, "status": r.status, "fv_usd": r.fair_value_usd, "margen_pct": r.margin_pct,
@@ -131,7 +135,7 @@ def run(write: bool) -> dict:
             }],
             "no_calibrado_a_mercado": True,
         }
-        rows_to_write.append({"kind": "fundamental_valuation", "ticker": t, "observation_date": today,
+        rows_to_write.append({"kind": "fundamental_valuation", "ticker": t, "observation_date": obs_date,
                               "published_at": today, "snapshot_date": today,
                               "captured_at": datetime.now(timezone.utc).isoformat(),
                               "source": "P2.4", "data_version": today, "payload": payload})

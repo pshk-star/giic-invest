@@ -438,14 +438,15 @@ export async function getLatestRun(): Promise<any | null> {
 // se renderiza tal cual (sin recálculo en el frontend).
 export async function getFundamentalValuations(): Promise<import("./core/fundval").FundValPayload> {
   const { data, error } = await supabase
-    .from("pit_snapshots").select("ticker,snapshot_date,observation_date,payload")
+    .from("pit_snapshots").select("ticker,snapshot_date,observation_date,captured_at,payload")
     .eq("kind", "fundamental_valuation")
-    .order("snapshot_date", { ascending: false });
+    .order("snapshot_date", { ascending: false })
+    .order("captured_at", { ascending: false });   // en empate de día, gana la captura más reciente (valores corregidos)
   if (error) throw error;
   const resultados: Record<string, import("./core/fundval").CompanyValuation> = {};
   let generado: string | undefined;
   for (const r of (data ?? []) as any[]) {
-    if (!resultados[r.ticker]) {            // primer visto = snapshot más reciente (orden desc)
+    if (!resultados[r.ticker]) {            // primer visto = captura más reciente
       resultados[r.ticker] = r.payload;
       generado = generado ?? r.observation_date ?? r.snapshot_date;
     }
