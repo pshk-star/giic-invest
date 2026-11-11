@@ -65,6 +65,12 @@ async function main() {
   const prices: Record<string, { close: number; as_of: string; currency: string }> = {};
   for (const r of priceRows) prices[String(r.ticker).toUpperCase()] = { close: r.close, as_of: r.as_of, currency: r.currency };
   const caRows = (await get("corporate_actions", { select: "ticker,ratio,ex_date", ticker: "in.(" + ptk.join(",") + ")" })) as Split[];
+  const fundRows = await get("fundamentals", { select: "ticker,payload", ticker: inFilter, order: "ticker" });
+  const fundamentals: Record<string, { roic?: number | null; revGrowth?: number | null; netMargin?: number | null; operatingMargin?: number | null; fcfTtm?: number | null }> = {};
+  for (const r of fundRows) {
+    const p = (r.payload || {}) as any;
+    fundamentals[String(r.ticker).toUpperCase()] = { roic: p.roic ?? null, revGrowth: p.rev_growth_yoy ?? null, netMargin: p.net_margin ?? null, operatingMargin: p.operating_margin ?? null, fcfTtm: p.fcf_ttm ?? null };
+  }
 
   const positionsAll = derivePositions(txns, prices as any, instruments as any, caRows).filter((p) => (p.marketValue ?? 0) > 0);
   const total = positionsAll.reduce((s, p) => s + (p.marketValue ?? 0), 0);
@@ -87,7 +93,7 @@ async function main() {
     candidates.push({ ticker: t, name: instruments[t]?.name ?? null, sector, country: null, currency: instruments[t]?.currency ?? null, assetClass: ac, kind: kindOf(ac, sector), inPortfolio: ptk.includes(t), composite: scan.find((s: any) => String(s.ticker).toUpperCase() === t)?.composite ?? null });
   }
   const input: ScanInput = {
-    candidates, valuation, fundamentals: {},
+    candidates, valuation, fundamentals,
     portfolio: {
       positions: positionsAll.map((p) => ({ ticker: p.ticker, name: p.name, sector: instruments[p.ticker]?.sector ?? null, country: null, currency: p.currency, assetClass: p.asset_class, marketValue: p.marketValue ?? 0, weight: total > 0 ? (p.marketValue ?? 0) / total : 0 })),
       cash: 0,
