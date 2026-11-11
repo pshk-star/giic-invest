@@ -38,8 +38,12 @@ function mm(cv: CompanyValuation | undefined, m: string): { m: number | null; c:
 async function main() {
   if (process.env.SAVE_PROFILE === "1") {
     // PLACEHOLDER etiquetado para demostrar la PERSISTENCIA (round-trip settings→motor). Pablo reemplaza
-    // capital/aporte reales en la app; no se inventa su liquidez (capital 0 = no configurado).
-    await upsert("settings", { base_currency: "USD", risk_tolerance: "moderado", monthly_contribution: 3000, capital_available: 0, min_cash: 0, horizon_years: 10, max_weight_per_asset: 0, max_weight_per_sector: 0 }, "user_id");
+    // capital/aporte reales en la app; no se inventa su liquidez (capital 0 = no configurado). Se usa su
+    // user_id real (de transactions) para escribir SU fila de settings.
+    const uidRows = await get("transactions", { select: "user_id", limit: "1" }).catch(() => []);
+    const userId = uidRows[0]?.user_id;
+    if (userId) await upsert("settings", { user_id: userId, base_currency: "USD", risk_tolerance: "moderado", monthly_contribution: 3000, capital_available: 0, min_cash: 0, horizon_years: 10, max_weight_per_asset: 0, max_weight_per_sector: 0 }, "user_id");
+    else console.error("(no se pudo obtener user_id; se omite persistencia de perfil)");
   }
   const settingsRows = await get("settings", { select: "*", limit: "1" });
   let profile: Profile = profileFromSettings(settingsRows[0] ?? null);
