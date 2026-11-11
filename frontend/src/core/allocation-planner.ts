@@ -109,7 +109,7 @@ function distribute(ctx: Ctx, cands: ScanEntry[], budget: number, contribution: 
     const amount = Math.min(target, cap);                    // sobrante del tope → efectivo (no se vuelca)
     if (amount < 1) return;
     legs.push({
-      ticker: e.ticker, sector: e.sector, amount: Math.round(amount), weightAfter: 0,
+      ticker: e.ticker, sector: e.sector ?? null, amount: Math.round(amount), weightAfter: 0,
       basis: (e.actionableBasis ?? "valor"), confidence: e.confidence, margin: e.margin,
       marginalRiskPct: null, duplicatedExposure: Number(dupExposure(ctx, e.ticker).toFixed(4)),
       reason: `margen ${e.margin != null ? (e.margin * 100).toFixed(0) + "%" : "n/d"}, confianza ${e.confidence ?? "n/d"}${why(e)}`,
