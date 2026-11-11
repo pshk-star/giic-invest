@@ -80,20 +80,32 @@ describe("Etapa A — orquestador (una sola recomendación)", () => {
     expect(r.positions.find((p) => p.ticker === "NVDA")!.action).toBe("REDUCIR");
   });
 
-  it("separa compra_recomendada / candidata_investigacion / poco_atractiva / evidencia_insuficiente", () => {
-    const r = buildUnifiedAdvisor({ profile: PROFILE, scanInput: scanInput() });
+  it("separa compra_recomendada / oportunidad_analizada (FCFF fallback) / poco_atractiva / evidencia_insuficiente", () => {
+    const r = buildUnifiedAdvisor({ profile: PROFILE, scanInput: scanInput() });   // VALPOLICY activo (fcffFallback: true)
     const by = Object.fromEntries(r.opportunities.map((o) => [o.ticker, o.class]));
-    expect(by["AAA"]).toBe("compra_recomendada");        // FV productivo + margen => comprable
-    expect(by["EXP"]).toBe("candidata_investigacion");   // FCFF experimental => investigación, NO comprable
+    expect(by["AAA"]).toBe("compra_recomendada");         // FV productivo + margen + confianza => compra recomendada (confiable)
+    expect(by["EXP"]).toBe("oportunidad_analizada");      // FCFF como fallback bajo controles => accionable, tier experimental
+    const exp = r.opportunities.find((o) => o.ticker === "EXP")!;
+    expect(exp.buyable).toBe(true);
+    expect(exp.source).toBe("fcff_fallback");             // la fuente gobernante es FCFF fallback (menor confianza, no FV productivo)
     expect(by["POOR"]).toBe("poco_atractiva");
     expect(by["INSUF"]).toBe("evidencia_insuficiente");
-    expect(r.opportunities.find((o) => o.ticker === "EXP")!.buyable).toBe(false);
   });
 
-  it("NINGUNA compra se basa en valoración experimental: EXP no entra a la asignación", () => {
-    const r = buildUnifiedAdvisor({ profile: PROFILE, scanInput: scanInput() });
+  it("POLÍTICA ÚNICA: el orquestador HONRA scanInput.fcffFallback (no lo sobrescribe a 'sólo productivo')", () => {
+    // Mismo instrumento FCFF (EXP): con VALPOLICY activo es accionable; apagado, sólo contexto => investigación.
+    const on = buildUnifiedAdvisor({ profile: PROFILE, scanInput: { ...scanInput(), fcffFallback: true } });
+    const off = buildUnifiedAdvisor({ profile: PROFILE, scanInput: { ...scanInput(), fcffFallback: false } });
+    expect(on.opportunities.find((o) => o.ticker === "EXP")!.buyable).toBe(true);
+    expect(off.opportunities.find((o) => o.ticker === "EXP")!.class).toBe("candidata_investigacion");
+    expect(off.opportunities.find((o) => o.ticker === "EXP")!.buyable).toBe(false);
+  });
+
+  it("VALPOLICY apagado: el FCFF sólo es contexto => EXP a INVESTIGACIÓN, no entra a la asignación", () => {
+    const inp = scanInput(); inp.fcffFallback = false;
+    const r = buildUnifiedAdvisor({ profile: PROFILE, scanInput: inp });
     expect(r.newMoney.legs.map((l) => l.ticker)).not.toContain("EXP");
-    expect(r.researchCandidates.map((x) => x.ticker)).toContain("EXP");   // queda en investigación
+    expect(r.researchCandidates.map((x) => x.ticker)).toContain("EXP");   // queda en investigación (confiable sólo con FV productivo)
   });
 
   it("propone asignación concreta de dinero nuevo y conserva el resto", () => {

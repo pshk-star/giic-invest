@@ -5,7 +5,7 @@
 import { buildScanner, alignReturns, type ScanInput, type ScannerReport, type ScanEntry } from "./opportunity-scanner";
 import { buildAdvisor3, passesValueGate, type Adv3Input } from "./advisor3";
 import { buildAllocationPlan, type AllocationPlan } from "./allocation-planner";
-import { governingValuation } from "./valuation-policy";
+import { governingValuation, type GovInput, type GovResult } from "./valuation-policy";
 import { deriveConstraints, investableAmount, type Profile } from "./advisor-profile";
 
 export type PositionAction = "MANTENER" | "ACUMULAR" | "REDUCIR" | "VENDER" | "REVISAR";
@@ -46,19 +46,32 @@ export interface AdvisorReport {
 
 export interface BuildAdvisorArgs { profile: Profile; scanInput: ScanInput; etfInfo?: Record<string, EtfInfo>; asOf?: string }
 
-// Clasificación con separación EXPLÍCITA: compra recomendada (valoración productiva/confiable + accionable)
-// / oportunidad analizada (productiva atractiva pero restringida) / candidata de investigación (FCFF
-// experimental: NO comprable por sí sola) / poco atractiva / evidencia insuficiente.
-function classify(e: ScanEntry, valExp: ReturnType<typeof governingValuation>, minMargin: number): { cls: OppClass; buyable: boolean } {
-  // e viene del reporte EJECUTABLE (fallback apagado): productivo gobierna; el FCFF no es accionable.
-  if (e.marginSource === "productivo" && e.margin != null) {
+// Clasificación bajo la POLÍTICA ÚNICA (P2.4): el flag de fallback YA está aplicado en `g` (la valoración
+// gobernante). Separación EXPLÍCITA:
+//  - compra_recomendada: FV PRODUCTIVO (confiable) con margen+confianza y accionable para la cartera.
+//  - oportunidad_analizada: (a) FCFF como FALLBACK bajo controles (confianza suficiente, no extremo) y
+//    accionable ⇒ comprable a TIER EXPERIMENTAL (menor convicción, nunca al nivel de un FV productivo);
+//    o (b) valorada y atractiva pero RESTRINGIDA por límites de cartera ⇒ no comprable.
+//  - candidata_investigacion: hay señal FCFF que NO gobierna la decisión (confianza insuficiente o el flag
+//    VALPOLICY apagado) ⇒ sólo investigación, no comprable.
+//  - poco_atractiva / evidencia_insuficiente.
+// Un margen positivo por sí solo nunca basta: `passesValueGate`/`governingValuation` exigen confianza y
+// fuente gobernante. No se modifican Fair Values para producir compras.
+function classify(e: ScanEntry, v: GovInput | undefined, g: GovResult, minMargin: number): { cls: OppClass; buyable: boolean } {
+  if (g.source === "productivo" && g.margin != null) {
     if (e.actionable) return { cls: "compra_recomendada", buyable: true };
-    if (e.margin >= minMargin) return { cls: "oportunidad_analizada", buyable: false };   // atractiva pero restringida
+    if (g.margin >= minMargin) return { cls: "oportunidad_analizada", buyable: false };   // productiva atractiva pero restringida
     return { cls: "poco_atractiva", buyable: false };
   }
-  // sin valoración productiva: ¿hay señal experimental (FCFF) suficiente para investigar?
-  if (valExp.source === "fcff_fallback" && valExp.margin != null && valExp.margin >= minMargin) return { cls: "candidata_investigacion", buyable: false };
-  if (valExp.margin != null) return { cls: "poco_atractiva", buyable: false };
+  if (g.source === "fcff_fallback" && g.margin != null) {                                   // FCFF accionable bajo VALPOLICY (controles superados)
+    if (g.margin >= minMargin && e.actionable) return { cls: "oportunidad_analizada", buyable: true };   // comprable, tier experimental
+    if (g.margin >= minMargin) return { cls: "oportunidad_analizada", buyable: false };     // superó margen/confianza pero restringida
+    return { cls: "poco_atractiva", buyable: false };
+  }
+  // FCFF sólo como CONTEXTO (fallback apagado) o confianza insuficiente: no gobierna ⇒ INVESTIGACIÓN.
+  const ctx = g.margin ?? v?.fcffMargin ?? null;
+  if (ctx != null && ctx >= minMargin) return { cls: "candidata_investigacion", buyable: false };
+  if (ctx != null) return { cls: "poco_atractiva", buyable: false };
   return { cls: "evidencia_insuficiente", buyable: false };
 }
 
@@ -81,13 +94,16 @@ export function buildUnifiedAdvisor(args: BuildAdvisorArgs): AdvisorReport {
   const asOf = args.asOf ?? new Date().toISOString().slice(0, 10);
   const c = deriveConstraints(profile);
   const contribution = investableAmount(profile);
-  const execPol = { fcffFallback: false };   // EJECUTABLE: las compras nunca se apoyan en FCFF experimental
-  const expPol = { fcffFallback: true };     // sólo para CLASIFICAR candidatas de investigación
+  // POLÍTICA ÚNICA (P2.4): un solo valor de fallback gobierna Scanner, Advisor 3.0, asignación y
+  // clasificación. Proviene del flag VITE_FF_VALPOLICY (cableado en scanInput.fcffFallback por la página).
+  // El orquestador NO lo sobrescribe: honra la política compartida en lugar de reimponer "sólo productivo".
+  const fallback = !!args.scanInput.fcffFallback;
+  const pol = { fcffFallback: fallback };
   const currency = profile.baseCurrency ?? "USD";
 
-  // constraints del perfil gobiernan TODOS los motores (sin parámetros manuales). El reporte ejecutable
-  // usa SOLO valoraciones productivas/confiables (fallback apagado): nada comprable por FCFF experimental.
-  const scanInput: ScanInput = { ...args.scanInput, constraints: { maxPositionWeight: c.maxPositionWeight, maxSectorWeight: c.maxSectorWeight, minMarginToBuy: c.minMarginToBuy }, contributions: [contribution || 1], fcffFallback: false };
+  // constraints del perfil gobiernan TODOS los motores (sin parámetros manuales); el flag de fallback se
+  // propaga sin cambios para que ninguna etapa reintroduzca restricciones que P2.4 ya resolvió.
+  const scanInput: ScanInput = { ...args.scanInput, constraints: { maxPositionWeight: c.maxPositionWeight, maxSectorWeight: c.maxSectorWeight, minMarginToBuy: c.minMarginToBuy }, contributions: [contribution || 1], fcffFallback: fallback };
   const report = buildScanner(scanInput, asOf);
 
   const positions = scanInput.portfolio.positions;
@@ -100,7 +116,7 @@ export function buildUnifiedAdvisor(args: BuildAdvisorArgs): AdvisorReport {
   const adv3Input: Adv3Input = {
     positions, cash: scanInput.portfolio.cash, contribution: contribution || 0, returns,
     valuation: scanInput.valuation, quality: Object.fromEntries(positions.map((p) => [p.ticker, { eligible: true, fresh: true }])),
-    constraints: scanInput.constraints, etfLookthrough: scanInput.etfLookthrough, fcffFallback: false,
+    constraints: scanInput.constraints, etfLookthrough: scanInput.etfLookthrough, fcffFallback: fallback,
   };
   const adv3 = buildAdvisor3(adv3Input, asOf);
   const plan = buildAllocationPlan(scanInput, report, contribution);   // asignación ejecutable (productiva)
@@ -109,7 +125,7 @@ export function buildUnifiedAdvisor(args: BuildAdvisorArgs): AdvisorReport {
   const positionRecs: PositionRec[] = adv3.positionDecisions.map((d) => {
     const p = positions.find((x) => x.ticker === d.ticker)!;
     const w = weightOf(p.marketValue);
-    const g = governingValuation(scanInput.valuation[d.ticker], execPol);
+    const g = governingValuation(scanInput.valuation[d.ticker], pol);
     let action = d.action as PositionAction;
     // Para reducir/vender, el porqué incluye el detalle CUANTIFICADO (motivos completos); si no, el principal.
     let why = (d.action === "REDUCIR" || d.action === "VENDER") ? d.explain.motivos.join(" ") : (d.explain.motivos[0] ?? "");
@@ -118,8 +134,8 @@ export function buildUnifiedAdvisor(args: BuildAdvisorArgs): AdvisorReport {
       const pol = etfPolicy(w, c.maxPositionWeight, args.etfInfo?.[p.ticker]);
       action = pol.action; why = pol.why; trimPct = null; trimAmount = null;
     } else {
-      const buyCand = passesValueGate(scanInput.valuation[d.ticker], c.minMarginToBuy, execPol) && w < c.maxPositionWeight;
-      if (action === "MANTENER" && buyCand) { action = "ACUMULAR"; why = `Infravalorada (FV productivo) con holgura de peso: acumular. ${d.explain.motivos[0] ?? ""}`; }
+      const buyCand = passesValueGate(scanInput.valuation[d.ticker], c.minMarginToBuy, pol) && w < c.maxPositionWeight;
+      if (action === "MANTENER" && buyCand) { action = "ACUMULAR"; why = `Infravalorada (${g.source === "fcff_fallback" ? "FCFF fallback, confianza " + g.conf : "FV productivo"}) con holgura de peso: acumular. ${d.explain.motivos[0] ?? ""}`; }
     }
     return { ticker: d.ticker, name: p.name, sector: p.sector ?? null, action, weight: Number(w.toFixed(4)),
              riskContribPct: Number((d.riskContribPct ?? 0).toFixed(4)), margin: g.margin, source: g.source, confidence: g.conf,
@@ -130,16 +146,18 @@ export function buildUnifiedAdvisor(args: BuildAdvisorArgs): AdvisorReport {
   const held = new Set(positions.map((p) => p.ticker));
   const opportunities: OpportunityRec[] = report.entries.filter((e) => !held.has(e.ticker) && e.kind !== "etf")
     .map((e) => {
-      const valExp = governingValuation(scanInput.valuation[e.ticker], expPol);
-      const { cls, buyable } = classify(e, valExp, c.minMarginToBuy);
+      const v = scanInput.valuation[e.ticker];
+      const g = governingValuation(v, pol);
+      const { cls, buyable } = classify(e, v, g, c.minMarginToBuy);
       const why = cls === "compra_recomendada" ? "FV productivo con margen y confianza suficientes: compra recomendada."
-        : cls === "oportunidad_analizada" ? "FV productivo atractivo, pero no se compra para TU cartera (concentración/límites)."
-        : cls === "candidata_investigacion" ? "Señal preliminar por FCFF experimental: candidata de INVESTIGACIÓN, no comprable hasta análisis profundo."
+        : cls === "oportunidad_analizada" && buyable ? `Accionable por FCFF como fallback bajo controles (confianza ${g.conf}, tier experimental): oportunidad analizada, menor convicción que un FV productivo.`
+        : cls === "oportunidad_analizada" ? "Valorada y atractiva, pero restringida para TU cartera (concentración/límites de peso)."
+        : cls === "candidata_investigacion" ? "Señal por FCFF que NO gobierna la decisión (confianza insuficiente o VALPOLICY apagado): candidata de INVESTIGACIÓN, no comprable hasta análisis profundo."
         : cls === "poco_atractiva" ? "Valorada pero sin margen suficiente."
         : "Sin valoración concluyente: evidencia insuficiente.";
-      const displayMargin = e.margin ?? valExp.margin;
+      const displayMargin = g.margin ?? e.margin ?? v?.fcffMargin ?? null;
       return { ticker: e.ticker, name: e.name, sector: e.sector ?? null, class: cls, buyable,
-               margin: displayMargin, source: cls === "candidata_investigacion" ? valExp.source : e.marginSource, confidence: e.confidence, why };
+               margin: displayMargin, source: g.source, confidence: g.conf, why };
     })
     .sort((a, b) => {
       const rank: Record<OppClass, number> = { compra_recomendada: 0, oportunidad_analizada: 1, candidata_investigacion: 2, poco_atractiva: 3, evidencia_insuficiente: 4 };
@@ -185,7 +203,8 @@ export function buildUnifiedAdvisor(args: BuildAdvisorArgs): AdvisorReport {
                        sources: { empresa: c.posSource, sector: c.sectorSource, margen: c.minMarginSource } },
     coverage: report.coverage,
     guardrails: [
-      "Una sola decisión por instrumento; la COMPRA recomendada exige valoración productiva/confiable; la señal FCFF experimental queda en INVESTIGACIÓN, no comprable.",
+      `Política de valoración ÚNICA (P2.4) compartida por Scanner, Advisor 3.0 y asignación: el FV productivo gobierna; el FCFF actúa como FALLBACK accionable sólo con confianza suficiente y margen no extremo cuando VALPOLICY está activo (tier experimental, menor convicción). Fallback VALPOLICY: ${fallback ? "ACTIVO (FCFF gobierna como fallback bajo controles)" : "inactivo (sólo el FV productivo gobierna compras; FCFF = contexto)"}.`,
+      "Un margen positivo por sí solo no habilita compra: exige confianza suficiente y fuente gobernante. El FCFF que no supera los controles queda en INVESTIGACIÓN. No se modifican Fair Values para producir compras.",
       "Ninguna compra se basa en una valoración incompleta; las reducciones/ventas se cuantifican y explicitan su incertidumbre.",
       "Heurística de asignación, no optimización de retornos validada; sin predicción de retornos (no validada).",
       "Constraints derivados del perfil/tolerancia (sin parámetros manuales); procedencia visible.",
