@@ -2,8 +2,6 @@
 // (configurado UNA vez en `settings`), para que los análisis corran sin parámetros manuales. Si faltan
 // datos ESENCIALES, se piden explícitamente (no se inventan). Los topes prudenciales por tolerancia al
 // riesgo están documentados y son revisables (no límites arbitrarios permanentes).
-import type { Adv3Constraints } from "./advisor3";
-
 export interface Profile {
   baseCurrency: string | null;
   capitalAvailable: number | null;      // liquidez disponible
@@ -31,7 +29,11 @@ function band(riskTolerance: string | null) {
 }
 
 // Constraints efectivos: topes explícitos del perfil si existen; si no, derivados de la tolerancia.
-export function deriveConstraints(p: Profile): Adv3Constraints & { minMarginSource: string; posSource: string; sectorSource: string } {
+export interface DerivedConstraints {
+  maxPositionWeight: number; maxSectorWeight: number; minMarginToBuy: number;
+  minMarginSource: string; posSource: string; sectorSource: string;
+}
+export function deriveConstraints(p: Profile): DerivedConstraints {
   const b = band(p.riskTolerance);
   const posSet = p.maxWeightPerAsset && p.maxWeightPerAsset > 0;
   const secSet = p.maxWeightPerSector && p.maxWeightPerSector > 0;
