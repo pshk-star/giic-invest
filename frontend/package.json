@@ -8,7 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "emit:decision": "tsx scripts/emit_decision.ts"
+    "emit:decision": "tsx scripts/emit_decision.ts",
+    "advisor:preview": "tsx scripts/advisor_preview.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.45.4",

@@ -1,0 +1,31 @@
+name: GIIC Etapa A vista previa del Advisor unificado (solo lectura)
+
+on:
+  workflow_dispatch:
+    inputs:
+      fallback:
+        description: "FCFF fallback (política P2.4)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - name: Vista previa del Advisor
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          FF_VALPOLICY: ${{ inputs.fallback && '1' || '0' }}
+        run: npm run advisor:preview
