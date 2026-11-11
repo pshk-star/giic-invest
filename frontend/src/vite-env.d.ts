@@ -13,6 +13,8 @@ interface ImportMetaEnv {
   readonly VITE_FF_ALLOC?: string;
   // P2.6 — historial de decisiones y resultados (experimental, reversible).
   readonly VITE_FF_DECISIONS?: string;
+  // Etapa A — Investment Advisor unificado (experimental, reversible).
+  readonly VITE_FF_UNIFIED?: string;
 }
 interface ImportMeta {
   readonly env: ImportMetaEnv;
