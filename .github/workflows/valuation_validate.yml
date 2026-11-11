@@ -1,0 +1,31 @@
+name: GIIC P2.4.1 validación focalizada de valoraciones (solo lectura)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tickers:
+        description: "Tickers separados por espacio (vacío = las 8 nuevas)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install httpx
+      - name: Validar valoraciones
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+        run: python -m app.jobs.valuation_validate ${{ inputs.tickers }}
