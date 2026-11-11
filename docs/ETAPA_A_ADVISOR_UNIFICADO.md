@@ -2,7 +2,7 @@
 
 **Estado:** funcional con **datos reales**, experimental y reversible (flag `VITE_FF_UNIFIED`, ruta
 `/asesor`). Reutiliza los motores existentes (Scanner, Advisor 3.0, asignación, política de valoración,
-riesgo) sin duplicar lógica. **Advisor 2.2 y funciones productivas intactas.** CI verde (300 frontend).
+riesgo) sin duplicar lógica. **Advisor 2.2 y funciones productivas intactas.** CI verde (301 frontend).
 Recomendaciones **SIMULADAS**, no ejecutadas.
 
 ---
@@ -38,10 +38,16 @@ infravalorada con holgura de peso.
 Tres correcciones (sin tocar Fair Values ni reconstruir motores), demostradas con **datos reales** y
 **perfil PERSISTIDO** (`perfil_demo: false`, round-trip `settings`→motor; posiciones reales):
 
-**1. No se recomienda comprar lo que está pendiente de análisis.** La asignación EJECUTABLE usa solo
-valoraciones **productivas/confiables**. Los nombres con FCFF experimental (LOW, AMGN, EOG, HD, UPS)
-quedan como **candidatas de investigación — NO comprables**. Taxonomía explícita: compra_recomendada /
-oportunidad_analizada / candidata_investigacion / poco_atractiva / evidencia_insuficiente.
+**1. Política de valoración ÚNICA honrada (corrección posterior).** El orquestador había quedado
+sobre-restringido: sobrescribía `scanInput.fcffFallback` con `false`, reimponiendo "sólo FV productivo"
+para compras y descartando `VITE_FF_VALPOLICY` aunque la página lo cableara. **Corregido:** un único valor
+de fallback (del flag) gobierna Scanner, Advisor 3.0, asignación y clasificación. El **FCFF como fallback
+bajo controles P2.4** (confianza suficiente, margen no extremo) es **accionable a tier experimental**
+(menor convicción que un FV productivo); el FCFF que **no** supera los controles queda en **investigación**.
+Un margen positivo por sí solo no basta (`passesValueGate` exige confianza + fuente gobernante). No se
+modifican Fair Values. Taxonomía: compra_recomendada (FV productivo) / oportunidad_analizada (FCFF fallback
+accionable, o productiva restringida) / candidata_investigacion (FCFF que no gobierna) / poco_atractiva /
+evidencia_insuficiente.
 
 **2. VENDER/REDUCIR con sustento.** Ninguna venta automática por margen negativo: sobrevaloración
 **extrema** (≤ −45 %) ⇒ **REDUCIR** por alta sensibilidad, no VENDER; VENDER exige corroboración de un
@@ -52,22 +58,33 @@ incertidumbre explícita (horizonte, costos/impuestos, reinversión no incorpora
 posiciones directas y peso; **no** REVISAR por carecer de FCFF. Costos/liquidez marcados como no
 disponibles. La concentración agregada de vehículos se reporta como riesgo aparte.
 
-**Ejecución real (perfil persistido, aporte USD 3.000):**
-- **Resumen:** *"Hoy: mantener la cartera y CONSERVAR el efectivo — las oportunidades no superan el
-  umbral; 4 posiciones a reducir."* Postura: **esperar** (dinero nuevo → **efectivo**).
-- **Cartera:** TSM **REDUCIR −37 % (≈$1.720)**, NVDA **−25 % (≈$1.145)**, ASML **−25 % (≈$942)**, NFLX
-  **−21 % (≈$224)** — todas con incertidumbre explícita; **ninguna VENDER**. META MANTENER. ETFs
-  QQQ/SCHD/VOO (renta variable amplia, solapamiento 11,5 %/0 %/9,9 %) y GLD/SLV (metal) **MANTENER**.
-- **Dinero nuevo:** **efectivo $3.000** (ninguna compra sobre valoración incompleta).
-- **Investigación:** LOW, AMGN, EOG, HD, UPS (señal FCFF preliminar; requieren valoración productiva/
-  análisis profundo antes de ser comprables).
+**Ejecución real (perfil persistido `perfil_demo: false`, aporte USD 3.000) — dos corridas CI (commit
+`2a0c6cc`) que contrastan el flag:**
 
-**Por qué ESPERAR es la respuesta honesta hoy:** la evaluación es amplia (universo 54, 35 valoradas),
-pero solo 5 empresas tienen FV productivo (confiable) y están **sobrevaloradas**; el resto tiene FV
-experimental, que **no** habilita compra. Por eso GIIC recomienda efectivo + una lista de investigación,
-en vez de forzar compras. Ampliar la cobertura de evidencia **sólida** es el objetivo de la **Etapa B**.
+*VALPOLICY **ACTIVO** (preview run 43120133646):* postura **desplegar** — **USD 2.129** en 5 nombres,
+efectivo **871**. Dinero nuevo (FCFF fallback bajo controles, tier experimental): **LOW $450 (+28 %),
+AMGN $450 (+24 %), EOG $450 (+24 %), HD $450 (+20 %), UPS $329 (+12 %)**. Estos 5 **superan** los
+controles P2.4 (confianza suficiente, margen no extremo) ⇒ accionables; antes quedaban relegados a
+investigación por el override. **Control de calidad:** PFE (+108 %) y ADBE (+95 %) ⇒ margen **extremo**
+(≥80 %) ⇒ confianza degradada ⇒ **candidata_investigacion, no comprables**. La política discrimina: ni
+"todo FCFF a investigación" (el bug) ni "todo FCFF a compra" (imprudente).
 
-## Pruebas (`advisor-engine.test.ts`, 16)
+*VALPOLICY **inactivo** (preview run 43120142630):* la misma cartera da postura **esperar**, **efectivo
+$3.000**, y los 5 nombres a **investigación** (sólo el FV productivo gobierna). Comportamiento histórico,
+reversible por flag.
+
+- **Cartera (idéntica en ambas corridas — gobierna el FV productivo):** TSM **REDUCIR −37 % (≈$1.720)**,
+  NVDA **−25 % (≈$1.145)**, ASML **−25 % (≈$942)**, NFLX **−21 % (≈$224)** — con incertidumbre explícita;
+  **ninguna VENDER**. META MANTENER. ETFs QQQ/SCHD/VOO (renta variable amplia, solapamiento 11,5/0/9,9 %)
+  y GLD/SLV (metal) **MANTENER**. El % de recorte = ½·|margen| productivo, acotado [20 %, 50 %]; el
+  desacuerdo DCF–FCFF degrada la confianza y puede bajar VENDER→REDUCIR (NFLX, brecha 51 pp), no altera
+  la fórmula del recorte.
+
+**Lectura:** la decisión ahora proviene de **una sola política** (P2.4) gobernada por el flag, sin que el
+orquestador reimponga restricciones ya resueltas. Ampliar la cobertura de **evidencia productiva** (subir
+nombres de experimental a confiable) sigue siendo el objetivo de la **Etapa B**.
+
+## Pruebas (`advisor-engine.test.ts`, 17)
 
 Perfil: deriva constraints por tolerancia / topes del perfil, capital a invertir, datos faltantes,
 mapeo de settings. Orquestador: una acción por posición; ACUMULAR vs REDUCIR; clasificación
@@ -79,7 +96,8 @@ contradicción); constraints desde el perfil con procedencia; ESPERAR sin oportu
 Prueba funcional end-to-end (datos reales, perfil persistido) que demuestra:
 - Perfil persistente conectado ✅ (`perfil_demo: false`).
 - Recomendaciones coherentes entre módulos ✅ (una sola política).
-- Ninguna compra basada exclusivamente en valoración incompleta ✅ (experimental → investigación).
+- Ninguna compra basada en valoración que no supere los controles ✅ (FCFF extremo/baja confianza →
+  investigación; FCFF que pasa P2.4 → accionable tier experimental; no se modifican FVs).
 - Ventas y reducciones justificadas y **cuantificadas** ✅ (% y USD, con incertidumbre).
 - ETFs evaluados según su naturaleza ✅ (rol/solapamiento, no por falta de FCFF).
 - Asignación de capital coherente con las recomendaciones ✅ (efectivo, sin forzar compras).
