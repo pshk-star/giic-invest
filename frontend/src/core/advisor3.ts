@@ -47,7 +47,11 @@ export interface Explain {
 export interface PositionDecision {
   ticker: string; action: PositionAction; confidence: Conf;
   marginUsed: number | null; marginSource: "productivo" | "fcff_fallback" | "fcff(contexto)" | "ninguno";
-  riskContribPct: number; explain: Explain;
+  riskContribPct: number;
+  trimPct: number | null;         // cuánto reducir (fracción de la posición); 1 = salida total; null = no aplica
+  trimToWeight: number | null;    // peso objetivo tras el recorte
+  trimAmount: number | null;      // importe a vender (USD), cuando hay marketValue
+  explain: Explain;
 }
 export interface AllocItem { ticker: string; amount: number; newWeight: number; action: ContribAction; reason: string }
 export interface AllocOption {
@@ -66,7 +70,7 @@ export interface Advisor3Report {
 }
 
 const STUB_W = 0.015;
-const UNDER = 0.10, STRONG_OVER = -0.25, OVER = -0.10;
+const UNDER = 0.10, STRONG_OVER = -0.25, OVER = -0.10, EXTREME_OVER = -0.45;
 const RISK_TRIM = 0.30;        // contribución al riesgo que justifica RECORTAR (nunca vender por sí sola)
 const DISAGREE_MAG = 0.25;     // brecha de margen productivo vs FCFF que se considera desacuerdo material
 const DIVERSIFY_MIN = 0.002;   // reducción mínima de HHI sector para que un ETF cuente como diversificación real
@@ -125,8 +129,11 @@ export function buildAdvisor3(inp: Adv3Input, asOf = new Date().toISOString().sl
     const topRisk = contribPct > RISK_TRIM;                    // contribuye > umbral del riesgo total
     const sectorW = concSector.byGroup[p.sector ?? "na"] ?? 0;
     const overSector = sectorW > constraints.maxSectorWeight;
-    const deterioro = !!q && (!q.eligible || !q.fresh);        // deterioro de fundamentales (datos)
-    const corrobora = (em.margin != null && (valuation[p.ticker]?.fcffMargin ?? 1) <= 0) || deterioro;
+    const deterioro = !!q && (!q.eligible || !q.fresh);        // deterioro/ausencia de fundamentales (datos)
+    // Corroboración de VENTA = el FCFF cae del MISMO lado (sobrevalorado). Los datos faltantes NO
+    // corroboran una venta: aumentan la incertidumbre (se tratan aparte, atenuando la decisión).
+    const fcffCorrobora = em.margin != null && valuation[p.ticker]?.fcffMargin != null && (valuation[p.ticker]!.fcffMargin as number) <= 0;
+    const extrema = em.margin != null && em.margin <= EXTREME_OVER;   // gap FV-precio extremo ⇒ alta sensibilidad
     const motivos: string[] = []; const riesgos: string[] = []; const cond: string[] = []; const factores: string[] = [];
     let action: PositionAction;
 
@@ -144,28 +151,47 @@ export function buildAdvisor3(inp: Adv3Input, asOf = new Date().toISOString().sl
       action = "REVISAR"; factores.push("desacuerdo-modelos");
       motivos.push(`Desacuerdo DIRECCIONAL entre DCF productivo (${(em.margin * 100).toFixed(0)}%) y FCFF (${((valuation[p.ticker]!.fcffMargin!) * 100).toFixed(0)}%): no se concluye por valoración.`);
       cond.push("Convergencia de modelos (o consenso validado) permitiría concluir.");
-    } else if (em.margin <= STRONG_OVER && sufficient(em.conf) && corrobora && !dis.material) {
-      // VENDER: criterio EXIGENTE — sobrevaloración fuerte + confianza + corroboración (FCFF mismo lado
-      // o deterioro) + SIN desacuerdo material. La concentración NO es un criterio de venta.
-      action = "VENDER"; factores.push("sobrevaloración-fuerte", "confianza", deterioro ? "deterioro" : "corroboración-FCFF");
-      motivos.push(`Muy sobrevalorada (margen ${(em.margin * 100).toFixed(0)}%, ${em.note}, confianza ${em.conf})${deterioro ? " + deterioro de fundamentales" : " corroborada por FCFF"}.`);
-    } else if (em.margin <= STRONG_OVER && sufficient(em.conf) && dis.kind === "magnitud") {
+    } else if (extrema) {
+      // SOBREVALORACIÓN EXTREMA (margen ≤ -40%): la brecha FV-precio es tan grande que es más probable
+      // una alta sensibilidad del modelo o una tesis no capturada que una venta en firme. REDUCIR con
+      // incertidumbre explícita (nunca VENDER automáticamente por un margen muy negativo).
+      action = "REDUCIR"; factores.push("sobrevaloración-extrema", "sensibilidad");
+      motivos.push(`Sobrevaloración EXTREMA (margen ${(em.margin * 100).toFixed(0)}%): brecha FV-precio muy grande ⇒ probable alta sensibilidad del modelo o tesis no capturada. Se REDUCE de forma prudente, NO se vende en firme.`);
+      riesgos.push("Alta sensibilidad de la valoración: el resultado depende fuertemente de supuestos; se recomienda análisis profundo antes de cualquier venta total.");
+    } else if (em.margin <= STRONG_OVER && sufficient(em.conf) && fcffCorrobora && !dis.material && !deterioro) {
+      // VENDER: EXIGENTE — sobrevaloración fuerte pero NO extrema, confianza, FCFF corrobora, sin
+      // desacuerdo material y SIN datos faltantes. La concentración NO es criterio de venta.
+      action = "VENDER"; factores.push("sobrevaloración-fuerte", "confianza", "corroboración-FCFF");
+      motivos.push(`Sobrevalorada (margen ${(em.margin * 100).toFixed(0)}%, ${em.note}, confianza ${em.conf}) corroborada por FCFF y sin datos faltantes.`);
+    } else if (em.margin <= STRONG_OVER && dis.kind === "magnitud") {
       action = "REDUCIR"; factores.push("sobrevaloración-fuerte", "desacuerdo-magnitud");
-      motivos.push(`Muy sobrevalorada por el FV productivo (${(em.margin * 100).toFixed(0)}%) PERO desacuerdo de magnitud con el FCFF (brecha ${((dis.gap ?? 0) * 100).toFixed(0)} pp): se ATENÚA de VENDER a REDUCIR por incertidumbre.`);
-    } else if (em.margin <= STRONG_OVER && !sufficient(em.conf)) {
-      action = "REDUCIR"; factores.push("sobrevaloración-fuerte", "confianza-insuficiente");
-      motivos.push(`Muy sobrevalorada (${(em.margin * 100).toFixed(0)}%) pero confianza insuficiente: REDUCIR, no VENDER.`);
+      motivos.push(`Sobrevalorada por el FV productivo (${(em.margin * 100).toFixed(0)}%) PERO desacuerdo de magnitud con el FCFF (brecha ${((dis.gap ?? 0) * 100).toFixed(0)} pp): se ATENÚA a REDUCIR por incertidumbre.`);
+    } else if (em.margin <= STRONG_OVER && (!sufficient(em.conf) || deterioro || !fcffCorrobora)) {
+      action = "REDUCIR"; factores.push("sobrevaloración-fuerte", deterioro ? "datos-faltantes" : !fcffCorrobora ? "sin-corroboración" : "confianza-insuficiente");
+      motivos.push(`Sobrevalorada (${(em.margin * 100).toFixed(0)}%) pero ${deterioro ? "con datos fundamentales faltantes" : !fcffCorrobora ? "sin corroboración de un segundo modelo" : "confianza insuficiente"}: REDUCIR con incertidumbre, no VENDER.`);
     } else if (em.margin <= OVER && sufficient(em.conf)) {
       action = "REDUCIR"; factores.push("sobrevaloración-moderada");
       motivos.push(`Sobrevalorada moderada (margen ${(em.margin * 100).toFixed(0)}%, confianza ${em.conf}).`);
     } else if ((topRisk || overSector) && em.margin < UNDER) {
-      // RIESGO: recortar por concentración/contribución, NUNCA vender por esto solo.
       action = "REDUCIR"; factores.push("riesgo/concentración");
       motivos.push(`Valoración no barata; top contribuyente de riesgo (${(contribPct * 100).toFixed(0)}%)${overSector ? ` y sector sobre el límite (${(sectorW * 100).toFixed(0)}%)` : ""}: RECORTAR por riesgo, no vender.`);
     } else {
       action = "MANTENER"; factores.push("en-límites");
       motivos.push(em.margin >= UNDER ? `Dentro de límites y con margen (${(em.margin * 100).toFixed(0)}%, confianza ${em.conf}).` : `Valorada en rango razonable y dentro de límites de riesgo.`);
     }
+
+    // --- CUANTIFICAR el recorte (cuánto reducir y por qué) ---
+    let trimPct: number | null = null; let trimToWeight: number | null = null; let trimAmount: number | null = null;
+    if (action === "VENDER") { trimPct = 1; trimToWeight = 0; }
+    else if (action === "REDUCIR") {
+      const riskDriven = factores.includes("riesgo/concentración");
+      if (riskDriven) { trimToWeight = Math.min(constraints.maxPositionWeight, p.weight); trimPct = p.weight > 0 ? Math.max(0, (p.weight - trimToWeight) / p.weight) : 0; if (trimPct < 0.05) { trimPct = 0.2; trimToWeight = p.weight * 0.8; } }
+      else { const sev = em.margin != null ? Math.min(0.5, Math.max(0.2, Math.abs(em.margin) * 0.5)) : 0.25; trimPct = Number(sev.toFixed(2)); trimToWeight = Number((p.weight * (1 - sev)).toFixed(4)); }
+      trimPct = Number((trimPct ?? 0).toFixed(2));
+    }
+    if (trimPct != null && p.marketValue) trimAmount = Math.round(p.marketValue * trimPct);
+    if (action === "REDUCIR") motivos.push(`Recortar ~${Math.round((trimPct ?? 0) * 100)}% de la posición (de ${(p.weight * 100).toFixed(1)}% a ~${((trimToWeight ?? 0) * 100).toFixed(1)}% de la cartera${trimAmount != null ? `, ≈ ${trimAmount} USD` : ""}).`);
+    if (action === "VENDER" || action === "REDUCIR") cond.push("Horizonte, costos/impuestos y alternativas de reinversión NO incorporados en esta decisión: considéralos antes de ejecutar.");
     if (dis.material && action !== "REVISAR") riesgos.push(`Desacuerdo de modelos (${dis.kind}, brecha ${((dis.gap ?? 0) * 100).toFixed(0)} pp): confianza de la acción degradada.`);
     if (q && !q.eligible) riesgos.push("Calidad/elegibilidad financiera degradada (datos incompletos).");
     if (q && !q.fresh) riesgos.push("Fundamentales no recientes.");
@@ -174,6 +200,7 @@ export function buildAdvisor3(inp: Adv3Input, asOf = new Date().toISOString().sl
     return {
       ticker: p.ticker, action, confidence: em.conf, marginUsed: em.margin, marginSource: em.source,
       riskContribPct: Number(contribPct.toFixed(4)),
+      trimPct, trimToWeight, trimAmount,
       explain: {
         motivos, datosModelos: [`valoración: ${em.source}`, "riesgo: contribución por Euler (retornos históricos)", "concentración: HHI sector/país"],
         riesgos, factores,

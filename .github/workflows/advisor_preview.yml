@@ -7,6 +7,10 @@ on:
         description: "FCFF fallback (política P2.4)"
         type: boolean
         default: true
+      save_profile:
+        description: "Persistir perfil placeholder (demostrar round-trip settings→motor)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -28,4 +32,5 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           FF_VALPOLICY: ${{ inputs.fallback && '1' || '0' }}
+          SAVE_PROFILE: ${{ inputs.save_profile && '1' || '0' }}
         run: npm run advisor:preview

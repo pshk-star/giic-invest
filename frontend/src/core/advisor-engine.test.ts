@@ -80,23 +80,59 @@ describe("Etapa A — orquestador (una sola recomendación)", () => {
     expect(r.positions.find((p) => p.ticker === "NVDA")!.action).toBe("REDUCIR");
   });
 
-  it("clasifica oportunidades: atractiva / pendiente_analisis / poco_atractiva / evidencia_insuficiente", () => {
+  it("separa compra_recomendada / candidata_investigacion / poco_atractiva / evidencia_insuficiente", () => {
     const r = buildUnifiedAdvisor({ profile: PROFILE, scanInput: scanInput() });
     const by = Object.fromEntries(r.opportunities.map((o) => [o.ticker, o.class]));
-    expect(by["AAA"]).toBe("atractiva");               // FV productivo + margen
-    expect(by["EXP"]).toBe("pendiente_analisis");      // FCFF experimental (no se trata como confiable)
-    expect(by["POOR"]).toBe("poco_atractiva");         // valorada sin margen
-    expect(by["INSUF"]).toBe("evidencia_insuficiente");// sin valoración
+    expect(by["AAA"]).toBe("compra_recomendada");        // FV productivo + margen => comprable
+    expect(by["EXP"]).toBe("candidata_investigacion");   // FCFF experimental => investigación, NO comprable
+    expect(by["POOR"]).toBe("poco_atractiva");
+    expect(by["INSUF"]).toBe("evidencia_insuficiente");
+    expect(r.opportunities.find((o) => o.ticker === "EXP")!.buyable).toBe(false);
   });
 
-  it("propone asignación concreta de dinero nuevo y conserva el resto; prioridades de investigación", () => {
+  it("NINGUNA compra se basa en valoración experimental: EXP no entra a la asignación", () => {
+    const r = buildUnifiedAdvisor({ profile: PROFILE, scanInput: scanInput() });
+    expect(r.newMoney.legs.map((l) => l.ticker)).not.toContain("EXP");
+    expect(r.researchCandidates.map((x) => x.ticker)).toContain("EXP");   // queda en investigación
+  });
+
+  it("propone asignación concreta de dinero nuevo y conserva el resto", () => {
     const r = buildUnifiedAdvisor({ profile: PROFILE, scanInput: scanInput() });
     expect(r.newMoney.contribution).toBe(3000);
     const sum = r.newMoney.legs.reduce((s, l) => s + l.amount, 0) + r.newMoney.cashKept;
-    expect(sum).toBe(3000);                            // conservación exacta
-    expect(r.researchPriorities.map((x) => x.ticker)).toContain("EXP");  // experimental atractivo => profundizar
+    expect(sum).toBe(3000);
     expect(r.executiveSummary.length).toBeGreaterThan(0);
     expect(["desplegar", "parcial", "esperar"]).toContain(r.posture);
+  });
+
+  it("REDUCIR se cuantifica (cuánto reducir y por qué)", () => {
+    const inp = scanInput();
+    inp.valuation.NVDA = { productiveMargin: -0.30, productiveConfidence: "media", priceComparable: true }; // sobreval. moderada
+    const nvda = buildUnifiedAdvisor({ profile: PROFILE, scanInput: inp }).positions.find((p) => p.ticker === "NVDA")!;
+    expect(nvda.action).toBe("REDUCIR");
+    expect(nvda.trimPct).not.toBeNull();
+    expect((nvda.trimPct as number)).toBeGreaterThan(0);
+    expect(nvda.why).toMatch(/Recortar|recortar/);
+  });
+
+  it("sobrevaloración EXTREMA (<=-45%) => REDUCIR con incertidumbre, no VENDER automático", () => {
+    const inp = scanInput();
+    inp.valuation.NVDA = { productiveMargin: -0.70, productiveConfidence: "media", fcffMargin: -0.60, fcffConfidence: "media", priceComparable: true };
+    const nvda = buildUnifiedAdvisor({ profile: PROFILE, scanInput: inp }).positions.find((p) => p.ticker === "NVDA")!;
+    expect(nvda.action).toBe("REDUCIR");                  // extremo => no VENDER
+  });
+
+  it("ETF con política propia (rol/solapamiento), no REVISAR por no tener FCFF", () => {
+    const inp = scanInput();
+    const r = buildUnifiedAdvisor({ profile: PROFILE, scanInput: inp, etfInfo: { SPY: { role: "equity_amplio", overlapPct: 0.05, equityPct: 1 } } });
+    const spy = r.positions.find((p) => p.ticker === "SPY")!;
+    expect(spy.action).toBe("MANTENER");                 // dentro de límites, sin solapamiento excesivo
+    expect(spy.why).toMatch(/exposición amplia|renta variable/);
+  });
+
+  it("ETF con solapamiento alto => REDUCIR por exposición duplicada", () => {
+    const r = buildUnifiedAdvisor({ profile: PROFILE, scanInput: scanInput(), etfInfo: { SPY: { role: "equity_amplio", overlapPct: 0.40, equityPct: 1 } } });
+    expect(r.positions.find((p) => p.ticker === "SPY")!.action).toBe("REDUCIR");
   });
 
   it("coherencia: una posición accionable por VALOR no aparece simultáneamente como 'no tocar' sin explicar", () => {

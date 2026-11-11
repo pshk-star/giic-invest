@@ -10,7 +10,7 @@ import {
   getFundamentalValuations, getFundamentals, getLatestScan, getXrayData, getSettings, saveSettings, type Settings,
 } from "../data";
 import { derivePositions } from "../core/portfolio-tx";
-import { buildUnifiedAdvisor, type AdvisorReport, type PositionAction } from "../core/advisor-engine";
+import { buildUnifiedAdvisor, type AdvisorReport, type PositionAction, type EtfInfo } from "../core/advisor-engine";
 import { profileFromSettings, missingEssentials, type Profile } from "../core/advisor-profile";
 import type { ScanInput, ScanCandidate, InstrumentKind } from "../core/opportunity-scanner";
 import type { Adv3Valuation } from "../core/advisor3";
@@ -33,7 +33,7 @@ function modelMargin(cv: CompanyValuation | undefined, m: string): { m: number |
 
 const actionTone = (a: PositionAction) => a === "VENDER" ? "text-term-crit" : a === "REDUCIR" ? "text-term-warn"
   : a === "REVISAR" ? "text-term-info" : a === "ACUMULAR" ? "text-term-accent" : "text-term-muted";
-const classLabel: Record<string, string> = { atractiva: "Atractiva", pendiente_analisis: "Pendiente de análisis", poco_atractiva: "Poco atractiva", evidencia_insuficiente: "Evidencia insuficiente" };
+const classLabel: Record<string, string> = { compra_recomendada: "Compra recomendada", oportunidad_analizada: "Oportunidad analizada", candidata_investigacion: "Candidata de investigación", poco_atractiva: "Poco atractiva", evidencia_insuficiente: "Evidencia insuficiente" };
 
 export function UnifiedAdvisor() {
   const [report, setReport] = useState<AdvisorReport | null>(null);
@@ -65,9 +65,21 @@ export function UnifiedAdvisor() {
       const priceHistory: Record<string, { as_of: string; close: number }[]> = {};
       histTk.forEach((t, i) => { priceHistory[t] = histArr[i].map((b) => ({ as_of: b.as_of, close: Number(b.close) })); });
       const etfHeld = positionsAll.filter((p) => ETF.includes((p.asset_class ?? "").toLowerCase())).map((p) => p.ticker);
-      const xray = etfHeld.length ? await getXrayData(etfHeld).catch(() => ({ weights: [] as any[] })) : { weights: [] as any[] };
+      const xray = etfHeld.length ? await getXrayData(etfHeld).catch(() => ({ weights: [] as any[], snapshots: [] as any[] })) : { weights: [] as any[], snapshots: [] as any[] };
       const etfLookthrough: Record<string, Record<string, number>> = {};
       for (const w of xray.weights) { if (!w.ticker || w.weight == null) continue; (etfLookthrough[w.etf] ??= {})[String(w.ticker).toUpperCase()] = w.weight > 1 ? w.weight / 100 : w.weight; }
+      // política de ETF: rol (equity vs commodity), solapamiento con posiciones directas
+      const directHeld = new Set(positionsAll.filter((p) => !ETF.includes((p.asset_class ?? "").toLowerCase())).map((p) => p.ticker.toUpperCase()));
+      const etfInfo: Record<string, EtfInfo> = {};
+      for (const etf of etfHeld) {
+        const snap = (xray.snapshots ?? []).find((s: any) => s.etf === etf);
+        const rows = xray.weights.filter((w: any) => w.etf === etf);
+        const equityPct = snap?.equity_pct ?? null;
+        const role: EtfInfo["role"] = (rows.length === 0 || (equityPct != null && equityPct < 0.2)) ? "commodity" : "equity_amplio";
+        let overlap = 0;
+        for (const w of rows) if (w.ticker && directHeld.has(String(w.ticker).toUpperCase())) overlap += (w.weight > 1 ? w.weight / 100 : w.weight);
+        etfInfo[etf] = { role, overlapPct: overlap, equityPct };
+      }
 
       const valuation: Record<string, Adv3Valuation> = {};
       const scanFund: Record<string, any> = {};
@@ -87,7 +99,7 @@ export function UnifiedAdvisor() {
         priceHistory, etfLookthrough, contributions: [1000], constraints: { maxPositionWeight: 0.45, maxSectorWeight: 0.50, minMarginToBuy: 0.10 },
         fcffFallback: import.meta.env.VITE_FF_VALPOLICY === "1",
       };
-      setReport(buildUnifiedAdvisor({ profile, scanInput }));
+      setReport(buildUnifiedAdvisor({ profile, scanInput, etfInfo }));
     } catch (e) { setErr(String(e)); } finally { setLoading(false); }
   }
   useEffect(() => { load(); }, []);
@@ -141,7 +153,7 @@ export function UnifiedAdvisor() {
         <div className="space-y-1">
           {r.positions.map((p) => (
             <div key={p.ticker} className="text-xs flex items-baseline justify-between gap-2 border-b border-term-border/30 pb-1">
-              <span><strong className={actionTone(p.action)}>{p.action}</strong> · {p.ticker} <span className="text-term-muted">{p.name}</span></span>
+              <span><strong className={actionTone(p.action)}>{p.action}</strong>{p.trimPct ? ` −${Math.round(p.trimPct * 100)}%${p.trimAmount != null ? ` (${money(p.trimAmount, ccy)})` : ""}` : ""} · {p.ticker} <span className="text-term-muted">{p.name}</span></span>
               <span className="text-term-muted text-right">{p.margin != null ? `margen ${pct(p.margin)} (${p.source})` : "sin FV"} · peso {pct(p.weight)} · riesgo {pct(p.riskContribPct)}</span>
             </div>
           ))}
@@ -179,10 +191,10 @@ export function UnifiedAdvisor() {
         <ul className="text-xs text-term-muted list-disc pl-4 space-y-1">{r.risks.map((x, i) => <li key={i}>{x}</li>)}</ul>
       </Panel>
 
-      {/* Investigación + control */}
-      {r.researchPriorities.length ? (
-        <Panel title="Pendientes de análisis profundo (siguiente etapa)">
-          <div className="text-xs text-term-muted space-y-1">{r.researchPriorities.map((x) => <div key={x.ticker}>{x.ticker}: {x.reason}</div>)}</div>
+      {/* Candidatas de investigación (NO comprables) */}
+      {r.researchCandidates.length ? (
+        <Panel title={`Candidatas de investigación (${r.researchCandidates.length}) · no comprables hasta análisis profundo`}>
+          <div className="text-xs text-term-muted space-y-1">{r.researchCandidates.map((x) => <div key={x.ticker}>{x.ticker} {x.name ? `(${x.name})` : ""}: {x.reason}</div>)}</div>
         </Panel>
       ) : null}
 

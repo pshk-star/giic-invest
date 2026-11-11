@@ -3,7 +3,7 @@
 // Imprime la recomendación para verificar el resultado funcional end-to-end. No escribe nada.
 import { derivePositions, type Txn, type InstrumentMeta, type Split } from "../src/core/portfolio-tx";
 import { type ScanInput, type ScanCandidate, type InstrumentKind } from "../src/core/opportunity-scanner";
-import { buildUnifiedAdvisor } from "../src/core/advisor-engine";
+import { buildUnifiedAdvisor, type EtfInfo } from "../src/core/advisor-engine";
 import { profileFromSettings, missingEssentials, investableAmount, type Profile } from "../src/core/advisor-profile";
 import type { Adv3Valuation } from "../src/core/advisor3";
 import type { CompanyValuation } from "../src/core/fundval";
@@ -17,6 +17,10 @@ async function get(p: string, params: Record<string, string>): Promise<any[]> {
   const r = await fetch(`${BASE}/${p}?${new URLSearchParams(params)}`, { headers: H });
   if (!r.ok) throw new Error(`GET ${p} ${r.status} ${await r.text()}`);
   return r.json();
+}
+async function upsert(p: string, row: any, onConflict: string): Promise<void> {
+  const r = await fetch(`${BASE}/${p}?on_conflict=${onConflict}`, { method: "POST", headers: { ...H, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify([row]) });
+  if (!r.ok) throw new Error(`UPSERT ${p} ${r.status} ${await r.text()}`);
 }
 function kindOf(ac: string | null, s: string | null): InstrumentKind {
   const a = (ac || "").toLowerCase();
@@ -32,6 +36,11 @@ function mm(cv: CompanyValuation | undefined, m: string): { m: number | null; c:
 }
 
 async function main() {
+  if (process.env.SAVE_PROFILE === "1") {
+    // PLACEHOLDER etiquetado para demostrar la PERSISTENCIA (round-trip settings→motor). Pablo reemplaza
+    // capital/aporte reales en la app; no se inventa su liquidez (capital 0 = no configurado).
+    await upsert("settings", { base_currency: "USD", risk_tolerance: "moderado", monthly_contribution: 3000, capital_available: 0, min_cash: 0, horizon_years: 10, max_weight_per_asset: 0, max_weight_per_sector: 0 }, "user_id");
+  }
   const settingsRows = await get("settings", { select: "*", limit: "1" });
   let profile: Profile = profileFromSettings(settingsRows[0] ?? null);
   const miss = missingEssentials(profile);
@@ -77,15 +86,34 @@ async function main() {
     fcffFallback: process.env.FF_VALPOLICY === "1",
   };
 
-  const r = buildUnifiedAdvisor({ profile, scanInput });
+  // política de ETF (rol/solapamiento) desde X-ray
+  const etfHeld = positionsAll.filter((p) => ETF.includes((p.asset_class ?? "").toLowerCase())).map((p) => p.ticker);
+  const etfInfo: Record<string, EtfInfo> = {};
+  if (etfHeld.length) {
+    const inEtf = "in.(" + etfHeld.join(",") + ")";
+    const snaps = await get("etf_snapshots", { select: "etf,equity_pct,as_of,status", etf: inEtf, status: "eq.complete", order: "as_of.desc" }).catch(() => []);
+    const holds = await get("etf_holdings", { select: "etf,ticker,weight", etf: inEtf }).catch(() => []);
+    const directHeld = new Set(positionsAll.filter((p) => !ETF.includes((p.asset_class ?? "").toLowerCase())).map((p) => p.ticker.toUpperCase()));
+    for (const etf of etfHeld) {
+      const snap = snaps.find((s: any) => String(s.etf).toUpperCase() === etf.toUpperCase());
+      const rows = holds.filter((h: any) => String(h.etf).toUpperCase() === etf.toUpperCase());
+      const equityPct = snap?.equity_pct ?? null;
+      const role: EtfInfo["role"] = (rows.length === 0 || (equityPct != null && equityPct < 0.2)) ? "commodity" : "equity_amplio";
+      let overlap = 0;
+      for (const h of rows) if (h.ticker && directHeld.has(String(h.ticker).toUpperCase())) overlap += (h.weight > 1 ? h.weight / 100 : h.weight);
+      etfInfo[etf] = { role, overlapPct: overlap, equityPct };
+    }
+  }
+
+  const r = buildUnifiedAdvisor({ profile, scanInput, etfInfo });
   console.log(JSON.stringify({
     perfil_demo: demo, moneda: r.currency, aporte: investableAmount(profile), postura: r.posture,
     resumen: r.executiveSummary,
-    acciones: r.positions.map((p) => ({ t: p.ticker, accion: p.action, margen: p.margin, fuente: p.source, peso: p.weight })),
+    acciones: r.positions.map((p) => ({ t: p.ticker, accion: p.action, recorte_pct: p.trimPct, recorte_usd: p.trimAmount, margen: p.margin, fuente: p.source, peso: p.weight, por_que: p.why })),
     dinero_nuevo: { elegido: r.newMoney.chosen, legs: r.newMoney.legs.map((l) => ({ t: l.ticker, monto: l.amount })), efectivo: r.newMoney.cashKept },
-    oportunidades_top: r.opportunities.slice(0, 10).map((o) => ({ t: o.ticker, clase: o.class, comprable: o.buyable, margen: o.margin })),
-    pendientes_analisis: r.researchPriorities.map((x) => x.ticker),
-    riesgos: r.risks, topes: r.constraintsUsed,
+    oportunidades_top: r.opportunities.slice(0, 12).map((o) => ({ t: o.ticker, clase: o.class, comprable: o.buyable, margen: o.margin })),
+    candidatas_investigacion: r.researchCandidates.map((x) => ({ t: x.ticker, margen: x.margin })),
+    riesgos: r.risks, topes: r.constraintsUsed, etf_info: etfInfo,
   }, null, 2));
 }
 main().catch((e) => { console.error(e); process.exit(1); });
