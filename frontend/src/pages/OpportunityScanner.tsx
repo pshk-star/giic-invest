@@ -12,6 +12,9 @@ import { derivePositions } from "../core/portfolio-tx";
 import {
   buildScanner, type ScanInput, type ScanCandidate, type ScanEntry, type InstrumentKind,
 } from "../core/opportunity-scanner";
+import { buildAllocationPlan } from "../core/allocation-planner";
+
+const FF_ALLOC = import.meta.env.VITE_FF_ALLOC === "1";
 import type { Adv3Valuation, Adv3Position } from "../core/advisor3";
 import type { CompanyValuation } from "../core/fundval";
 import { money, pct, num } from "../format";
@@ -47,6 +50,7 @@ export function OpportunityScanner() {
   const [c1, setC1] = useState(1000);
   const [c2, setC2] = useState(3000);
   const [cash, setCash] = useState(0);
+  const [allocAmount, setAllocAmount] = useState(3000);
   const [query, setQuery] = useState("");
   const [onlyActionable, setOnlyActionable] = useState(false);
   const [compare, setCompare] = useState<string[]>([]);
@@ -133,6 +137,9 @@ export function OpportunityScanner() {
   if (loading) return <div className="p-8 text-term-muted">Cargando Opportunity Scanner…</div>;
   if (err) return <div className="p-8 text-rose-400">Error: {err}</div>;
   if (!r) return <div className="p-8 text-term-muted">Sin datos de universo.</div>;
+
+  const activeRaw = raw ? { ...raw, portfolio: { ...raw.portfolio, cash } } : null;
+  const allocPlan = FF_ALLOC && activeRaw ? buildAllocationPlan(activeRaw, r, Math.max(0, allocAmount)) : null;
 
   const q = query.trim().toUpperCase();
   const match = (e: ScanEntry) => (!q || e.ticker.includes(q) || (e.name ?? "").toUpperCase().includes(q)) && (!onlyActionable || e.actionable);
@@ -244,6 +251,32 @@ export function OpportunityScanner() {
               ))}
             </tbody></table>
           </div>
+        </Panel>
+      ) : null}
+
+      {allocPlan ? (
+        <Panel title={`Plan de asignación multiposición (P2.5 ⚗) · elegido: ${allocPlan.chosen}`}>
+          <div className="flex flex-wrap gap-3 items-center mb-2 text-xs">
+            <label>Aporte USD <input type="number" value={allocAmount} onChange={(e) => setAllocAmount(Math.max(0, Number(e.target.value) || 0))} className="w-24 bg-term-panel2 border border-term-border rounded px-2 py-1" /></label>
+            <span className="text-term-muted">Base vol {pct(allocPlan.baseVol)} · HHI {num(allocPlan.baseHhiSector, 3)}</span>
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            {allocPlan.proposals.map((pr) => (
+              <div key={pr.id} className={`rounded border p-3 ${pr.preferred ? "border-term-accent" : "border-term-border/50"}`}>
+                <div className="text-sm font-medium">{pr.label}{pr.preferred ? " ✓" : ""}</div>
+                <div className="text-xs text-term-muted mt-1">desplegado {money(pr.deployed, "USD")} · efectivo {money(pr.cashKept, "USD")} · vol {pct(pr.volAfter)} (Δ {pct(pr.deltaVol)}) · ΔHHI {num(pr.deltaHhiSector, 4)} · score {num(pr.score, 3)}</div>
+                <div className="mt-2 text-xs space-y-1">
+                  {pr.legs.length ? pr.legs.map((l) => (
+                    <div key={l.ticker}>{l.ticker} {money(l.amount, "USD")} → peso {pct(l.weightAfter)} · riesgo {l.marginalRiskPct != null ? pct(l.marginalRiskPct) : "n/d"} <span className="text-term-muted">({l.reason})</span></div>
+                  )) : <div className="text-term-muted">Sin despliegue (todo en efectivo).</div>}
+                </div>
+                {pr.preferred ? <div className="text-[11px] text-term-accent mt-2">{pr.why}</div> : null}
+              </div>
+            ))}
+          </div>
+          {allocPlan.discarded.length ? (
+            <div className="text-[11px] text-term-muted mt-2">Descartados: {allocPlan.discarded.map((d) => `${d.ticker} (${d.reason})`).join(" · ")}</div>
+          ) : null}
         </Panel>
       ) : null}
 

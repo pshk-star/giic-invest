@@ -9,6 +9,8 @@ interface ImportMetaEnv {
   readonly VITE_FF_SCANNER?: string;
   // P2.4 — política de valoración: habilita FCFF como fallback sin FV productivo (reversible).
   readonly VITE_FF_VALPOLICY?: string;
+  // P2.5 — plan de asignación multiposición (experimental, reversible).
+  readonly VITE_FF_ALLOC?: string;
 }
 interface ImportMeta {
   readonly env: ImportMetaEnv;

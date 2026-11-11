@@ -84,7 +84,7 @@ export interface ScannerReport {
 }
 
 // Alinea precios → retornos diarios sobre las fechas COMUNES a los tickers pedidos. Determinista.
-function alignReturns(priceHistory: Record<string, { as_of: string; close: number }[]>, tickers: string[]): Record<string, number[]> {
+export function alignReturns(priceHistory: Record<string, { as_of: string; close: number }[]>, tickers: string[]): Record<string, number[]> {
   const maps: Record<string, Map<string, number>> = {};
   const keyLists: string[][] = [];
   for (const t of tickers) {
