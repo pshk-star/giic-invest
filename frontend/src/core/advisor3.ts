@@ -66,10 +66,13 @@ const RISK_TRIM = 0.30;        // contribución al riesgo que justifica RECORTAR
 const DISAGREE_MAG = 0.25;     // brecha de margen productivo vs FCFF que se considera desacuerdo material
 const DIVERSIFY_MIN = 0.002;   // reducción mínima de HHI sector para que un ETF cuente como diversificación real
 
-function sufficient(c: Conf): boolean { return c === "alta" || c === "media"; }
+// Umbrales auditables, reutilizables por el Opportunity Scanner (P2.2) sin duplicar criterios.
+export const ADV3_THRESHOLDS = { STUB_W, UNDER, OVER, STRONG_OVER, RISK_TRIM, DISAGREE_MAG, DIVERSIFY_MIN } as const;
+
+export function sufficient(c: Conf): boolean { return c === "alta" || c === "media"; }
 
 // Desacuerdo entre el DCF productivo y el FCFF experimental. No ignora la discrepancia: la clasifica.
-function modelDisagreement(v: Adv3Valuation | undefined): { material: boolean; kind: "direccional" | "magnitud" | null; gap: number | null } {
+export function modelDisagreement(v: Adv3Valuation | undefined): { material: boolean; kind: "direccional" | "magnitud" | null; gap: number | null } {
   if (!v || v.productiveMargin == null || v.fcffMargin == null) return { material: false, kind: null, gap: null };
   const p = v.productiveMargin, f = v.fcffMargin, gap = Math.abs(p - f);
   const opposite = (p > UNDER && f < -UNDER) || (p < -UNDER && f > UNDER);  // lados claramente opuestos
@@ -79,7 +82,7 @@ function modelDisagreement(v: Adv3Valuation | undefined): { material: boolean; k
 }
 
 // Valoración efectiva: manda el FV PRODUCTIVO; el FCFF solo corrobora/contextualiza y NO lo desplaza.
-function effectiveMargin(v: Adv3Valuation | undefined): { margin: number | null; conf: Conf; source: PositionDecision["marginSource"]; note: string } {
+export function effectiveMargin(v: Adv3Valuation | undefined): { margin: number | null; conf: Conf; source: PositionDecision["marginSource"]; note: string } {
   if (!v) return { margin: null, conf: null, source: "ninguno", note: "sin valoración" };
   if (v.productiveMargin != null && v.priceComparable !== false) {
     const corro = v.fcffMargin != null && sufficient(v.fcffConfidence ?? null)
@@ -93,7 +96,15 @@ function effectiveMargin(v: Adv3Valuation | undefined): { margin: number | null;
   return { margin: null, conf: null, source: "ninguno", note: "sin FV productivo comparable; FCFF insuficiente" };
 }
 
-function isEtf(a?: string | null) { return ["etf", "fund", "etn", "mutualfund"].includes((a ?? "").toLowerCase()); }
+export function isEtf(a?: string | null) { return ["etf", "fund", "etn", "mutualfund"].includes((a ?? "").toLowerCase()); }
+
+// Criba de valor REUTILIZABLE: solo el FV PRODUCTIVO con margen suficiente y confianza suficiente
+// habilita compra. El FCFF experimental de baja confianza NO habilita. Un margen positivo por sí
+// solo NO basta. La usan tanto la asignación de Advisor 3.0 como el Opportunity Scanner (sin duplicar).
+export function passesValueGate(v: Adv3Valuation | undefined, minMargin: number): boolean {
+  const em = effectiveMargin(v);
+  return em.margin != null && em.margin >= minMargin && sufficient(em.conf) && em.source === "productivo";
+}
 
 export function buildAdvisor3(inp: Adv3Input, asOf = new Date().toISOString().slice(0, 10)): Advisor3Report {
   const { positions, cash, contribution, returns, valuation, quality, constraints } = inp;
@@ -182,11 +193,8 @@ export function buildAdvisor3(inp: Adv3Input, asOf = new Date().toISOString().sl
   const minMargin = constraints.minMarginToBuy ?? UNDER;
   // candidatos a desplegar: margen >= umbral con confianza suficiente, sin romper límites de peso.
   // Solo FV PRODUCTIVO habilita compra (el FCFF de baja confianza NO).
-  const candidates = positions.filter((p) => {
-    const em = effectiveMargin(valuation[p.ticker]);
-    return !isEtf(p.assetClass) && em.margin != null && em.margin >= minMargin && sufficient(em.conf)
-      && p.weight < constraints.maxPositionWeight && em.source === "productivo";
-  });
+  const candidates = positions.filter((p) =>
+    !isEtf(p.assetClass) && passesValueGate(valuation[p.ticker], minMargin) && p.weight < constraints.maxPositionWeight);
 
   function optionFrom(id: string, label: string, dist: { ticker: string; amount: number }[], reasonBy: Record<string, string>): AllocOption {
     // redondea importes primero; conservación de capital EXACTA: efectivo = aporte − Σ(redondeados)
