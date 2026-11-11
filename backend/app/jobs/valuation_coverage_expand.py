@@ -62,7 +62,7 @@ def run(write: bool) -> dict:
     prices: Dict[str, dict] = {}
     if universe:
         inlist = "in.(" + ",".join(universe) + ")"
-        for r in w.select_rows("prices", select="ticker,close,currency,as_of", params={"ticker": inlist}):
+        for r in w.select_rows("prices", select="ticker,close,currency,as_of", params={"ticker": inlist, "order": "ticker"}):
             prices[str(r["ticker"]).upper()] = r
 
     sector_of = {s["ticker"].upper(): s.get("sector") for s in scan if s.get("ticker")}

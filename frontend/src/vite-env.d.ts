@@ -7,6 +7,8 @@ interface ImportMetaEnv {
   readonly VITE_FF_ADVISOR3?: string;
   // P2.2 — feature flag reversible del Opportunity Scanner (experimental).
   readonly VITE_FF_SCANNER?: string;
+  // P2.4 — política de valoración: habilita FCFF como fallback sin FV productivo (reversible).
+  readonly VITE_FF_VALPOLICY?: string;
 }
 interface ImportMeta {
   readonly env: ImportMetaEnv;

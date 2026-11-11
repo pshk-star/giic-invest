@@ -34,6 +34,7 @@ export interface ScanInput {
   etfLookthrough?: Record<string, Record<string, number>>;           // etf -> {ticker: peso 0..1} (exposición duplicada)
   contributions?: number[];                                          // por defecto [1000, 3000]
   constraints: Adv3Constraints;
+  fcffFallback?: boolean;   // política única: habilita FCFF como fallback sin FV productivo (flag reversible)
 }
 
 export interface SimPoint {
@@ -109,6 +110,7 @@ export function buildScanner(inp: ScanInput, asOf = new Date().toISOString().sli
   const contributions = (inp.contributions && inp.contributions.length ? inp.contributions : [1000, 3000]).slice().sort((a, b) => a - b);
   const { UNDER, RISK_TRIM, DIVERSIFY_MIN } = ADV3_THRESHOLDS;
   const minMargin = constraints.minMarginToBuy ?? UNDER;
+  const pol = { fcffFallback: inp.fcffFallback ?? false };   // política única (Scanner ↔ Advisor 3.0)
 
   const positions = portfolio.positions;
   const cash = portfolio.cash;
@@ -183,7 +185,7 @@ export function buildScanner(inp: ScanInput, asOf = new Date().toISOString().sli
 
   for (const c of candidates) {
     const val = valuation[c.ticker];
-    const em = effectiveMargin(val);
+    const em = effectiveMargin(val, pol);
     const dis = modelDisagreement(val);
     const f = fundamentals[c.ticker] ?? {};
     const hasReturns = !!priceHistory[c.ticker] && priceHistory[c.ticker].length >= 2;
@@ -246,7 +248,7 @@ export function buildScanner(inp: ScanInput, asOf = new Date().toISOString().sli
     // (C) ACCIONABLE: reutiliza los controles de Advisor 3.0. Empresa por VALOR; ETF por DIVERSIFICACIÓN.
     let actionable = false; let actionableBasis: "valor" | "diversificador" | null = null;
     if (c.kind === "empresa" || c.kind === "banco") {
-      if (passesValueGate(val, minMargin) && !dis.material && simMax && simMax.weightAfter <= constraints.maxPositionWeight) {
+      if (passesValueGate(val, minMargin, pol) && !dis.material && simMax && simMax.weightAfter <= constraints.maxPositionWeight) {
         actionable = true; actionableBasis = "valor";
         reasons.push("Accionable por VALOR: FV productivo con margen+confianza suficientes, sin desacuerdo material, respeta tope de peso.");
       } else if (dis.material) {
@@ -260,7 +262,7 @@ export function buildScanner(inp: ScanInput, asOf = new Date().toISOString().sli
     }
 
     if (dis.material) reasons.push(`Desacuerdo de modelos (${dis.kind}, brecha ${((dis.gap ?? 0) * 100).toFixed(0)} pp): confianza degradada.`);
-    if (!actionable && c.kind !== "etf" && em.margin != null && em.margin > 0 && !passesValueGate(val, minMargin)) {
+    if (!actionable && c.kind !== "etf" && em.margin != null && em.margin > 0 && !passesValueGate(val, minMargin, pol)) {
       reasons.push("Margen positivo pero NO accionable: no supera margen+confianza del FV productivo (no se compra solo por margen).");
     }
     whatWouldChange.push(fundMissing ? "fundamentales (ROIC/crecimiento/margen) elevarían la confianza." : "un cambio de margen o convergencia de modelos movería la clasificación.");
@@ -274,7 +276,7 @@ export function buildScanner(inp: ScanInput, asOf = new Date().toISOString().sli
     if (blockedByProductiveVeto) { blockedTickers.push(c.ticker); reasons.push("BLOQUEADO solo por el DCF productivo: el FCFF lo haría atractivo; sin cambiar la regla (insumo de P2.4)."); }
 
     // Clasificación de 4 vías
-    const attractiveByProd = passesValueGate(val, minMargin);
+    const attractiveByProd = passesValueGate(val, minMargin, pol);
     let classification: ScanClassification;
     if (eligible) {
       classification = actionable ? "accionable"

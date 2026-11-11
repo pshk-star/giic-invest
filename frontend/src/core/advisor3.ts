@@ -6,6 +6,10 @@
 // exige confianza suficiente + chequeos de riesgo/concentración. El FCFF experimental de baja
 // confianza NO desplaza el Fair Value productivo. No ejecuta operaciones.
 import { riskContributions, concentration, fxExposure, type RiskContrib } from "./portfolio-risk";
+import { governingValuation, sufficient as _sufficient, passesValueGate as _passesValueGate, type PolicyOpts } from "./valuation-policy";
+
+// Reexport de la política ÚNICA (Scanner y Advisor 3.0 comparten criterios; no se duplican).
+export const sufficient = _sufficient;
 
 export type PositionAction = "MANTENER" | "REDUCIR" | "VENDER" | "REVISAR";
 export type ContribAction = "COMPRAR" | "ACUMULAR" | "ESPERAR";
@@ -32,6 +36,7 @@ export interface Adv3Input {
   quality: Record<string, Adv3Quality>;
   etfLookthrough?: Record<string, Record<string, number>>;
   constraints: Adv3Constraints;
+  fcffFallback?: boolean;   // política: habilita FCFF como fallback cuando no hay FV productivo (flag)
 }
 
 export interface Explain {
@@ -41,7 +46,7 @@ export interface Explain {
 }
 export interface PositionDecision {
   ticker: string; action: PositionAction; confidence: Conf;
-  marginUsed: number | null; marginSource: "productivo" | "fcff(contexto)" | "ninguno";
+  marginUsed: number | null; marginSource: "productivo" | "fcff_fallback" | "fcff(contexto)" | "ninguno";
   riskContribPct: number; explain: Explain;
 }
 export interface AllocItem { ticker: string; amount: number; newWeight: number; action: ContribAction; reason: string }
@@ -69,9 +74,7 @@ const DIVERSIFY_MIN = 0.002;   // reducción mínima de HHI sector para que un E
 // Umbrales auditables, reutilizables por el Opportunity Scanner (P2.2) sin duplicar criterios.
 export const ADV3_THRESHOLDS = { STUB_W, UNDER, OVER, STRONG_OVER, RISK_TRIM, DISAGREE_MAG, DIVERSIFY_MIN } as const;
 
-export function sufficient(c: Conf): boolean { return c === "alta" || c === "media"; }
-
-// Desacuerdo entre el DCF productivo y el FCFF experimental. No ignora la discrepancia: la clasifica.
+export // Desacuerdo entre el DCF productivo y el FCFF experimental. No ignora la discrepancia: la clasifica.
 export function modelDisagreement(v: Adv3Valuation | undefined): { material: boolean; kind: "direccional" | "magnitud" | null; gap: number | null } {
   if (!v || v.productiveMargin == null || v.fcffMargin == null) return { material: false, kind: null, gap: null };
   const p = v.productiveMargin, f = v.fcffMargin, gap = Math.abs(p - f);
@@ -81,19 +84,10 @@ export function modelDisagreement(v: Adv3Valuation | undefined): { material: boo
   return { material: false, kind: null, gap };
 }
 
-// Valoración efectiva: manda el FV PRODUCTIVO; el FCFF solo corrobora/contextualiza y NO lo desplaza.
-export function effectiveMargin(v: Adv3Valuation | undefined): { margin: number | null; conf: Conf; source: PositionDecision["marginSource"]; note: string } {
-  if (!v) return { margin: null, conf: null, source: "ninguno", note: "sin valoración" };
-  if (v.productiveMargin != null && v.priceComparable !== false) {
-    const corro = v.fcffMargin != null && sufficient(v.fcffConfidence ?? null)
-      ? ` (FCFF ${v.fcffMargin >= 0 ? "+" : ""}${(v.fcffMargin * 100).toFixed(0)}% corrobora)` : "";
-    return { margin: v.productiveMargin, conf: v.productiveConfidence, source: "productivo", note: `FV productivo${corro}` };
-  }
-  // sin FV productivo comparable: el FCFF experimental es SOLO contexto, nunca manda si su confianza es baja
-  if (v.fcffMargin != null && sufficient(v.fcffConfidence ?? null)) {
-    return { margin: v.fcffMargin, conf: "baja", source: "fcff(contexto)", note: "sin FV productivo; FCFF experimental como contexto (confianza degradada)" };
-  }
-  return { margin: null, conf: null, source: "ninguno", note: "sin FV productivo comparable; FCFF insuficiente" };
+// Valoración efectiva: delega en la POLÍTICA ÚNICA (productivo primario; FCFF solo fallback bajo flag).
+export function effectiveMargin(v: Adv3Valuation | undefined, opts?: PolicyOpts): { margin: number | null; conf: Conf; source: PositionDecision["marginSource"]; note: string } {
+  const g = governingValuation(v, opts);
+  return { margin: g.margin, conf: g.conf, source: g.source, note: g.note };
 }
 
 export function isEtf(a?: string | null) { return ["etf", "fund", "etn", "mutualfund"].includes((a ?? "").toLowerCase()); }
@@ -101,13 +95,13 @@ export function isEtf(a?: string | null) { return ["etf", "fund", "etn", "mutual
 // Criba de valor REUTILIZABLE: solo el FV PRODUCTIVO con margen suficiente y confianza suficiente
 // habilita compra. El FCFF experimental de baja confianza NO habilita. Un margen positivo por sí
 // solo NO basta. La usan tanto la asignación de Advisor 3.0 como el Opportunity Scanner (sin duplicar).
-export function passesValueGate(v: Adv3Valuation | undefined, minMargin: number): boolean {
-  const em = effectiveMargin(v);
-  return em.margin != null && em.margin >= minMargin && sufficient(em.conf) && em.source === "productivo";
+export function passesValueGate(v: Adv3Valuation | undefined, minMargin: number, opts?: PolicyOpts): boolean {
+  return _passesValueGate(v, minMargin, opts);
 }
 
 export function buildAdvisor3(inp: Adv3Input, asOf = new Date().toISOString().slice(0, 10)): Advisor3Report {
   const { positions, cash, contribution, returns, valuation, quality, constraints } = inp;
+  const pol: PolicyOpts = { fcffFallback: inp.fcffFallback ?? false };
   const totalInvested = positions.reduce((s, p) => s + p.marketValue, 0);
   const portfolioValue = totalInvested + cash;
   const weights: Record<string, number> = {};
@@ -124,7 +118,7 @@ export function buildAdvisor3(inp: Adv3Input, asOf = new Date().toISOString().sl
 
   // ---------- A) decisiones sobre posiciones existentes ----------
   const positionDecisions: PositionDecision[] = positions.map((p) => {
-    const em = effectiveMargin(valuation[p.ticker]);
+    const em = effectiveMargin(valuation[p.ticker], pol);
     const dis = modelDisagreement(valuation[p.ticker]);
     const q = quality[p.ticker];
     const contribPct = rc.byPosition[p.ticker]?.contribPct ?? 0;
@@ -194,7 +188,7 @@ export function buildAdvisor3(inp: Adv3Input, asOf = new Date().toISOString().sl
   // candidatos a desplegar: margen >= umbral con confianza suficiente, sin romper límites de peso.
   // Solo FV PRODUCTIVO habilita compra (el FCFF de baja confianza NO).
   const candidates = positions.filter((p) =>
-    !isEtf(p.assetClass) && passesValueGate(valuation[p.ticker], minMargin) && p.weight < constraints.maxPositionWeight);
+    !isEtf(p.assetClass) && passesValueGate(valuation[p.ticker], minMargin, pol) && p.weight < constraints.maxPositionWeight);
 
   function optionFrom(id: string, label: string, dist: { ticker: string; amount: number }[], reasonBy: Record<string, string>): AllocOption {
     // redondea importes primero; conservación de capital EXACTA: efectivo = aporte − Σ(redondeados)
@@ -207,7 +201,7 @@ export function buildAdvisor3(inp: Adv3Input, asOf = new Date().toISOString().sl
     for (const p of positions) nw[p.ticker] = (p.marketValue + amtOf(p.ticker)) / newTotal;
     const after = riskContributions(nw, returns);
     const hhiA = concentration(nw, meta, "sector").hhi;
-    const valueScore = rounded.reduce((s, d) => { const em = effectiveMargin(valuation[d.ticker]); return s + (em.margin ?? 0) * d.amount; }, 0) / (contribution || 1);
+    const valueScore = rounded.reduce((s, d) => { const em = effectiveMargin(valuation[d.ticker], pol); return s + (em.margin ?? 0) * d.amount; }, 0) / (contribution || 1);
     const concPenalty = Math.max(0, hhiA - concSector.hhi) * 5;
     const score = Number((valueScore - concPenalty).toFixed(4));
     const items: AllocItem[] = rounded.map((d) => ({
@@ -225,7 +219,7 @@ export function buildAdvisor3(inp: Adv3Input, asOf = new Date().toISOString().sl
     why: "Sin oportunidades que superen el umbral de margen+confianza+riesgo, o por disciplina de liquidez." });
 
   if (candidates.length) {
-    const emOf = (p: Adv3Position) => effectiveMargin(valuation[p.ticker]);
+    const emOf = (p: Adv3Position) => effectiveMargin(valuation[p.ticker], pol);
     const roomValue = (p: Adv3Position) => Math.max(0, constraints.maxPositionWeight * (portfolioValue + contribution) - p.marketValue);
     // Opción 1: VALOR — concentra en el mejor margen con confianza, respetando tope de peso
     const best = [...candidates].sort((a, b) => (emOf(b).margin ?? 0) - (emOf(a).margin ?? 0));

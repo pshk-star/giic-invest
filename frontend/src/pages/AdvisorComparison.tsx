@@ -85,6 +85,7 @@ export function AdvisorComparison() {
         })),
         cash, contribution, returns, valuation, quality,
         constraints: { maxPositionWeight: 0.45, maxSectorWeight: 0.50, minMarginToBuy: 0.10 },
+        fcffFallback: import.meta.env.VITE_FF_VALPOLICY === "1",
       };
       setRaw(input);
       setReport(buildAdvisor3(input));

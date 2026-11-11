@@ -223,6 +223,31 @@ describe("P2.2 Opportunity Scanner", () => {
     expect(deployedTickers.has("KO")).toBe(true);
   });
 
+  it("P2.4 política: con fallback OFF un nombre con FCFF (sin FV productivo) NO es accionable (bloqueado)", () => {
+    const inp = baseInput();
+    inp.valuation.XYZ = { productiveMargin: null, productiveConfidence: null, fcffMargin: 0.30, fcffConfidence: "media", priceComparable: true };
+    const xyz = buildScanner(inp).entries.find((e) => e.ticker === "XYZ")!;   // fcffFallback por defecto false
+    expect(xyz.actionable).toBe(false);
+    expect(xyz.blockedByProductiveVeto).toBe(true);
+  });
+
+  it("P2.4 política: con fallback ON el mismo nombre pasa a accionable por VALOR (FCFF fallback bajo controles)", () => {
+    const inp = baseInput();
+    inp.valuation.XYZ = { productiveMargin: null, productiveConfidence: null, fcffMargin: 0.30, fcffConfidence: "media", priceComparable: true };
+    inp.fcffFallback = true;
+    const xyz = buildScanner(inp).entries.find((e) => e.ticker === "XYZ")!;
+    expect(xyz.actionable).toBe(true);
+    expect(xyz.actionableBasis).toBe("valor");
+    expect(xyz.blockedByProductiveVeto).toBe(false);   // ya no está bloqueado: el fallback lo habilita
+  });
+
+  it("P2.4 política: el fallback NO desplaza un FV productivo existente (NVDA sigue gobernado por productivo)", () => {
+    const inp = baseInput();
+    inp.fcffFallback = true;
+    const nvda = buildScanner(inp).entries.find((e) => e.ticker === "NVDA")!;
+    expect(nvda.marginSource).toBe("productivo");
+  });
+
   it("P2.3 rendimiento: evaluar el universo es O(n) y no lanza con universo mayor", () => {
     const inp = baseInput();
     // duplica el universo con nombres sintéticos fuera de cartera, con y sin datos
