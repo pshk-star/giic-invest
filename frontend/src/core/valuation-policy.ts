@@ -20,7 +20,19 @@ export interface GovResult {
 }
 export interface PolicyOpts { fcffFallback?: boolean }
 
+// Margen implausible (FV muy lejos del precio) ⇒ modelo frágil: la confianza se degrada a 'baja' para
+// que no respalde una asignación, aunque la fila guardada diga otra cosa (control de calidad P2.4.1).
+export const EXTREME_MARGIN = 0.80;
+
 export function sufficient(c: Conf): boolean { return c === "alta" || c === "media"; }
+
+// Degrada a confianza baja/experimental cuando el margen es extremo (salvaguarda de lectura).
+function guardExtreme(r: GovResult): GovResult {
+  if (r.margin != null && Math.abs(r.margin) >= EXTREME_MARGIN) {
+    return { ...r, conf: "baja", tier: "experimental", note: `${r.note} | margen extremo (${(r.margin * 100).toFixed(0)}%): confianza degradada, no apto para asignación` };
+  }
+  return r;
+}
 
 export function governingValuation(v: GovInput | undefined, opts?: PolicyOpts): GovResult {
   const fallback = !!opts?.fcffFallback;
@@ -29,11 +41,11 @@ export function governingValuation(v: GovInput | undefined, opts?: PolicyOpts): 
   if (v.productiveMargin != null && v.priceComparable !== false) {
     const corro = v.fcffMargin != null && sufficient(v.fcffConfidence ?? null)
       ? ` (FCFF ${v.fcffMargin >= 0 ? "+" : ""}${(v.fcffMargin * 100).toFixed(0)}% corrobora)` : "";
-    return { margin: v.productiveMargin, conf: v.productiveConfidence, source: "productivo", tier: "confiable", note: `FV productivo${corro}` };
+    return guardExtreme({ margin: v.productiveMargin, conf: v.productiveConfidence, source: "productivo", tier: "confiable", note: `FV productivo${corro}` });
   }
   // 2) sin FV productivo: FCFF como FALLBACK (solo si flag + confianza suficiente) o CONTEXTO
   if (v.fcffMargin != null && sufficient(v.fcffConfidence ?? null)) {
-    if (fallback) return { margin: v.fcffMargin, conf: v.fcffConfidence ?? null, source: "fcff_fallback", tier: "experimental", note: "sin FV productivo; FCFF como fallback bajo controles (experimental)" };
+    if (fallback) return guardExtreme({ margin: v.fcffMargin, conf: v.fcffConfidence ?? null, source: "fcff_fallback", tier: "experimental", note: "sin FV productivo; FCFF como fallback bajo controles (experimental)" });
     return { margin: v.fcffMargin, conf: "baja", source: "fcff(contexto)", tier: "experimental", note: "sin FV productivo; FCFF solo como contexto (no gobierna; fallback apagado)" };
   }
   // 3) nada utilizable → no se inventa FV

@@ -37,6 +37,14 @@ describe("P2.4 política de valoración única", () => {
     expect(g.margin).toBeNull();
   });
 
+  it("margen extremo (FV >> precio) degrada a confianza baja y NO respalda asignación", () => {
+    const v = { productiveMargin: null, productiveConfidence: null, fcffMargin: 1.16, fcffConfidence: "media" as const };
+    const g = governingValuation(v, { fcffFallback: true });
+    expect(g.conf).toBe("baja");
+    expect(g.tier).toBe("experimental");
+    expect(passesValueGate(v, 0.10, { fcffFallback: true })).toBe(false);   // ADBE/PFE no entran a asignación
+  });
+
   it("precio no comparable ignora el FV productivo", () => {
     const g = governingValuation({ productiveMargin: 0.20, productiveConfidence: "media", priceComparable: false });
     expect(g.source).not.toBe("productivo");

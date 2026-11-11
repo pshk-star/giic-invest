@@ -25,14 +25,18 @@ from app.research.fcff_forward import (Assump, Base, value_p16, value_path, p16_
 SUPPORTED_CCY = set(RF.keys()) & set(CRP.keys()) & set(FX.keys())   # USD/EUR/TWD
 
 # Rangos conservadores para supuestos derivados de datos (clamp = evita extrapolaciones absurdas).
-G1_MIN, G1_MAX = -0.10, 0.35
+# P2.4.1: g1 y s2c ENDURECIDOS tras la validación de las 8 (evitar extrapolar CAGR histórico y la
+# infra-reinversión de s2c alto en empresas intensivas en capital — sesgo P1.8.2). Dirección
+# conservadora: reduce sobrevaloración, NUNCA produce compras.
+G1_MIN, G1_MAX = -0.10, 0.18
 MARGIN_MIN, MARGIN_MAX = -0.20, 0.70
 TAX_MIN, TAX_MAX = 0.10, 0.30
-S2C_MIN, S2C_MAX = 0.5, 6.0
+S2C_MIN, S2C_MAX = 0.5, 3.0
 DV_MAX = 0.60
 BETA_DEFAULT, BETA_MIN, BETA_MAX = 1.10, 0.6, 2.0
 ROIC_TERMINAL_DEFAULT = 0.14
 TERMINAL_WEIGHT_MAX = 0.90        # control: si el valor vive casi todo en la perpetuidad, es frágil
+FV_VS_PX_MAX = 1.8               # control: FV > 1.8× precio ⇒ modelo frágil (confianza baja, no apto)
 MIN_YEARS_RELIABLE = 4            # años de serie para considerar 'confiable'
 
 
@@ -167,6 +171,9 @@ def build(ticker: str, ccy: str, px: Optional[float], series: Dict[str, Dict[str
 
     # --- clasificación de confianza/status (incertidumbre → menor confianza) ---
     weak: List[str] = []
+    extreme = (fv / px) > FV_VS_PX_MAX
+    if extreme:
+        weak.append(f"FV {fv/px:.1f}× precio: modelo frágil/sobrevalorado (no apto para asignación)")
     if n_years < MIN_YEARS_RELIABLE:
         weak.append(f"serie corta ({n_years} años)")
     if tw > TERMINAL_WEIGHT_MAX:
@@ -178,7 +185,10 @@ def build(ticker: str, ccy: str, px: Optional[float], series: Dict[str, Dict[str
     reasons.append(f"g1={g1*100:.1f}% margenT={margin_terminal*100:.0f}% s2c={s2c:.1f} dv={dv*100:.0f}% WACC={val['wacc']['wacc']*100:.1f}%")
     if weak:
         reasons.extend(weak)
-        status, confidence = "experimental", ("baja" if len(weak) >= 2 else "media")
+        # margen extremo ⇒ confianza baja SIEMPRE (no apto para asignación); otras señales débiles:
+        # baja si hay varias, media si es una sola.
+        status = "experimental"
+        confidence = "baja" if (extreme or len(weak) >= 2) else "media"
     else:
         status, confidence = "confiable", "media"
     inputs.update({"g1": g1, "margin_terminal": margin_terminal, "s2c": s2c, "dv": dv,

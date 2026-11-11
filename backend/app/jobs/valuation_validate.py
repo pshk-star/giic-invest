@@ -56,6 +56,10 @@ def anomalies(ccy: str, inp: dict, base, assump) -> List[dict]:
     return out
 
 
+def _margin_extreme(margin_pct) -> bool:
+    return isinstance(margin_pct, (int, float)) and abs(margin_pct) > 80.0
+
+
 def run(tickers: List[str]) -> dict:
     url = os.getenv("SUPABASE_URL", ""); srk = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
     if not url or not srk or not os.getenv("EODHD_API_KEY"):
@@ -88,6 +92,8 @@ def run(tickers: List[str]) -> dict:
 
         r = build(t, ccy or "", px, series, adr=adr)
         an = anomalies(ccy, r.inputs, r.base, r.assump) if r.base else [{"flag": "sin_valoracion", "sev": "alta", "detalle": r.reasons[:2]}]
+        if _margin_extreme(r.margin_pct):
+            an.append({"flag": "margen_extremo", "sev": "alta", "detalle": f"margen {r.margin_pct}% (FV implausible vs precio)"})
         high = [a for a in an if a["sev"] == "alta"]
         verdict = "apta_para_asignacion" if (r.status == "confiable" and r.confidence in ("alta", "media") and not high) else "solo_calculada"
         if verdict == "apta_para_asignacion":
