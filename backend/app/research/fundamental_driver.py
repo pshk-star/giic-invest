@@ -38,6 +38,12 @@ ROIC_TERMINAL_DEFAULT = 0.14
 TERMINAL_WEIGHT_MAX = 0.90        # control: si el valor vive casi todo en la perpetuidad, es frágil
 FV_VS_PX_MAX = 1.8               # control: FV > 1.8× precio ⇒ modelo frágil (confianza baja, no apto)
 MIN_YEARS_RELIABLE = 4            # años de serie para considerar 'confiable'
+# Corrección de reinversión (diagnóstico PFE): reinversión CONSISTENTE con crecimiento y ROIC.
+GROWTH_WINDOW = 6                 # ventana reciente (~5 años) para g1 (no CAGR de toda la historia)
+DEP_RATE = 0.10                  # vida útil implícita: PP&E ≈ capex/DEP_RATE ⇒ s2c = ventas/PP&E
+TERMINAL_G_CAP = 0.025           # crecimiento perpetuo defendible (≤ GDP nominal largo plazo)
+ACQ_AMORT_RATIO = 1.5            # D&A ≫ capex ⇒ capital dominado por amortización de adquisiciones:
+                                  # el capital invertido NO es reconstruible del capex ⇒ se bloquea
 
 
 @dataclass
@@ -133,33 +139,38 @@ def build(ticker: str, ccy: str, px: Optional[float], series: Dict[str, Dict[str
     eff_tax = _clamp((tax / pretax) if (tax and pretax and pretax > 0) else 0.15, TAX_MIN, TAX_MAX)
 
     # --- supuestos derivados de datos, en rangos conservadores ---
-    rev_cagr = _cagr(series, "revenue")
-    n_years = len(_periods(series, "revenue"))
-    g1 = _clamp(rev_cagr if rev_cagr is not None else 0.05, G1_MIN, G1_MAX)
+    rev_pts = _periods(series, "revenue")
+    n_years = len(rev_pts)
+    rev_cagr = _cagr(series, "revenue")   # histórico completo (solo para reporte)
+    # crecimiento g1 desde VENTANA RECIENTE (~5 años), no el CAGR de toda la historia (sesgo M&A/COVID)
+    win = rev_pts[-GROWTH_WINDOW:]
+    g_recent = ((win[-1][1] / win[0][1]) ** (1.0 / (len(win) - 1)) - 1.0) \
+        if (len(win) >= 2 and win[0][1] > 0 and win[-1][1] > 0) else (rev_cagr if rev_cagr is not None else 0.05)
+    g1 = _clamp(g_recent, G1_MIN, G1_MAX)
     margin_terminal = _clamp(min(ebit_margin0, 0.30), MARGIN_MIN, 0.30)   # fade conservador del margen
     mktcap = px * shares * (FX.get(ccy, 1.0)) * (adr or 1)
     dv = _clamp((net_debt / (net_debt + mktcap)) if (net_debt > 0 and mktcap > 0) else 0.0, 0.0, DV_MAX)
     b = _clamp(beta if beta is not None else BETA_DEFAULT, BETA_MIN, BETA_MAX)
     kd = RF[ccy] + 0.02
-    # sales-to-capital desde reinversión histórica: s2c ≈ ΔRev / reinversión; si no hay, default 2.0
-    rr = _reinv_rates(series, revenue)
-    if rr and (rr[0] - rr[1]) > 0:
-        s2c = _clamp(1.0 / (rr[0] - rr[1]), S2C_MIN, S2C_MAX)   # 1/(capex%−D&A%)
-    else:
-        s2c = 2.0
+    # REINVERSIÓN CONSISTENTE con crecimiento y ROIC (corrige el "crecimiento gratis" del diagnóstico PFE):
+    # capital invertido implícito del CAPEX (PP&E ≈ capex/DEP_RATE), s2c = ventas/capital. NO se usa
+    # (capex−D&A): la amortización de intangibles ADQUIRIDOS no reduce la reinversión. Donde D&A ≫ capex
+    # el capital no es reconstruible del capex ⇒ se marca para BLOQUEO (no se inventa capital).
+    rr = _reinv_rates(series, revenue)      # (capex%, dna%, wc%)
+    capex_int = rr[0] if rr else None
+    dna_int = rr[1] if rr else None
+    acq_amort = bool(capex_int and dna_int and capex_int > 0 and (dna_int / capex_int) > ACQ_AMORT_RATIO)
+    s2c = _clamp(DEP_RATE / capex_int, S2C_MIN, S2C_MAX) if (capex_int and capex_int > 0) else 2.0
+    gT = min(RF[ccy], TERMINAL_G_CAP)       # crecimiento terminal defendible (no = RF)
+    roic_implied = ebit_margin0 * (1 - eff_tax) * s2c
     assump = Assump(beta=b, kd=kd, dv=dv, tax_norm=eff_tax, s2c=s2c, g1=g1,
-                    margin_terminal=margin_terminal, roic_terminal=ROIC_TERMINAL_DEFAULT, years=10)
+                    margin_terminal=margin_terminal, roic_terminal=ROIC_TERMINAL_DEFAULT, g_terminal=gT, years=10)
     base = Base(ticker=ticker, ccy=ccy, revenue=revenue, ebit_margin0=ebit_margin0,
                 net_debt=net_debt, shares=shares, tax_rate=eff_tax, interest=0.0, adr=adr)
 
-    # --- valoración con el motor existente (reinversión neta corregida si hay serie) ---
+    # --- valoración: SIEMPRE reinversión por s2c (ΔRev/s2c, positiva al crecer) con g terminal defendible ---
     try:
-        reinv_fn = corrected_reinv_fn(*rr) if rr else None
-        if reinv_fn:
-            g, m = p16_path(g1, RF[ccy], ebit_margin0, margin_terminal, assump.years)
-            val = value_path(base, assump, g, m, gT=RF[ccy], reinv_fn=reinv_fn)
-        else:
-            val = value_p16(base, assump)
+        val = value_p16(base, assump)
     except Exception as e:
         return fail(f"motor no converge: {type(e).__name__}")
 
@@ -194,19 +205,19 @@ def build(ticker: str, ccy: str, px: Optional[float], series: Dict[str, Dict[str
     # --- BARRERA DE SEGURIDAD (diagnóstico PFE): marca inconsistencias económicas no resueltas que NO
     # deben generar compras/asignaciones. NO cambia el Fair Value; solo señaliza "en revisión". Criterio
     # económico, NO un umbral de diferencia vs consenso.
-    reinv_neta = (rr[0] - rr[1]) if rr else None          # capex% − D&A% (reinversión neta sobre ventas)
-    free_growth = bool(reinv_neta is not None and reinv_neta < 0 and g1 > 0)
+    reinv_neta = (rr[0] - rr[1]) if rr else None          # capex% − D&A% (solo diagnóstico/reporte)
     adr_fx_review = bool((adr or 1) != 1 or ccy != "USD")  # ruta ADR/divisa del driver NO validada
     review_reasons: List[str] = []
-    if free_growth:
-        review_reasons.append(f"crecimiento gratis: reinversión neta {reinv_neta*100:.1f}% (<0) con g1 {g1*100:.1f}% (>0) sin justificación económica")
+    if acq_amort:
+        review_reasons.append(f"capital no reconstruible: D&A {dna_int*100:.1f}% ≫ capex {capex_int*100:.1f}% (ratio {dna_int/capex_int:.1f}×) ⇒ dominado por amortización de adquisiciones; falta capital invertido real")
     if adr_fx_review:
-        review_reasons.append(f"ADR/divisa sin resolver (adr={adr}, ccy={ccy}): conversión no validada")
-    review_block = free_growth or adr_fx_review
-    inputs.update({"g1": g1, "margin_terminal": margin_terminal, "s2c": s2c, "dv": dv,
+        review_reasons.append(f"ADR/divisa sin resolver (adr={adr}, ccy={ccy}): conversión no validada; usar FV productivo")
+    review_block = acq_amort or adr_fx_review
+    inputs.update({"g1": g1, "g_recent": g_recent, "rev_cagr_full": rev_cagr, "margin_terminal": margin_terminal,
+                   "s2c": s2c, "dv": dv, "gT": gT, "roic_implied": roic_implied,
                    "wacc": val["wacc"]["wacc"], "terminal_weight": tw, "n_years": n_years,
-                   "reinv_neta_pct": reinv_neta, "free_growth": free_growth,
-                   "adr_fx_review": adr_fx_review, "review_block": review_block,
+                   "reinv_neta_pct": reinv_neta, "capex_int": capex_int, "dna_int": dna_int,
+                   "acq_amort": acq_amort, "adr_fx_review": adr_fx_review, "review_block": review_block,
                    "review_reasons": review_reasons})
     if review_block:
         reasons.append("EN REVISIÓN (barrera): " + "; ".join(review_reasons))

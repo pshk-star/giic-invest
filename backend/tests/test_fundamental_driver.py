@@ -79,3 +79,37 @@ def test_adr_escala_fv_a_usd():
     five = build("X", "USD", px=50.0, series=_series(), adr=5)
     assert one.fair_value_usd is not None and five.fair_value_usd is not None
     assert five.fair_value_usd > one.fair_value_usd
+
+
+# --- Regresión del fix de valoración (diagnóstico PFE): reinversión consistente, sin "crecimiento gratis" ---
+
+def test_reg_empresa_normal_no_bloqueada_y_terminal_defendible():
+    # capex > D&A (capital reconstruible): NO bloqueada; crecimiento terminal ≤ 2.5% (no = RF 4.1%)
+    r = build("CLEAN", "USD", px=50.0, series=_series(capex_pct=0.08, dna_pct=0.05))
+    assert r.inputs.get("acq_amort") is False
+    assert not r.inputs.get("review_block")
+    assert r.inputs.get("gT") is not None and r.inputs["gT"] <= 0.025 + 1e-9
+    assert r.inputs.get("s2c") and r.inputs["s2c"] > 0
+
+
+def test_reg_bloquea_capital_dominado_por_amortizacion_de_adquisiciones():
+    # D&A ≫ capex (patrón PFE/AMGN): capital NO reconstruible del capex ⇒ BLOQUEADO con causa explícita
+    r = build("PFELIKE", "USD", px=30.0, series=_series(capex_pct=0.04, dna_pct=0.11))
+    assert r.inputs.get("acq_amort") is True
+    assert r.inputs.get("review_block") is True
+    assert any("amortización de adquisiciones" in x for x in r.inputs.get("review_reasons", []))
+
+
+def test_reg_sin_crecimiento_gratis_reinversion_positiva_al_crecer():
+    # ya NO existe la marca 'free_growth' y la reinversión por s2c es positiva (ROIC implícito > 0)
+    r = build("G", "USD", px=50.0, series=_series(growth=0.12, capex_pct=0.07, dna_pct=0.05))
+    assert "free_growth" not in r.inputs                 # el mecanismo del bug fue eliminado
+    assert r.inputs.get("roic_implied") and r.inputs["roic_implied"] > 0
+    assert r.fair_value_usd and r.fair_value_usd > 0
+
+
+def test_reg_adr_o_divisa_no_usd_queda_en_revision():
+    # ADR/divisa no validada en el driver ⇒ bloqueada (en producción gobierna el FV productivo)
+    r = build("TSMLIKE", "USD", px=100.0, series=_series(), adr=5)
+    assert r.inputs.get("adr_fx_review") is True
+    assert r.inputs.get("review_block") is True
