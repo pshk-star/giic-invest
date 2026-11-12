@@ -40,6 +40,15 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
     url = os.getenv("SUPABASE_URL", ""); srk = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
     from app.jobs.supabase_writer import SupabaseWriter
     w = SupabaseWriter(url, srk)
+    # Árbitro de datos: estados oficiales SEC (companyfacts) vía EDGARProvider, para el TTM autoritativo.
+    prov = None
+    if os.getenv("EDGAR_USER_AGENT"):
+        try:
+            from app.providers.edgar import EDGARProvider
+            prov = EDGARProvider(user_agent=os.getenv("EDGAR_USER_AGENT"))
+            prov._load_ciks()
+        except Exception:
+            prov = None
     instruments = {str(r["ticker"]).upper(): r for r in
                    w.select_rows("instruments", select="ticker,asset_class,currency,adr_ratio",
                                  params={"order": "ticker"})}
@@ -66,7 +75,14 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
         except Exception as e:
             erows = []; edgar = {"currency": None, "by_field": {}}
         eod, eod_obj = _eodhd_obj(t)
-        out, ttm_info = evaluate_ttm(t, edgar, eod, erows, eod_obj, price_local=px, adr=adr)
+        official = None
+        if prov is not None:
+            try:
+                from app.jobs.official_reconcile import authoritative_ttm
+                official = authoritative_ttm(prov, t, eod_obj)
+            except Exception:
+                official = None
+        out, ttm_info = evaluate_ttm(t, edgar, eod, erows, eod_obj, price_local=px, adr=adr, official_ttm=official)
         if out.result is None:
             results[t] = {"status": out.status, "error": out.error,
                           "edgar_campos": sorted((edgar.get("by_field") or {}).keys()),

@@ -461,19 +461,25 @@ def evaluate(ticker: str, edgar_series: dict, eodhd_series: dict, price_local: O
 
 
 def evaluate_ttm(ticker: str, edgar_series: dict, eodhd_series: dict, edgar_rows: list,
-                 eodhd_obj: dict, price_local: Optional[float], adr: int = 1):
+                 eodhd_obj: dict, price_local: Optional[float], adr: int = 1, official_ttm: dict = None):
     """Igual que evaluate pero usando niveles TTM (últimos doce meses) como AÑO BASE.
 
     TTM alimenta ingresos, margen operativo, tasa, NOPAT y el FCF real de referencia; el BALANCE
     (capital invertido, deuda neta, acciones) viene del último cierre reportado; el CRECIMIENTO, de la
-    historia anual. Devuelve (EngineOutput, ttm_info). No ajusta WACC/ROIC/crecimiento para compensar.
+    historia anual. Si se pasa `official_ttm` (árbitro: estados oficiales SEC), prevalece sobre la
+    reconstrucción EODHD/EDGAR. No ajusta WACC/ROIC/crecimiento para compensar.
     """
     from app.research.ttm import reconstruct_ttm
     rec = reconcile(edgar_series, eodhd_series)
     n = normalize(ticker, rec, price_local, adr=adr)
     if not n.ok:
         return EngineOutput(ticker, "no_valorable", None, error=n.fail), {"error": n.fail}
-    ttm_res = reconstruct_ttm(edgar_rows or [], eodhd_obj or {})
+    if official_ttm and official_ttm.get("ttm"):
+        ttm_res = {"ttm": official_ttm["ttm"], "controles": official_ttm.get("controles", []),
+                   "fin_ttm": official_ttm.get("fin_ttm"),
+                   "tiene_ttm_real": bool(official_ttm["ttm"].get("ocf"))}
+    else:
+        ttm_res = reconstruct_ttm(edgar_rows or [], eodhd_obj or {})
     T = ttm_res.get("ttm", {})
     rev_ttm = (T.get("revenue") or {}).get("ttm")
     ebit_ttm = (T.get("operating_income") or {}).get("ttm")
