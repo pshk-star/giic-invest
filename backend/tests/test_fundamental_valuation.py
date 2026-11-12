@@ -5,8 +5,10 @@ from app.jobs.fundamental_valuation import evaluate, PRODUCTIVE_DCF
 
 
 def test_giic_parity_reproduces_p16():
-    # FCFF GIIC debe reproducir los FV del informe P1.6 (ancla de paridad, única lógica en backend)
-    expect = {"NVDA": 145, "META": 670, "NFLX": 69, "TSM": 240, "ASML": 828}
+    # FCFF GIIC debe reproducir los FV del informe P1.6 (ancla de paridad, única lógica en backend).
+    # P2 (crecimiento terminal defendible ≤2,5% en vez de = RF 4,1%): el ancla BAJÓ al corregir la
+    # perpetuidad indefendible (NVDA 145→126, META 670→563, NFLX 69→57; TSM sin cambio: RF TWD<2,5%).
+    expect = {"NVDA": 126, "META": 563, "NFLX": 57, "TSM": 240, "ASML": 817}
     for t, fv in expect.items():
         out = evaluate(t, use_net=False)
         g = next(m for m in out["modelos"] if m["modelo"] == "FCFF_GIIC")

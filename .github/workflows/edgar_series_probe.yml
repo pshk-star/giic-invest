@@ -1,0 +1,30 @@
+name: GIIC EDGAR series probe (diagnóstico)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tickers:
+        description: "Tickers a sondear (separados por espacio)"
+        type: string
+        default: "PFE MRK MCD"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install httpx
+      - name: Sonda serie EDGAR
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python -m app.jobs.edgar_series_probe ${{ inputs.tickers }}

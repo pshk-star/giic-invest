@@ -13,6 +13,10 @@ from typing import Dict, List, Optional
 
 # Mercado fechado 2026-11-10 (idéntico a P1.6; SUPUESTO documentado).
 RF = {"USD": 0.041, "EUR": 0.026, "TWD": 0.015}
+# P2: crecimiento terminal DEFENDIBLE por defecto. Antes, al no fijar g_terminal, la perpetuidad crecía a
+# la TASA LIBRE DE RIESGO (4,1% USD) — indefendible (crecimiento perpetuo = RF supera el GDP nominal de
+# largo plazo). Se acota a ≤2,5% (mismo tope que el driver experimental y el DCF productivo frontend).
+TERMINAL_G_CAP = 0.025
 ERP = 0.045
 CRP = {"USD": 0.0, "EUR": 0.0, "TWD": 0.0085}
 FX = {"USD": 1.0, "EUR": 1.1203, "TWD": 1 / 32.80}
@@ -111,7 +115,7 @@ def equity_bridge(base: Base, ev: float) -> dict:
 
 def value_path(base: Base, a: Assump, g: List[float], m: List[float],
                gT: Optional[float] = None, dwacc: float = 0.0, reinv_fn=None) -> dict:
-    gt = (gT if gT is not None else (a.g_terminal if a.g_terminal is not None else RF[base.ccy]))
+    gt = (gT if gT is not None else (a.g_terminal if a.g_terminal is not None else min(RF[base.ccy], TERMINAL_G_CAP)))
     w = wacc_of(a, base.ccy, dwacc)
     proj = project_path(base, a, g, m, gt, a.margin_terminal, w["wacc"], reinv_fn=reinv_fn)
     br = equity_bridge(base, proj["ev"])
@@ -127,7 +131,7 @@ def corrected_reinv_fn(capex_rate: float, dna_rate: float, wc_rate: float):
 def reverse_g1(base: Base, a: Assump, target_ps_usd: float, gT: Optional[float] = None,
                reinv_fn=None, lo: float = -0.2, hi: float = 1.5) -> Optional[float]:
     """g1 implícito que iguala el FV/acción USD al precio objetivo (fade mecánica P1.6, bisección)."""
-    gt = (gT if gT is not None else (a.g_terminal if a.g_terminal is not None else RF[base.ccy]))
+    gt = (gT if gT is not None else (a.g_terminal if a.g_terminal is not None else min(RF[base.ccy], TERMINAL_G_CAP)))
 
     def fv(g1):
         g, m = p16_path(g1, gt, base.ebit_margin0, a.margin_terminal, a.years)
@@ -150,7 +154,7 @@ def reverse_g1(base: Base, a: Assump, target_ps_usd: float, gT: Optional[float] 
 def value_p16(base: Base, a: Assump, dwacc: float = 0.0, dg1: float = 0.0, dm: float = 0.0,
               dgT: float = 0.0) -> dict:
     """Valoración P1.6 exacta (senda mecánica), con palancas de escenario/sensibilidad."""
-    gt = (a.g_terminal if a.g_terminal is not None else RF[base.ccy]) + dgT
+    gt = (a.g_terminal if a.g_terminal is not None else min(RF[base.ccy], TERMINAL_G_CAP)) + dgT
     g, m = p16_path(a.g1 * (1 + dg1), gt, base.ebit_margin0, a.margin_terminal + dm, a.years)
     return value_path(base, a, g, m, gT=gt, dwacc=dwacc)
 
@@ -163,7 +167,7 @@ def attribute_fv(base: Base, a: Assump, g_new: List[float], m_new: List[float],
     """Puente secuencial P1.6 → nueva senda. Orden: crecimiento → márgenes → reinversión(s2c) →
     WACC/terminal. Cada paso revalúa cambiando SOLO ese bloque; el residual es interacción.
     Devuelve contribuciones en FV/acción USD."""
-    gt_p16 = a.g_terminal if a.g_terminal is not None else RF[base.ccy]
+    gt_p16 = a.g_terminal if a.g_terminal is not None else min(RF[base.ccy], TERMINAL_G_CAP)
     g_p16, m_p16 = p16_path(a.g1, gt_p16, base.ebit_margin0, a.margin_terminal, a.years)
     gt_new = gT_new if gT_new is not None else gt_p16
 

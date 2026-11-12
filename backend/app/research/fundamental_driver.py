@@ -44,6 +44,7 @@ DEP_RATE = 0.10                  # vida útil implícita: PP&E ≈ capex/DEP_RAT
 TERMINAL_G_CAP = 0.025           # crecimiento perpetuo defendible (≤ GDP nominal largo plazo)
 ACQ_AMORT_RATIO = 1.5            # D&A ≫ capex ⇒ capital dominado por amortización de adquisiciones:
                                   # el capital invertido NO es reconstruible del capex ⇒ se bloquea
+MIN_PLAUSIBLE_SHARES = 1e5       # <1e5 acciones ⇒ error de unidades (caso MCD) ⇒ no se valora
 
 
 @dataclass
@@ -125,6 +126,11 @@ def build(ticker: str, ccy: str, px: Optional[float], series: Dict[str, Dict[str
         return fail("sin ingresos reportados positivos")
     if not shares or shares <= 0:
         return fail("sin acciones en circulación")
+    # Guarda de escala de acciones (espejo de valuation.ts sharesScaleIssue): una empresa real tiene
+    # >1e5 acciones; un valor menor implica error de unidades (millones/miles) y produce un FV por acción
+    # absurdo. No se inventa ni se publica: insuficiente.
+    if shares < MIN_PLAUSIBLE_SHARES:
+        return fail(f"acciones con escala implausible ({shares:.3g} < 1e5): posible error de unidades")
     if ebit is None:
         return fail("sin EBIT/operating income reportado")
     if not px or px <= 0:

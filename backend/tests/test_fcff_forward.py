@@ -10,7 +10,9 @@ from app.research.fcff_forward_report import BASE, ASSUMP
 
 def test_p16_parity_reproduces_report_fv():
     # El motor forward con senda mecánica reproduce los FV del informe P1.6 (ancla de benchmark).
-    expect = {"NVDA": 145, "META": 670, "NFLX": 69, "TSM": 240, "ASML": 828}
+    # P2: crecimiento terminal por defecto acotado a ≤2,5% (antes = RF 4,1%, indefendible) ⇒ el ancla
+    # baja (NVDA 145→126, META 670→563, NFLX 69→57; TSM sin cambio porque RF TWD 1,5% < 2,5%).
+    expect = {"NVDA": 126, "META": 563, "NFLX": 57, "TSM": 240, "ASML": 817}
     for t, fv in expect.items():
         got = value_p16(BASE[t], ASSUMP[t])["bridge"]["ps_usd"]
         assert abs(got - fv) <= 1.0, f"{t}: {got} vs {fv}"

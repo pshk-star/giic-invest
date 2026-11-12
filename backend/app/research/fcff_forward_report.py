@@ -39,6 +39,10 @@ ASSUMP: Dict[str, Assump] = {
 }
 PX = {"NVDA": 177.20, "META": 610.15, "NFLX": 63.41, "TSM": 375.44, "ASML": 1424.75}
 RF = {"USD": 0.041, "EUR": 0.026, "TWD": 0.015}
+# Crecimiento terminal DEFENDIBLE (P2): perpetuidad ≤ GDP nominal largo plazo. gT = RF (4,1% USD) era
+# indefendible (crecimiento perpetuo = tasa libre de riesgo); se acota al mismo tope que el driver
+# experimental y el DCF productivo frontend (≤2,5%), por consistencia entre modelos.
+TERMINAL_G_CAP = 0.025
 # Fin del último ejercicio reportado (ancla de escala del gate). NVDA cierra en enero.
 FY_END = {"NVDA": "2026-01-31", "META": "2025-12-31", "NFLX": "2025-12-31",
           "TSM": "2025-12-31", "ASML": "2025-12-31"}
@@ -85,7 +89,7 @@ def _resolve(t: str):
 
 def evaluate(t: str, use_net: bool = True, today: Optional[date] = None) -> dict:
     base, a = BASE[t], ASSUMP[t]
-    gT = RF[base.ccy]
+    gT = min(RF[base.ccy], TERMINAL_G_CAP)   # P2: crecimiento terminal defendible (no = RF)
     today = today or date.today()
     out: dict = {"ticker": t, "ccy": base.ccy, "price": PX[t], "gT": gT}
     # B = GIIC propio = P1.6 (benchmark)
