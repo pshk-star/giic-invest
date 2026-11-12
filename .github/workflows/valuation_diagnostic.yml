@@ -1,0 +1,34 @@
+name: GIIC diagnóstico de valoración (solo lectura)
+
+# Reconstruye el FCFF/DCF del driver de principio a fin para una lista de tickers y corre escenarios
+# contrafactuales para atribuir las discrepancias. NO escribe, NO modifica motores. Solo diagnóstico.
+on:
+  workflow_dispatch:
+    inputs:
+      tickers:
+        description: "Tickers (coma-separados). Vacío = muestra por defecto."
+        type: string
+        default: "PFE,AMGN,EOG,LOW,HD,UPS,MRK,NVDA,TSM,ASML"
+
+permissions:
+  contents: read
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install httpx
+      - name: Diagnóstico de valoración
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          DIAG_TICKERS: ${{ inputs.tickers }}
+        run: python -m app.jobs.valuation_diagnostic
