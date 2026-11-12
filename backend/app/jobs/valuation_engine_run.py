@@ -41,14 +41,14 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
     from app.jobs.supabase_writer import SupabaseWriter
     w = SupabaseWriter(url, srk)
     # Árbitro de datos: estados oficiales SEC (companyfacts) vía EDGARProvider, para el TTM autoritativo.
+    # Se crea SIEMPRE (UA genérico de respaldo si no hay secret; sin correo personal).
     prov = None
-    if os.getenv("EDGAR_USER_AGENT"):
-        try:
-            from app.providers.edgar import EDGARProvider
-            prov = EDGARProvider(user_agent=os.getenv("EDGAR_USER_AGENT"))
-            prov._load_ciks()
-        except Exception:
-            prov = None
+    try:
+        from app.providers.edgar import EDGARProvider
+        prov = EDGARProvider(user_agent=os.getenv("EDGAR_USER_AGENT") or "GIIC research noreply@giic.example")
+        prov._load_ciks()
+    except Exception:
+        prov = None
     instruments = {str(r["ticker"]).upper(): r for r in
                    w.select_rows("instruments", select="ticker,asset_class,currency,adr_ratio",
                                  params={"order": "ticker"})}
