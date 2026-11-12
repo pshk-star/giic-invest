@@ -65,3 +65,27 @@ def test_reconstruct_ttm_capex_prefiere_fuente_completa():
     assert res["ttm"]["capex"]["fuente"] == "EODHD"        # EDGAR subestimaba
     assert any(c[0] == "capex_fuentes_divergen" for c in res["controles"])
     assert "fcf" in res["ttm"]
+
+
+def test_ttm_by_quarters_ventana_comun_suma_trimestres():
+    from app.research.ttm import ttm_by_quarters
+    def ytd(concept, pairs):
+        return {concept: {"units": {"USD": [{"start": s, "end": e, "val": v, "filed": f, "form": fm}
+                                             for (s, e, v, f, fm) in pairs]}}}
+    rev = [("2025-01-27", "2025-10-26", 147e9, "2025-11-19", "10-Q"),
+           ("2025-01-27", "2026-01-25", 215.9e9, "2026-02-25", "10-K"),
+           ("2026-01-26", "2026-04-26", 81.6e9, "2026-05-20", "10-Q"),
+           ("2026-01-26", "2026-07-26", 177.8e9, "2026-08-26", "10-Q"),
+           ("2025-01-27", "2025-07-27", 90e9, "2025-08-26", "10-Q")]
+    ocf = [("2025-01-27", "2025-10-26", 66.5e9, "2025-11-19", "10-Q"),
+           ("2025-01-27", "2026-01-25", 102.7e9, "2026-02-25", "10-K"),
+           ("2026-01-26", "2026-04-26", 50.3e9, "2026-05-20", "10-Q"),
+           ("2026-01-26", "2026-07-26", 74.4e9, "2026-08-26", "10-Q"),
+           ("2025-01-27", "2025-07-27", 42.8e9, "2025-08-26", "10-Q")]
+    usg = {}; usg.update(ytd("RevenueFromContractWithCustomerExcludingAssessedTax", rev))
+    usg.update(ytd("NetCashProvidedByUsedInOperatingActivities", ocf))
+    r = ttm_by_quarters(usg, {}, {"10-K", "10-Q"})
+    assert r["ventana"] == ["2025-10-26", "2026-01-25", "2026-04-26", "2026-07-26"]
+    assert abs(r["ttm"]["revenue"]["ttm"] - 303.7e9) < 1e8    # suma de los 4 trimestres de la MISMA ventana
+    assert abs(r["ttm"]["ocf"]["ttm"] - 134.3e9) < 1e8
+    assert r["ttm"]["revenue"]["fuente"] == "oficial_SEC"

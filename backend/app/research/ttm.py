@@ -220,7 +220,8 @@ def ttm_by_quarters(usg: dict, eodhd_obj: dict, valid_forms: set) -> dict:
         eq = eod_q.get(m, {})
         per = []; sec_sum = 0.0; eod_sum = 0.0; sec_ok = bool(window); eod_ok = bool(window)
         for end in window:
-            sv, _sk = _near(sq, end)
+            sv_obj, _sk = _near(sq, end)
+            sv = sv_obj["val"] if isinstance(sv_obj, dict) else sv_obj   # trimestres SEC guardan {val,...}
             ev, ek = _near(eq, end)
             if sv is None: sec_ok = False
             else: sec_sum += sv
