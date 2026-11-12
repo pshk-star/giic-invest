@@ -50,7 +50,7 @@ export function Inicio() {
           <div style={{ textAlign: "right" }}>
             <div className={"ret" + (ret == null ? " na" : "")}>
               {ret == null ? "s/ datos" : `${ret >= 0 ? "▲ +" : "▼ "}${pct(ret)}`}
-              <span style={{ color: "var(--muted)", fontWeight: 400 }}>· {period}</span>
+              <span style={{ color: "var(--muted)", fontWeight: 400 }}>· {period} · comp. actual</span>
             </div>
             <div className="period">
               {PERIODS.map((p) => (
@@ -68,7 +68,7 @@ export function Inicio() {
             </svg>
           ) : <div className="empty">Evolución no disponible: faltan precios históricos de tus posiciones.</div>}
         </div>
-        {pts && <div className="sub" style={{ marginTop: 8 }}>Evolución a composición actual (tenencia de hoy × precio histórico real).</div>}
+        {pts && <div className="sub" style={{ marginTop: 8 }}>Variación de tu composición <b style={{ color: "var(--muted)" }}>ACTUAL</b> valorada a precios históricos reales. <b style={{ color: "var(--gold)" }}>No es tu rentabilidad real</b>: no reconstruye compras, ventas ni aportes. La reconstrucción por transacciones queda como mejora posterior.</div>}
       </div>
 
       <div className="answer">
@@ -76,7 +76,8 @@ export function Inicio() {
         <p className="lead" dangerouslySetInnerHTML={{ __html: boldMoney(r.executiveSummary) }} />
         <div className="asub">Postura: {r.posture} · topes {pct(r.constraintsUsed.maxPositionWeight)}/empresa, {pct(r.constraintsUsed.maxSectorWeight)}/sector · margen mínimo {pct(r.constraintsUsed.minMarginToBuy)}.</div>
         <div className="acts">
-          <button className="btn-sm gold" onClick={() => nav("/p30/oportunidades")}>Ver oportunidades</button>
+          <button className="btn-sm gold" onClick={() => nav("/p30/asignacion")}>Asignar mi aporte</button>
+          <button className="btn-sm" onClick={() => nav("/p30/oportunidades")}>Ver oportunidades</button>
           <button className="btn-sm" onClick={() => nav("/p30/cartera")}>Ver mi cartera</button>
         </div>
       </div>

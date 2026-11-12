@@ -20,6 +20,8 @@ import { P30Layout } from "./p30/P30Layout";
 import { Inicio } from "./p30/Inicio";
 import { Oportunidades } from "./p30/Oportunidades";
 import { FichaP30 } from "./p30/FichaP30";
+import { Cartera } from "./p30/Cartera";
+import { Asignacion } from "./p30/Asignacion";
 import { P30Soon } from "./p30/Soon";
 
 // Feature flags REVERSIBLES (por defecto apagados; no tocan nada más):
@@ -77,7 +79,8 @@ export default function App() {
           <Route index element={<Inicio />} />
           <Route path="oportunidades" element={<Oportunidades />} />
           <Route path="oportunidades/:ticker" element={<FichaP30 />} />
-          <Route path="cartera" element={<P30Soon stage="Etapa 2" title="Mi cartera" />} />
+          <Route path="cartera" element={<Cartera />} />
+          <Route path="asignacion" element={<Asignacion />} />
           <Route path="historial" element={<P30Soon stage="Etapa 3" title="Historial" />} />
         </Route>
       </Routes>

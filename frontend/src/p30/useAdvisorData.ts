@@ -40,6 +40,8 @@ export interface AdvisorData {
   fundamentals: Record<string, any>;        // fundamentales por ticker (para la ficha)
   prices: Record<string, { close?: number | null; currency?: string | null; as_of?: string } & any>;
   instruments: Record<string, any>;
+  etfInfo: Record<string, EtfInfo>;         // rol/solapamiento/equity_pct por ETF (X-ray)
+  scanInput: ScanInput | null;              // insumo del motor, para recomputar asignación con otro aporte
   reload: () => void;
 }
 
@@ -47,6 +49,7 @@ export function useAdvisorData(): AdvisorData {
   const [state, setState] = useState<Omit<AdvisorData, "reload">>({
     loading: true, err: null, missing: null, profile: null, report: null,
     positions: [], priceHistory: {}, fv: {}, fundamentals: {}, prices: {}, instruments: {},
+    etfInfo: {}, scanInput: null,
   });
   const [tick, setTick] = useState(0);
 
@@ -108,7 +111,7 @@ export function useAdvisorData(): AdvisorData {
           fcffFallback: import.meta.env.VITE_FF_VALPOLICY === "1",
         };
         const report = buildUnifiedAdvisor({ profile, scanInput, etfInfo });
-        if (!cancelled) setState({ loading: false, err: null, missing: null, profile, report, positions: positionsAll, priceHistory, fv, fundamentals, prices, instruments });
+        if (!cancelled) setState({ loading: false, err: null, missing: null, profile, report, positions: positionsAll, priceHistory, fv, fundamentals, prices, instruments, etfInfo, scanInput });
       } catch (e) {
         if (!cancelled) setState((s) => ({ ...s, loading: false, err: String(e) }));
       }
