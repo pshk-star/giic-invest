@@ -129,9 +129,9 @@ def run() -> dict:
 
     inlist = "in.(" + ",".join(tickers) + ")"
     prices = {str(r["ticker"]).upper(): r for r in
-              w.select_rows("prices", select="ticker,close,currency", params={"ticker": inlist})}
+              w.select_rows("prices", select="ticker,close,currency", params={"ticker": inlist, "order": "ticker"})}
     instruments = {str(r["ticker"]).upper(): r for r in
-                   w.select_rows("instruments", select="ticker,adr_ratio,sector", params={"ticker": inlist})}
+                   w.select_rows("instruments", select="ticker,adr_ratio,sector", params={"ticker": inlist, "order": "ticker"})}
 
     results = []
     for t in tickers:
