@@ -13,6 +13,10 @@ on:
         description: "Fecha de captura (override; vacío=hoy). Para recaptura corregida el mismo día."
         type: string
         default: ""
+      disable_eodhd:
+        description: "Deshabilitar EODHD (prueba P4: el sistema debe funcionar solo con EDGAR)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -33,6 +37,6 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          EODHD_API_KEY: ${{ inputs.disable_eodhd && '' || secrets.EODHD_API_KEY }}
           SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
         run: python -m app.jobs.valuation_coverage_expand ${{ inputs.dry_run && '--dry-run' || '' }}
