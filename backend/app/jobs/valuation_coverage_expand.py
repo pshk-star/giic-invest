@@ -93,6 +93,11 @@ def run(write: bool) -> dict:
     rows_to_write: List[dict] = []
     attractive: List[str] = []
     today = date.today().isoformat()
+    # snapshot_date de la captura. Override explícito (SNAPSHOT_DATE) para registrar una captura
+    # CORREGIDA el mismo día: la tabla es append-only inmutable con UNIQUE (…,snapshot_date), así que
+    # una recaptura con la misma fecha se DEDUPLICA (no actualiza). El override permite que la versión
+    # corregida entre como una captura nueva sin borrar el histórico (que queda intacto).
+    snap_date = os.getenv("SNAPSHOT_DATE") or today
 
     for t in todo:
         px = None; ccy = None; adr = 1
@@ -149,7 +154,7 @@ def run(write: bool) -> dict:
             "no_calibrado_a_mercado": True,
         }
         rows_to_write.append({"kind": "fundamental_valuation", "ticker": t, "observation_date": obs_date,
-                              "published_at": today, "snapshot_date": today,
+                              "published_at": today, "snapshot_date": snap_date,
                               "captured_at": datetime.now(timezone.utc).isoformat(),
                               "source": "P2.4", "data_version": today, "payload": payload})
 
