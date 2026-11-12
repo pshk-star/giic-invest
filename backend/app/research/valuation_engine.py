@@ -294,10 +294,28 @@ def _wacc(n: NormInputs) -> float:
     return n.w_equity * ke + n.w_debt * n.kd_after_tax
 
 
+def _marginal_roic(n: NormInputs) -> Tuple[float, str]:
+    """ROIC INCREMENTAL para la economía de reinversión. Preferido: revelado por la reinversión REAL
+    (datos de flujo de caja, confiables) = g1 / RR_real, con RR_real = (NOPAT − FCF_real)/NOPAT
+    (= ΔNOPAT/reinversión = retorno sobre el capital NUEVO). Si no hay FCF real, usa el ROIC medio.
+    Así la reinversión proyectada coincide con la estructura REAL de la empresa (capital-ligera o
+    intensiva) sin ajustar nada hacia el precio de mercado."""
+    if n.fcf_real_recent is not None and n.nopat0 and n.nopat0 > 0 and n.g1 > 0:
+        rr_real = (n.nopat0 - n.fcf_real_recent) / n.nopat0
+        if 0.01 < rr_real < 0.98:
+            return _clamp(n.g1 / rr_real, ROIC_FLOOR, 2.5), "incremental(RR real)"
+    return n.roic, "medio"
+
+
 def _project_fcff(n: NormInputs, wacc: float, gT: Optional[float] = None) -> Tuple[float, float, float, float]:
-    """FCFF = NOPAT·(1 − g/ROIC). Devuelve (PV explícito, PV terminal, FCFF0, reinvest_rate0)."""
+    """FCFF = NOPAT·(1 − g/ROIC_incremental). Devuelve (PV explícito, PV terminal, FCFF0, reinvest_rate0).
+
+    Usa el ROIC INCREMENTAL (retorno sobre capital nuevo) para la reinversión del periodo explícito, de
+    modo que FCFF año 1 = NOPAT·(1 − RR_real) = FCF real (reconcilia por construcción). El ROIC terminal
+    es CONSERVADOR (la competencia erosiona los retornos excedentes) ⇒ reinversión terminal = gT/ROIC_T.
+    """
     gt = n.gT if gT is None else gT
-    roic = n.roic
+    roic, _basis = _marginal_roic(n)
     nopat = n.nopat0
     pv = 0.0
     fcff0 = nopat * (1 - n.g1 / roic)
@@ -308,8 +326,8 @@ def _project_fcff(n: NormInputs, wacc: float, gT: Optional[float] = None) -> Tup
         reinv = g / roic
         fcff = nopat * (1 - reinv)
         pv += fcff / (1 + wacc) ** t
-    # terminal: ROIC terminal sostenible (no superior al actual ni inferior al WACC)
-    roic_term = _clamp(roic, wacc + 0.01, ROIC_CAP)
+    # terminal: ROIC terminal CONSERVADOR (≤25%; la competencia erosiona el ROIC incremental alto)
+    roic_term = _clamp(min(roic, 0.25), wacc + 0.01, 0.25)
     nopat_term = nopat * (1 + gt)
     fcff_term = nopat_term * (1 - gt / roic_term)
     tv = fcff_term / (wacc - gt) if wacc > gt else 0.0
@@ -336,6 +354,7 @@ def _project_fcfe(n: NormInputs, ke: float) -> Optional[float]:
 
 def value_from_norm(n: NormInputs, price_local: Optional[float], adr: int = 1) -> DcfResult:
     ke = _ke(n); wacc = _wacc(n)
+    roic_marg, roic_basis = _marginal_roic(n)
     pv_exp, pv_tv, fcff0, reinv0 = _project_fcff(n, wacc)
     ev = pv_exp + pv_tv
     equity_value = ev - n.net_debt
@@ -438,6 +457,8 @@ def value_from_norm(n: NormInputs, price_local: Optional[float], adr: int = 1) -
                 "invested_capital": n.invested_capital, "net_debt": n.net_debt, "shares": n.shares,
                 "beta": n.beta, "hist_fcf_margin": n.hist_fcf_margin, "w_equity": round(n.w_equity, 3),
                 "w_debt": round(n.w_debt, 3), "nopat0": round(n.nopat0, 0), "adr": adr,
+                "roic_medio": round(n.roic, 4), "roic_incremental": round(roic_marg, 4),
+                "roic_base": roic_basis, "fcf_real_recent": n.fcf_real_recent,
                 "fx_to_usd": FX_TO_USD.get(n.ccy, 1.0), "provenance": n.prov, "params_date": PARAMS_DATE})
 
 
