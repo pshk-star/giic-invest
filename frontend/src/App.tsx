@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { NavLink, Navigate, Route, Routes } from "react-router-dom";
+import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "./lib/supabase";
 import { Login } from "./pages/Login";
@@ -16,6 +16,11 @@ import { AdvisorComparison } from "./pages/AdvisorComparison";
 import { OpportunityScanner } from "./pages/OpportunityScanner";
 import { DecisionHistory } from "./pages/DecisionHistory";
 import { UnifiedAdvisor } from "./pages/UnifiedAdvisor";
+import { P30Layout } from "./p30/P30Layout";
+import { Inicio } from "./p30/Inicio";
+import { Oportunidades } from "./p30/Oportunidades";
+import { FichaP30 } from "./p30/FichaP30";
+import { P30Soon } from "./p30/Soon";
 
 // Feature flags REVERSIBLES (por defecto apagados; no tocan nada más):
 //  P1.9 VITE_FF_FUNDVAL=1  => vista de valoración fundamental.
@@ -26,6 +31,9 @@ const FF_ADVISOR3 = import.meta.env.VITE_FF_ADVISOR3 === "1";
 const FF_SCANNER = import.meta.env.VITE_FF_SCANNER === "1";
 const FF_DECISIONS = import.meta.env.VITE_FF_DECISIONS === "1";
 const FF_UNIFIED = import.meta.env.VITE_FF_UNIFIED === "1";
+// P3.0 — rediseño integral de experiencia (experimental, reversible). Pantalla completa bajo /p30;
+// la interfaz anterior permanece intacta y accesible.
+const FF_P30 = import.meta.env.VITE_FF_P30 === "1";
 
 const tabs = [
   { to: "/command", label: "Dashboard" },
@@ -40,6 +48,7 @@ const tabs = [
   ...(FF_SCANNER ? [{ to: "/scanner", label: "Scanner ⚗" }] : []),
   ...(FF_DECISIONS ? [{ to: "/decisiones", label: "Decisiones ⚗" }] : []),
   ...(FF_UNIFIED ? [{ to: "/asesor", label: "Asesor ⚗" }] : []),
+  ...(FF_P30 ? [{ to: "/p30", label: "GIIC P3.0 ⚗" }] : []),
 ];
 
 export default function App() {
@@ -55,8 +64,25 @@ export default function App() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  const location = useLocation();
+
   if (!ready) return <div className="p-8 text-term-muted">Cargando…</div>;
   if (!session) return <Login />;
+
+  // P3.0 se renderiza a PANTALLA COMPLETA (sin el chrome anterior) bajo su propio flag y ruta.
+  if (FF_P30 && location.pathname.startsWith("/p30")) {
+    return (
+      <Routes>
+        <Route path="/p30" element={<P30Layout />}>
+          <Route index element={<Inicio />} />
+          <Route path="oportunidades" element={<Oportunidades />} />
+          <Route path="oportunidades/:ticker" element={<FichaP30 />} />
+          <Route path="cartera" element={<P30Soon stage="Etapa 2" title="Mi cartera" />} />
+          <Route path="historial" element={<P30Soon stage="Etapa 3" title="Historial" />} />
+        </Route>
+      </Routes>
+    );
+  }
 
   const logout = () => supabase.auth.signOut();
 

@@ -15,6 +15,8 @@ interface ImportMetaEnv {
   readonly VITE_FF_DECISIONS?: string;
   // Etapa A — Investment Advisor unificado (experimental, reversible).
   readonly VITE_FF_UNIFIED?: string;
+  // P3.0 — rediseño integral de experiencia (experimental, reversible).
+  readonly VITE_FF_P30?: string;
 }
 interface ImportMeta {
   readonly env: ImportMetaEnv;
