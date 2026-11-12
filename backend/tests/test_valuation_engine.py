@@ -94,6 +94,19 @@ def test_adr_escala_a_usd_con_fx():
     assert abs(r.fair_value_usd - r.fair_value_local * 5 * FX_TO_USD["TWD"]) < 0.1
 
 
+def test_fuentes_inconsistentes_mandan_a_revision():
+    # acciones que difieren ~10x entre EDGAR y EODHD (caso NFLX) ⇒ en_revision, no validado
+    edgar = _series()
+    eodhd = _series()
+    # misma empresa pero EODHD reporta acciones 10x (error de escala en una fuente)
+    for p in eodhd["by_field"]["shares"]:
+        eodhd["by_field"]["shares"][p] = eodhd["by_field"]["shares"][p] * 10
+    out = evaluate("NFLXLIKE", edgar, eodhd, price_local=50.0)
+    assert out.result is not None
+    assert "fuentes_consistentes" in [c[0] for c in out.result.controls if not c[1]]
+    assert out.result.status == "en_revision"
+
+
 def test_determinista():
     a = evaluate("D", _series(), {"currency": "USD", "by_field": {}}, 50.0).result
     b = evaluate("D", _series(), {"currency": "USD", "by_field": {}}, 50.0).result

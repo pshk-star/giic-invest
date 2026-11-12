@@ -145,6 +145,7 @@ class NormInputs:
     w_debt: float
     nopat0: float
     prov: Dict[str, str] = field(default_factory=dict)
+    discrepancies: Dict[str, float] = field(default_factory=dict)
     reasons: List[str] = field(default_factory=list)
     ok: bool = True
     fail: Optional[str] = None
@@ -236,7 +237,7 @@ def normalize(ticker: str, rec: Reconciled, price_local: Optional[float], adr: i
     reasons = list(rec.notes)
     return NormInputs(ticker, ccy, revenue0, op_margin, tax_eff, g1, gT, ic, roic, net_debt, sh,
                       hist_fcf_margin, beta, kd_after_tax, w_equity, w_debt, nopat0, prov=prov,
-                      reasons=reasons)
+                      discrepancies=dict(rec.discrepancies), reasons=reasons)
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -372,11 +373,19 @@ def value_from_norm(n: NormInputs, price_local: Optional[float], adr: int = 1) -
     if mos is not None:
         controls.append(("margen_no_extremo", abs(mos) <= MARGIN_EXTREME,
                          f"margen seguridad {mos*100:.0f}% (|{MARGIN_EXTREME*100:.0f}%| ⇒ revisión)"))
+    # CONTROL de reconciliación de fuentes: una divergencia grande entre EODHD y EDGAR en acciones,
+    # ingresos o capital indica un problema de datos (p. ej. NFLX con acciones/precio mal escalados) ⇒
+    # no se publica como validado; se manda a revisión y se investiga la causa (no se calibra).
+    disc = n.discrepancies or {}
+    bad_disc = {k: v for k, v in disc.items() if k in ("shares", "revenue", "equity", "invested_capital")
+                and v is not None and v > 0.25}
+    controls.append(("fuentes_consistentes", not bad_disc,
+                     ("ok" if not bad_disc else "; ".join(f"{k} difiere {v*100:.0f}%" for k, v in bad_disc.items()))))
 
     hard_fail = [c for c in controls if not c[1] and c[0] in
                  ("WACC>gT", "reinversion_vs_ROIC", "margen_operativo_plausible", "acciones_escala")]
     review = [c for c in controls if not c[1] and c[0] in
-              ("peso_terminal", "FCFF_vs_FCFE", "margen_no_extremo")]
+              ("peso_terminal", "FCFF_vs_FCFE", "margen_no_extremo", "fuentes_consistentes")]
     validated = not hard_fail and not review
     if hard_fail:
         status = "no_valorable"
