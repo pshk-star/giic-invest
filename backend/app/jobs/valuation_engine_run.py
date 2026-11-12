@@ -16,22 +16,24 @@ import sys
 from datetime import date, datetime, timezone
 from typing import Dict, List, Optional
 
-from app.research.valuation_engine import evaluate
+from app.research.valuation_engine import evaluate_ttm
 from app.research.edgar_series import build_series_from_rows, fetch_edgar_rows
 
 ELEVEN = ["NVDA", "META", "NFLX", "TSM", "ASML", "PFE", "AMGN", "ADBE", "LOW", "HD", "UPS"]
 
 
-def _eodhd_series(ticker: str):
+def _eodhd_obj(ticker: str):
+    """Devuelve (serie_anual, obj_crudo) de EODHD; obj crudo necesario para los trimestres (TTM)."""
     if not os.getenv("EODHD_API_KEY"):
-        return {"currency": None, "by_field": {}}
+        return {"currency": None, "by_field": {}}, {}
     try:
         from app.core.connectors.eodhd import EodhdFundamentalsConnector, eodhd_annual_series_full
         conn = EodhdFundamentalsConnector(api_key=os.getenv("EODHD_API_KEY", ""))
         _s, _ad, obj = conn._resolve(ticker)
-        return eodhd_annual_series_full(obj) if obj else {"currency": None, "by_field": {}}
+        series = eodhd_annual_series_full(obj) if obj else {"currency": None, "by_field": {}}
+        return series, (obj or {})
     except Exception:
-        return {"currency": None, "by_field": {}}
+        return {"currency": None, "by_field": {}}, {}
 
 
 def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
@@ -62,9 +64,9 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
             erows = fetch_edgar_rows(w, t)
             edgar = build_series_from_rows(erows) if erows else {"currency": None, "by_field": {}}
         except Exception as e:
-            edgar = {"currency": None, "by_field": {}}
-        eod = _eodhd_series(t)
-        out = evaluate(t, edgar, eod, price_local=px, adr=adr)
+            erows = []; edgar = {"currency": None, "by_field": {}}
+        eod, eod_obj = _eodhd_obj(t)
+        out, ttm_info = evaluate_ttm(t, edgar, eod, erows, eod_obj, price_local=px, adr=adr)
         if out.result is None:
             results[t] = {"status": out.status, "error": out.error,
                           "edgar_campos": sorted((edgar.get("by_field") or {}).keys()),
@@ -86,6 +88,9 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
             "controles_fallidos": [c[0] for c in r.controls if not c[1]],
             "fuentes": r.inputs.get("provenance"),
             "ccy": r.ccy, "adr": r.inputs.get("adr"),
+            "ttm": {"campos_usados": ttm_info.get("campos_ttm_usados"), "fin_ttm": ttm_info.get("fin_ttm"),
+                    "tiene_ttm_real": ttm_info.get("tiene_ttm_real"), "valores": ttm_info.get("ttm"),
+                    "controles_ttm": ttm_info.get("controles_ttm")},
             "_diag": {"revenue0": r.inputs.get("revenue0"), "shares": r.inputs.get("shares"),
                       "nopat0": r.inputs.get("nopat0"), "invested_capital": r.inputs.get("invested_capital"),
                       "op_margin": r.inputs.get("op_margin"), "mktcap_implied": (r.price_local or 0) * (r.inputs.get("shares") or 0)},
@@ -120,6 +125,7 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
             "indicadores": {k: results[t][k] for k in ("wacc_pct", "ke_pct", "g1_pct", "gT_pct", "roic_pct",
                             "reinversion_pct", "fcff0", "fcfe0_hist", "peso_terminal_pct",
                             "divergencia_fcff_vs_fcfe_pct")},
+            "ttm": results[t]["ttm"], "base_periodo": "TTM" if ttm_info.get("campos_ttm_usados") else "FY",
             "sensibilidad": r.sensitivity,
             "no_calibrado_a_mercado": False,
         }

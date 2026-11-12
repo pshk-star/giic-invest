@@ -458,3 +458,47 @@ def evaluate(ticker: str, edgar_series: dict, eodhd_series: dict, price_local: O
         return EngineOutput(ticker, "no_valorable", None, error=n.fail)
     r = value_from_norm(n, price_local, adr=adr)
     return EngineOutput(ticker, r.status, r)
+
+
+def evaluate_ttm(ticker: str, edgar_series: dict, eodhd_series: dict, edgar_rows: list,
+                 eodhd_obj: dict, price_local: Optional[float], adr: int = 1):
+    """Igual que evaluate pero usando niveles TTM (últimos doce meses) como AÑO BASE.
+
+    TTM alimenta ingresos, margen operativo, tasa, NOPAT y el FCF real de referencia; el BALANCE
+    (capital invertido, deuda neta, acciones) viene del último cierre reportado; el CRECIMIENTO, de la
+    historia anual. Devuelve (EngineOutput, ttm_info). No ajusta WACC/ROIC/crecimiento para compensar.
+    """
+    from app.research.ttm import reconstruct_ttm
+    rec = reconcile(edgar_series, eodhd_series)
+    n = normalize(ticker, rec, price_local, adr=adr)
+    if not n.ok:
+        return EngineOutput(ticker, "no_valorable", None, error=n.fail), {"error": n.fail}
+    ttm_res = reconstruct_ttm(edgar_rows or [], eodhd_obj or {})
+    T = ttm_res.get("ttm", {})
+    rev_ttm = (T.get("revenue") or {}).get("ttm")
+    ebit_ttm = (T.get("operating_income") or {}).get("ttm")
+    tax_ttm = (T.get("tax") or {}).get("ttm")
+    pretax_ttm = (T.get("pretax") or {}).get("ttm")
+    fcf_ttm = (T.get("fcf") or {}).get("ttm")
+    used = []
+    if rev_ttm and rev_ttm > 0:
+        n.revenue0 = rev_ttm; used.append("revenue")
+        if ebit_ttm is not None:
+            n.op_margin = _clamp(ebit_ttm / rev_ttm, MARGIN_MIN, MARGIN_MAX); used.append("operating_income")
+        # tasa efectiva TTM (impuesto/pretax), acotada
+        if tax_ttm is not None and pretax_ttm and pretax_ttm > 0:
+            n.tax_eff = _clamp(abs(tax_ttm) / pretax_ttm, TAX_MIN, TAX_MAX); used.append("tax")
+        n.nopat0 = n.revenue0 * n.op_margin * (1 - n.tax_eff)
+        if n.invested_capital and n.invested_capital > 0:
+            n.roic = _clamp(n.nopat0 / n.invested_capital, ROIC_FLOOR, ROIC_CAP)
+    if fcf_ttm is not None and rev_ttm:
+        n.fcf_real_recent = fcf_ttm; n.hist_fcf_margin = fcf_ttm / rev_ttm; used.append("fcf")
+    # proveniencia TTM por campo + marca de período
+    for f, blk in T.items():
+        n.prov[f + "_ttm"] = blk.get("fuente")
+    n.reasons += [f"{c[0]}: {c[2]}" for c in ttm_res.get("controles", []) if not c[1]]
+    r = value_from_norm(n, price_local, adr=adr)
+    info = {"campos_ttm_usados": used, "fin_ttm": ttm_res.get("fin_ttm"),
+            "tiene_ttm_real": ttm_res.get("tiene_ttm_real"), "ttm": {k: {"ttm": v.get("ttm"), "fuente": v.get("fuente")} for k, v in T.items()},
+            "controles_ttm": [c[0] for c in ttm_res.get("controles", []) if not c[1]]}
+    return EngineOutput(ticker, r.status, r), info
