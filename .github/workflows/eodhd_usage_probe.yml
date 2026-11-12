@@ -1,0 +1,24 @@
+name: GIIC sonda uso EODHD (read-only)
+on:
+  workflow_dispatch:
+    inputs:
+      tickers:
+        type: string
+        default: "NVDA,ASML,TSM,PFE,AAPL,META,KO,EOG,MELI,SHOP"
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    defaults:
+      run: { working-directory: backend }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install httpx
+      - name: Sonda EODHD
+        env:
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          DIAG_TICKERS: ${{ inputs.tickers }}
+        run: python -m app.jobs.eodhd_usage_probe
