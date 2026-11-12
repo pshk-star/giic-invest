@@ -1,0 +1,30 @@
+name: GIIC NVDA conciliación trimestral
+
+on:
+  workflow_dispatch:
+    inputs:
+      tickers:
+        description: "Tickers (vacío = NVDA META NFLX ASML TSM PFE AMGN ADBE)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-job.txt
+      - name: Conciliación trimestral NVDA
+        env:
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          EDGAR_USER_AGENT: ${{ secrets.EDGAR_USER_AGENT }}
+        run: python -m app.jobs.nvda_quarterly_audit
