@@ -176,7 +176,7 @@ export function buildUnifiedAdvisor(args: BuildAdvisorArgs): AdvisorReport {
   if (vehicleWeight > c.maxSectorWeight) risks.push(`Los vehículos (ETF) suman ${(vehicleWeight * 100).toFixed(0)}% de la cartera (incluye renta variable amplia y metales): revisa la concentración agregada en vehículos.`);
   if (researchCandidates.length) risks.push(`${researchCandidates.length} candidata(s) de investigación (FCFF experimental) FUERA de la asignación ejecutable: no se compran hasta tener valoración productiva/análisis profundo.`);
   const needData = positionRecs.filter((p) => p.action === "VENDER" || p.action === "REDUCIR");
-  if (needData.length) risks.push("Las ventas/reducciones no incorporan horizonte, costos/impuestos ni alternativas de reinversión (datos no disponibles): considéralos antes de ejecutar.");
+  if (needData.length) risks.push("Las ventas/reducciones son ESCENARIOS INDICATIVOS, no instrucciones ejecutables: el % de recorte deriva del margen productivo (½·|margen|, acotado) y NO incorpora horizonte, costos/impuestos ni alternativas de reinversión; considéralos antes de ejecutar.");
 
   // --- resumen y postura ---
   const chosen = plan.proposals.find((x) => x.id === plan.chosen)!;
@@ -206,7 +206,7 @@ export function buildUnifiedAdvisor(args: BuildAdvisorArgs): AdvisorReport {
       `Política de valoración ÚNICA (P2.4) compartida por Scanner, Advisor 3.0 y asignación: el FV productivo gobierna; el FCFF actúa como FALLBACK accionable sólo con confianza suficiente y margen no extremo cuando VALPOLICY está activo (tier experimental, menor convicción). Fallback VALPOLICY: ${fallback ? "ACTIVO (FCFF gobierna como fallback bajo controles)" : "inactivo (sólo el FV productivo gobierna compras; FCFF = contexto)"}.`,
       "Un margen positivo por sí solo no habilita compra: exige confianza suficiente y fuente gobernante. El FCFF que no supera los controles queda en INVESTIGACIÓN. No se modifican Fair Values para producir compras.",
       "Ninguna compra se basa en una valoración incompleta; las reducciones/ventas se cuantifican y explicitan su incertidumbre.",
-      "Heurística de asignación, no optimización de retornos validada; sin predicción de retornos (no validada).",
+      "Montos de asignación = PROPUESTAS EXPERIMENTALES condicionadas por límites y heurísticas, NO asignaciones óptimas ni optimización de retornos validada (sin predicción de retornos).",
       "Constraints derivados del perfil/tolerancia (sin parámetros manuales); procedencia visible.",
       "Recomendaciones SIMULADAS; no se ejecutan operaciones. ESPERAR es válido.",
     ],
