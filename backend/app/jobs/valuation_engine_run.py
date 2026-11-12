@@ -86,6 +86,9 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
             "controles_fallidos": [c[0] for c in r.controls if not c[1]],
             "fuentes": r.inputs.get("provenance"),
             "ccy": r.ccy, "adr": r.inputs.get("adr"),
+            "_diag": {"revenue0": r.inputs.get("revenue0"), "shares": r.inputs.get("shares"),
+                      "nopat0": r.inputs.get("nopat0"), "invested_capital": r.inputs.get("invested_capital"),
+                      "op_margin": r.inputs.get("op_margin"), "mktcap_implied": (r.price_local or 0) * (r.inputs.get("shares") or 0)},
         }
         # FV gobernante: se escribe con estado de validación. Bloqueado si no está validado.
         payload = {

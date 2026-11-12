@@ -95,12 +95,13 @@ def test_adr_escala_a_usd_con_fx():
 
 
 def test_fuentes_inconsistentes_mandan_a_revision():
-    # acciones que difieren ~10x entre EDGAR y EODHD (caso NFLX) ⇒ en_revision, no validado
+    # ingresos que difieren fuerte entre EDGAR y EODHD (error de datos/escala) ⇒ en_revision, no validado
     edgar = _series()
     eodhd = _series()
-    # misma empresa pero EODHD reporta acciones 10x (error de escala en una fuente)
-    for p in eodhd["by_field"]["shares"]:
-        eodhd["by_field"]["shares"][p] = eodhd["by_field"]["shares"][p] * 10
+    # EODHD con más periodos para que gane en 'revenue', y con escala 2x (discrepancia > 25%)
+    for p in list(eodhd["by_field"]["revenue"]):
+        eodhd["by_field"]["revenue"][p] = eodhd["by_field"]["revenue"][p] * 2
+    eodhd["by_field"]["revenue"]["2019-12-31"] = 80_000e6   # periodo extra: EODHD más completa
     out = evaluate("NFLXLIKE", edgar, eodhd, price_local=50.0)
     assert out.result is not None
     assert "fuentes_consistentes" in [c[0] for c in out.result.controls if not c[1]]

@@ -376,8 +376,10 @@ def value_from_norm(n: NormInputs, price_local: Optional[float], adr: int = 1) -
     # CONTROL de reconciliación de fuentes: una divergencia grande entre EODHD y EDGAR en acciones,
     # ingresos o capital indica un problema de datos (p. ej. NFLX con acciones/precio mal escalados) ⇒
     # no se publica como validado; se manda a revisión y se investiga la causa (no se calibra).
+    # Nota: 'shares' se excluye del control por ser ruidoso (splits, clases de acciones, promedio
+    # ponderado vs fin de periodo producen divergencias legítimas). Se usan ingresos/equity/capital.
     disc = n.discrepancies or {}
-    bad_disc = {k: v for k, v in disc.items() if k in ("shares", "revenue", "equity", "invested_capital")
+    bad_disc = {k: v for k, v in disc.items() if k in ("revenue", "equity", "invested_capital")
                 and v is not None and v > 0.25}
     controls.append(("fuentes_consistentes", not bad_disc,
                      ("ok" if not bad_disc else "; ".join(f"{k} difiere {v*100:.0f}%" for k, v in bad_disc.items()))))
