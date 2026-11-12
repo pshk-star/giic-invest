@@ -179,3 +179,17 @@
 .p30 .scen-cmp .sc.on{border-color:var(--gold);background:var(--gold-bg)}
 .p30 .scen-cmp .sc b{font-size:12.5px}
 .p30 .scen-cmp .sc span{font-size:11px;color:var(--muted);margin-top:2px}
+
+/* Historial */
+.p30 .hist{display:flex;flex-direction:column;gap:12px;margin-top:14px}
+.p30 .hrec{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px}
+.p30 .hrec .hh{display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap}
+.p30 .hrec .id{font-family:var(--serif);font-size:15px}
+.p30 .hrec .when{font-size:11px;color:var(--faint)}
+.p30 .hrec .legs2{font-size:12px;color:var(--muted);margin-top:4px}
+.p30 .hz{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:12px}
+.p30 .hz .h{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px;text-align:center}
+.p30 .hz .h .hl{font-size:10px;color:var(--faint)}
+.p30 .hz .h .hv{font-family:var(--serif);font-size:14px;margin-top:2px}
+.p30 .hz .h.pending{opacity:.7}
+.p30 .hz .h.pending .hv{color:var(--faint);font-size:11px;font-family:var(--sans)}
