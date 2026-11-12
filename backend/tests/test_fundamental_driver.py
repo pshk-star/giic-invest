@@ -5,8 +5,11 @@ from app.research.fundamental_driver import build, DriverResult
 
 
 def _series(years=6, rev0=10_000e6, growth=0.10, ebit_margin=0.25, shares=1000e6,
-            total_debt=2000e6, cash=3000e6, tax_rate=0.15, capex_pct=0.08, dna_pct=0.05, wc_pct=0.01):
-    """Serie sintética by_field (periodos ISO ascendentes)."""
+            total_debt=2000e6, cash=3000e6, tax_rate=0.15, capex_pct=0.08, dna_pct=0.05, wc_pct=0.01,
+            invested_capital=None, equity=None):
+    """Serie sintética by_field (periodos ISO ascendentes).
+
+    invested_capital: si se pasa (como fracción de ingresos), se incluye el campo real EDGAR."""
     by: dict = {k: {} for k in ("revenue", "operating_income", "shares", "total_debt", "cash",
                                 "tax", "net_income", "capex", "dna", "wc_change")}
     rev = rev0
@@ -23,6 +26,10 @@ def _series(years=6, rev0=10_000e6, growth=0.10, ebit_margin=0.25, shares=1000e6
         by["capex"][p] = -rev * capex_pct
         by["dna"][p] = rev * dna_pct
         by["wc_change"][p] = rev * wc_pct
+        if invested_capital is not None:
+            by.setdefault("invested_capital", {})[p] = rev * invested_capital
+        if equity is not None:
+            by.setdefault("equity", {})[p] = rev * equity
         rev *= (1 + growth)
     return by
 
@@ -112,4 +119,40 @@ def test_reg_adr_o_divisa_no_usd_queda_en_revision():
     # ADR/divisa no validada en el driver ⇒ bloqueada (en producción gobierna el FV productivo)
     r = build("TSMLIKE", "USD", px=100.0, series=_series(), adr=5)
     assert r.inputs.get("adr_fx_review") is True
+    assert r.inputs.get("review_block") is True
+
+
+# --- P1: capital invertido REAL desde EDGAR (desbloqueo honesto cuando es reconstruible) ---
+
+def test_p1_capital_invertido_real_desbloquea_amortizacion_adquisiciones():
+    # Patrón PFE (D&A≫capex) PERO con capital invertido REAL de EDGAR: el capital ES reconstruible ⇒
+    # NO se bloquea por amortización de adquisiciones; s2c y ROIC vienen del capital real.
+    r = build("PFE_EDGAR", "USD", px=30.0,
+              series=_series(capex_pct=0.04, dna_pct=0.11, invested_capital=0.75, equity=0.50))
+    assert r.inputs.get("capital_source") == "edgar_invested_capital"
+    assert r.inputs.get("acq_amort") is False          # ya no se bloquea: capital reconstruible
+    assert not r.inputs.get("review_block")
+    assert r.inputs.get("roic_implied") and r.inputs["roic_implied"] > 0
+    # s2c real = ingresos / capital invertido ≈ 1/0.75 ≈ 1.33
+    assert 1.0 < r.inputs["s2c"] < 1.7
+    # ROIC terminal conservador: nunca por encima del 14%
+    assert r.inputs.get("roic_terminal") is not None and r.inputs["roic_terminal"] <= 0.14 + 1e-9
+
+
+def test_p1_capital_invertido_no_positivo_queda_en_revision():
+    # equity negativo ⇒ capital invertido ≤ 0 ⇒ no valorable con fiabilidad ⇒ bloqueado
+    s = _series(invested_capital=None)
+    for p in s["revenue"]:
+        s.setdefault("invested_capital", {})[p] = -1_000e6   # capital invertido negativo
+    r = build("NEGCAP", "USD", px=50.0, series=s)
+    assert r.inputs.get("ic_negative") is True
+    assert r.inputs.get("review_block") is True
+    assert any("no positivo" in x for x in r.inputs.get("review_reasons", []))
+
+
+def test_p1_sin_capital_invertido_mantiene_proxy_capex_y_bloqueo():
+    # sin capital real (serie EODHD antigua): se mantiene proxy capex + bloqueo donde D&A≫capex
+    r = build("PFELIKE", "USD", px=30.0, series=_series(capex_pct=0.04, dna_pct=0.11))
+    assert r.inputs.get("capital_source") == "capex_proxy"
+    assert r.inputs.get("acq_amort") is True
     assert r.inputs.get("review_block") is True

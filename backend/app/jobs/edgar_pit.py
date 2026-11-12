@@ -20,26 +20,64 @@ from datetime import datetime, date
 from typing import Dict, List, Optional
 
 # Conceptos clave (tags us-gaap). Se amplía con disciplina; cada uno con su unidad esperada.
+# Bloque 1 (original): P&L + flujo operativo + capex + balance base.
+# Bloque 2 (P1 — capital invertido/ROIC/reinversión/FCF/deuda neta): D&A total y su separación de la
+# AMORTIZACIÓN DE INTANGIBLES ADQUIRIDOS (acq), caja, deuda corriente/total, capital de trabajo
+# (activo/pasivo corriente), acciones diluidas, goodwill e intangibles. Con esto el capital invertido
+# deja de aproximarse desde el capex (equity + deuda − caja) y la D&A operativa = D&A total − amort. adq.
 CONCEPTS = [
+    # --- Bloque 1 (original) ---
     "Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax",
     "NetIncomeLoss", "GrossProfit", "OperatingIncomeLoss",
+    "IncomeTaxExpenseBenefit",
+    "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+    "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
     "EarningsPerShareDiluted", "EarningsPerShareBasic",
     "NetCashProvidedByUsedInOperatingActivities",
     "PaymentsToAcquirePropertyPlantAndEquipment",
     "StockholdersEquity", "Assets", "Liabilities", "LongTermDebtNoncurrent",
+    # --- Bloque 2: D&A total (flujo de caja) y amortización de intangibles adquiridos (separable) ---
+    "DepreciationDepletionAndAmortization", "DepreciationAmortizationAndAccretionNet",
+    "DepreciationAndAmortization", "Depreciation",
+    "AmortizationOfIntangibleAssets",
+    # --- Bloque 2: caja y equivalentes (para deuda neta) ---
+    "CashAndCashEquivalentsAtCarryingValue",
+    "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+    # --- Bloque 2: deuda corriente y total (deuda neta = deuda total − caja) ---
+    "LongTermDebtCurrent", "DebtCurrent", "ShortTermBorrowings", "LongTermDebt",
+    # --- Bloque 2: capital de trabajo (ΔWC = Δ(activo corriente − pasivo corriente)) ---
+    "AssetsCurrent", "LiabilitiesCurrent",
+    # --- Bloque 2: acciones diluidas (para valor por acción consistente) ---
+    "WeightedAverageNumberOfDilutedSharesOutstanding", "CommonStockSharesOutstanding",
+    # --- Bloque 2: goodwill e intangibles (capital invertido tangible vs adquirido) ---
+    "Goodwill", "FiniteLivedIntangibleAssetsNet", "IntangibleAssetsNetExcludingGoodwill",
 ]
 
 # Conceptos equivalentes en IFRS (tags ifrs-full). Emisores extranjeros que presentan
-# 20-F reportan bajo IFRS y NO aparecen en us-gaap (p. ej. ASML, TSM). Esto deja preparada
+# 20-F reportan bajo IFRS y NO aparecen en us-gaap (p. ej. TSM). Esto deja preparada
 # la ingesta cruda de su point-in-time; el mapeo IFRS->payload de ratios (run_scan) es el
 # paso siguiente (ver RESEARCH_BACKLOG).
 IFRS_CONCEPTS = [
+    # --- Bloque 1 (original) ---
     "Revenue", "RevenueFromContractsWithCustomers",
     "ProfitLoss", "GrossProfit", "ProfitLossFromOperatingActivities",
+    "IncomeTaxExpenseContinuingOperations", "TaxExpense",
     "DilutedEarningsLossPerShare", "BasicEarningsLossPerShare",
     "CashFlowsFromUsedInOperatingActivities",
     "PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",
     "Equity", "Assets", "Liabilities", "Borrowings",
+    # --- Bloque 2: D&A y amortización de intangibles ---
+    "DepreciationAndAmortisationExpense",
+    "DepreciationAmortisationAndImpairmentLossReversalOfImpairmentLossRecognisedInProfitOrLoss",
+    "AmortisationIntangibleAssetsOtherThanGoodwill",
+    # --- Bloque 2: caja ---
+    "CashAndCashEquivalents",
+    # --- Bloque 2: deuda corriente/no corriente ---
+    "ShorttermBorrowings", "CurrentPortionOfLongtermBorrowings", "NoncurrentPortionOfLongtermBorrowings",
+    # --- Bloque 2: capital de trabajo ---
+    "CurrentAssets", "CurrentLiabilities",
+    # --- Bloque 2: goodwill e intangibles ---
+    "Goodwill", "IntangibleAssetsOtherThanGoodwill",
 ]
 
 

@@ -159,12 +159,30 @@ def build(ticker: str, ccy: str, px: Optional[float], series: Dict[str, Dict[str
     rr = _reinv_rates(series, revenue)      # (capex%, dna%, wc%)
     capex_int = rr[0] if rr else None
     dna_int = rr[1] if rr else None
-    acq_amort = bool(capex_int and dna_int and capex_int > 0 and (dna_int / capex_int) > ACQ_AMORT_RATIO)
-    s2c = _clamp(DEP_RATE / capex_int, S2C_MIN, S2C_MAX) if (capex_int and capex_int > 0) else 2.0
+    # CAPITAL INVERTIDO (P1). Si EDGAR aporta el capital invertido REAL (equity + deuda − caja), s2c y ROIC
+    # se calculan del capital real y el capital ES reconstruible ⇒ NO se bloquea por amortización de
+    # adquisiciones (ese bloqueo existía solo porque el capex no reconstruía el capital). Si NO hay capital
+    # real, se mantiene la aproximación por capex (y donde D&A ≫ capex el capital no es reconstruible ⇒
+    # bloqueo honesto). Dirección conservadora: ROIC terminal nunca sube del 14% (la competencia erosiona
+    # los retornos excedentes); firmas de bajo ROIC obtienen un terminal más bajo y honesto.
+    invested_capital = _latest(series, "invested_capital")
+    ic_valid = bool(invested_capital and invested_capital > 0)
+    ic_negative = bool(invested_capital is not None and invested_capital <= 0)
+    if ic_valid:
+        s2c = _clamp(revenue / invested_capital, S2C_MIN, S2C_MAX)
+        roic_implied = (ebit * (1 - eff_tax)) / invested_capital
+        acq_amort = False
+        capital_source = "edgar_invested_capital"
+        roic_terminal = _clamp(roic_implied, 0.08, ROIC_TERMINAL_DEFAULT)
+    else:
+        acq_amort = bool(capex_int and dna_int and capex_int > 0 and (dna_int / capex_int) > ACQ_AMORT_RATIO)
+        s2c = _clamp(DEP_RATE / capex_int, S2C_MIN, S2C_MAX) if (capex_int and capex_int > 0) else 2.0
+        roic_implied = ebit_margin0 * (1 - eff_tax) * s2c
+        capital_source = "capex_proxy"
+        roic_terminal = ROIC_TERMINAL_DEFAULT
     gT = min(RF[ccy], TERMINAL_G_CAP)       # crecimiento terminal defendible (no = RF)
-    roic_implied = ebit_margin0 * (1 - eff_tax) * s2c
     assump = Assump(beta=b, kd=kd, dv=dv, tax_norm=eff_tax, s2c=s2c, g1=g1,
-                    margin_terminal=margin_terminal, roic_terminal=ROIC_TERMINAL_DEFAULT, g_terminal=gT, years=10)
+                    margin_terminal=margin_terminal, roic_terminal=roic_terminal, g_terminal=gT, years=10)
     base = Base(ticker=ticker, ccy=ccy, revenue=revenue, ebit_margin0=ebit_margin0,
                 net_debt=net_debt, shares=shares, tax_rate=eff_tax, interest=0.0, adr=adr)
 
@@ -193,7 +211,8 @@ def build(ticker: str, ccy: str, px: Optional[float], series: Dict[str, Dict[str
         weak.append("sin CAGR de ingresos (crecimiento por defecto)")
     if not rr:
         weak.append("sin tasas de reinversión (s2c por defecto)")
-    reasons.append(f"g1={g1*100:.1f}% margenT={margin_terminal*100:.0f}% s2c={s2c:.1f} dv={dv*100:.0f}% WACC={val['wacc']['wacc']*100:.1f}%")
+    reasons.append(f"g1={g1*100:.1f}% margenT={margin_terminal*100:.0f}% s2c={s2c:.1f} ROIC={roic_implied*100:.0f}% "
+                   f"(capital: {'EDGAR real' if ic_valid else 'proxy capex'}) dv={dv*100:.0f}% WACC={val['wacc']['wacc']*100:.1f}%")
     if weak:
         reasons.extend(weak)
         # margen extremo ⇒ confianza baja SIEMPRE (no apto para asignación); otras señales débiles:
@@ -210,15 +229,18 @@ def build(ticker: str, ccy: str, px: Optional[float], series: Dict[str, Dict[str
     review_reasons: List[str] = []
     if acq_amort:
         review_reasons.append(f"capital no reconstruible: D&A {dna_int*100:.1f}% ≫ capex {capex_int*100:.1f}% (ratio {dna_int/capex_int:.1f}×) ⇒ dominado por amortización de adquisiciones; falta capital invertido real")
+    if ic_negative:
+        review_reasons.append(f"capital invertido no positivo ({invested_capital:,.0f}): equity negativo/estructura atípica ⇒ no valorable con fiabilidad")
     if adr_fx_review:
         review_reasons.append(f"ADR/divisa sin resolver (adr={adr}, ccy={ccy}): conversión no validada; usar FV productivo")
-    review_block = acq_amort or adr_fx_review
+    review_block = acq_amort or adr_fx_review or ic_negative
     inputs.update({"g1": g1, "g_recent": g_recent, "rev_cagr_full": rev_cagr, "margin_terminal": margin_terminal,
-                   "s2c": s2c, "dv": dv, "gT": gT, "roic_implied": roic_implied,
+                   "s2c": s2c, "dv": dv, "gT": gT, "roic_implied": roic_implied, "roic_terminal": roic_terminal,
+                   "invested_capital": invested_capital, "capital_source": capital_source,
                    "wacc": val["wacc"]["wacc"], "terminal_weight": tw, "n_years": n_years,
                    "reinv_neta_pct": reinv_neta, "capex_int": capex_int, "dna_int": dna_int,
-                   "acq_amort": acq_amort, "adr_fx_review": adr_fx_review, "review_block": review_block,
-                   "review_reasons": review_reasons})
+                   "acq_amort": acq_amort, "ic_negative": ic_negative, "adr_fx_review": adr_fx_review,
+                   "review_block": review_block, "review_reasons": review_reasons})
     if review_block:
         reasons.append("EN REVISIÓN (barrera): " + "; ".join(review_reasons))
     return DriverResult(status, round(fv, 2), round(margin, 1), confidence, base, assump, reasons, inputs)

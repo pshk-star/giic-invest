@@ -71,3 +71,43 @@ def test_usgaap_unaffected_when_no_ifrs():
     # Sin nodo ifrs-full, la salida us-gaap no cambia.
     rows = extract_pit_rows(FACTS, "MU", 723125)
     assert all(r["taxonomy"] == "us-gaap" for r in rows)
+
+
+# --- P1: ingesta de componentes de capital invertido (D&A, caja, deuda, WC, acciones, goodwill) ---
+
+CAPITAL_FACTS = {
+    "cik": 100,
+    "facts": {"us-gaap": {
+        "DepreciationDepletionAndAmortization": {"units": {"USD": [
+            {"start": "2023-01-01", "end": "2023-12-31", "val": 900, "accn": "a-10K",
+             "fy": 2023, "fp": "FY", "form": "10-K", "filed": "2024-02-15"}]}},
+        "AmortizationOfIntangibleAssets": {"units": {"USD": [
+            {"start": "2023-01-01", "end": "2023-12-31", "val": 500, "accn": "a-10K",
+             "fy": 2023, "fp": "FY", "form": "10-K", "filed": "2024-02-15"}]}},
+        "CashAndCashEquivalentsAtCarryingValue": {"units": {"USD": [
+            {"end": "2023-12-31", "val": 3000, "accn": "a-10K", "fy": 2023, "fp": "FY",
+             "form": "10-K", "filed": "2024-02-15"}]}},
+        "LongTermDebtCurrent": {"units": {"USD": [
+            {"end": "2023-12-31", "val": 500, "accn": "a-10K", "fy": 2023, "fp": "FY",
+             "form": "10-K", "filed": "2024-02-15"}]}},
+        "WeightedAverageNumberOfDilutedSharesOutstanding": {"units": {"shares": [
+            {"start": "2023-01-01", "end": "2023-12-31", "val": 1000, "accn": "a-10K",
+             "fy": 2023, "fp": "FY", "form": "10-K", "filed": "2024-02-15"}]}},
+        "Goodwill": {"units": {"USD": [
+            {"end": "2023-12-31", "val": 5000, "accn": "a-10K", "fy": 2023, "fp": "FY",
+             "form": "10-K", "filed": "2024-02-15"}]}},
+    }},
+}
+
+
+def test_ingesta_componentes_de_capital_invertido():
+    rows = extract_pit_rows(CAPITAL_FACTS, "X", 100)
+    got = {r["concept"] for r in rows}
+    for c in ("DepreciationDepletionAndAmortization", "AmortizationOfIntangibleAssets",
+              "CashAndCashEquivalentsAtCarryingValue", "LongTermDebtCurrent",
+              "WeightedAverageNumberOfDilutedSharesOutstanding", "Goodwill"):
+        assert c in got, f"falta ingerir {c}"
+    # la amortización de adquisiciones queda separable de la D&A total
+    dna = next(r for r in rows if r["concept"] == "DepreciationDepletionAndAmortization")
+    amort = next(r for r in rows if r["concept"] == "AmortizationOfIntangibleAssets")
+    assert dna["value"] == 900 and amort["value"] == 500   # D&A operativa = 900 − 500 = 400
