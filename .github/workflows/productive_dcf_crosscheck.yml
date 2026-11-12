@@ -1,0 +1,30 @@
+name: GIIC DCF productivo cross-check (validación)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tickers:
+        description: "Tickers (vacío = NVDA META NFLX TSM ASML)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  crosscheck:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install httpx
+      - name: Cross-check DCF productivo vs EDGAR fresco
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python -m app.jobs.productive_dcf_crosscheck ${{ inputs.tickers }}
