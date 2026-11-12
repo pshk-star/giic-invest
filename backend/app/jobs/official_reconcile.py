@@ -166,58 +166,19 @@ ENGINE_FLOWS = {
 
 
 def authoritative_ttm(prov, ticker: str, eodhd_obj: dict) -> dict:
-    """TTM AUTORITATIVO para el motor: estado oficial SEC como árbitro; EODHD como respaldo/validación.
+    """TTM AUTORITATIVO por SUMA de 4 trimestres en VENTANA COMÚN (ttm.ttm_by_quarters).
 
-    Devuelve {'ttm': {campo: {'ttm', 'fuente', 'concepto', 'form', 'filed'}}, 'controles', 'fin_ttm'}.
-    Capex: concepto material enumerado (resuelve el tag real). FCF = OCF − |capex|. No completa con cero.
+    Deriva trimestres de SEC (YTD-diff) y EODHD, fija una sola ventana (4 trimestres de OCF), suma cada
+    métrica sobre ESA ventana y cruza SEC vs EODHD trimestre a trimestre. Garantiza que todas las métricas
+    usen los MISMOS períodos (corrige el bug de ventanas distintas del selector FY+YTD−YTD). No completa
+    con cero: si una fuente no cubre la ventana, se usa la otra; si ninguna, la métrica queda ausente.
     """
-    from app.research.ttm import ttm_eodhd
+    from app.research.ttm import ttm_by_quarters
     facts = prov._facts(ticker)
     if not facts:
         return {"ttm": {}, "controles": [("sin_companyfacts", False, "emisor no-US/sin XBRL")], "fin_ttm": None}
     usg = (facts.get("facts", {}) or {}).get("us-gaap", {}) or {}
-    out: Dict[str, dict] = {}
-    controles: List = []
-    fin_ttm = None
-    for field, cands in ENGINE_FLOWS.items():
-        pick = _pick_recent_concept(usg, cands)
-        off_ttm = None; concepto = None; form = None; filed = None
-        if pick:
-            c, fy, pers = pick
-            off_ttm, meta = _ttm(pers)
-            concepto, form, filed = c, fy.get("form"), fy.get("filed")
-            if field == "ocf" and isinstance(meta, dict):
-                fin_ttm = meta.get("fin") or fin_ttm
-        eod_ttm = ttm_eodhd(eodhd_obj, field)[0] if field in ("revenue", "operating_income", "net_income", "tax", "ocf") else None
-        chosen, src = (off_ttm, "oficial_SEC") if off_ttm is not None else (eod_ttm, "EODHD")
-        if chosen is not None:
-            out[field] = {"ttm": chosen, "fuente": src, "concepto": concepto, "form": form, "filed": filed}
-        # control: discrepancia oficial vs EODHD
-        if off_ttm is not None and eod_ttm:
-            rel = abs(off_ttm - eod_ttm) / max(1.0, abs(off_ttm))
-            if rel > 0.10:
-                controles.append((f"{field}_oficial_vs_eodhd", False,
-                                  f"oficial {off_ttm/1e9:.1f}B vs EODHD {eod_ttm/1e9:.1f}B ({rel*100:.0f}%) ⇒ se usa oficial"))
-
-    # CAPEX: concepto material (enumerado) — resuelve el tag real (NVDA: ProductiveAssets, no PP&E estándar)
-    capex_cc = sorted([k for k in usg.keys() if CAPEX_PATTERNS.fullmatch(k)])
-    best_capex = None
-    for c in capex_cc:
-        pers = _periods_from_facts(usg, c); fy = _fy_latest(pers)
-        if fy and (best_capex is None or abs(fy["val"]) > abs(best_capex[1]["val"])):
-            best_capex = (c, fy, pers)
-    capex_off = None
-    if best_capex:
-        capex_off, _ = _ttm(best_capex[2])
-        out["capex"] = {"ttm": capex_off, "fuente": "oficial_SEC", "concepto": best_capex[0],
-                        "form": best_capex[1].get("form"), "filed": best_capex[1].get("filed")}
-    capex_eod = ttm_eodhd(eodhd_obj, "capex")[0]
-    if capex_off is None and capex_eod is not None:
-        out["capex"] = {"ttm": capex_eod, "fuente": "EODHD", "concepto": "capitalExpenditures"}
-    # FCF derivado
-    if "ocf" in out and "capex" in out:
-        out["fcf"] = {"ttm": out["ocf"]["ttm"] - abs(out["capex"]["ttm"]), "fuente": "derivado(OCF−|capex|)"}
-    return {"ttm": out, "controles": controles, "fin_ttm": fin_ttm}
+    return ttm_by_quarters(usg, eodhd_obj, VALID_FORMS)
 
 
 def run(tickers: List[str]) -> dict:

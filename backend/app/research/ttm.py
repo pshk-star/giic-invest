@@ -110,6 +110,51 @@ def ttm_edgar(periods) -> Tuple[Optional[float], dict]:
         "ytd_prev": {"fin": prior["end"], "val": prior["val"]}}
 
 
+def quarters_from_ytd(periods, concept):
+    """Deriva trimestres individuales (3M) de los acumulados YTD agrupados por inicio de año fiscal.
+    Q1 = YTD_3m; Q_n = YTD_n − YTD_{n-1}; Q4 = FY − YTD_9m. Devuelve {q_end: {val, deriv, form, filed}}."""
+    by_start: Dict[str, list] = {}
+    for p in periods:
+        d = p.get("days") if "days" in p else _dur(p.get("start"), p.get("end"))
+        if d and 80 <= d <= 400:
+            by_start.setdefault(p.get("start"), []).append({**p, "days": d})
+    q: Dict[str, dict] = {}
+    for start, ps in by_start.items():
+        ps = sorted(ps, key=lambda x: x["end"])
+        prev = None
+        for p in ps:
+            val = p["val"] if prev is None else p["val"] - prev["val"]
+            q[p["end"]] = {"val": val, "q_end": p["end"], "deriv": ("3m" if prev is None else f"{p['days']}d−{prev['days']}d"),
+                           "form": p.get("form"), "filed": p.get("filed"), "concepto": concept}
+            prev = p
+    return q
+
+
+def sec_periods(usg, concept, valid_forms):
+    node = (usg or {}).get(concept) or {}
+    out = {}
+    for unit, rows in (node.get("units", {}) or {}).items():
+        for f in rows:
+            s, e, v = f.get("start"), f.get("end"), f.get("val")
+            if v is None or not e or not s or (f.get("form") or "") not in valid_forms:
+                continue
+            k = (s, e)
+            if k not in out or (f.get("filed") or "") > (out[k]["filed"] or ""):
+                out[k] = {"start": s, "end": e, "val": float(v), "filed": f.get("filed"),
+                          "form": f.get("form"), "days": _dur(s, e)}
+    return sorted(out.values(), key=lambda x: (x["start"], x["end"]))
+
+
+def sec_quarters(usg, concepts, valid_forms):
+    """Prueba conceptos equivalentes; devuelve (quarters, concepto) con MÁS trimestres recientes."""
+    best = ({}, None)
+    for c in concepts:
+        q = quarters_from_ytd(sec_periods(usg, c, valid_forms), c)
+        if len(q) > len(best[0]):
+            best = (q, c)
+    return best
+
+
 def ttm_eodhd(obj, field) -> Tuple[Optional[float], dict]:
     fin = (obj or {}).get("Financials", {}) or {}
     state = "Cash_Flow" if field in ("ocf", "capex") else "Income_Statement"
@@ -119,6 +164,78 @@ def ttm_eodhd(obj, field) -> Tuple[Optional[float], dict]:
     if len(vals) < 4 or any(v is None for v in vals):
         return None, {"metodo": "EODHD <4 trimestres", "trimestres": [k for k, _ in items]}
     return sum(vals), {"metodo": "suma 4 trimestres EODHD", "trimestres": [k for k, _ in items], "valores": vals}
+
+
+def eod_quarters(obj, field) -> Dict[str, float]:
+    """Trimestres (3M) de EODHD por métrica: {q_end_iso: valor}."""
+    fin = (obj or {}).get("Financials", {}) or {}
+    state = "Cash_Flow" if field in ("ocf", "capex") else "Income_Statement"
+    qd = (fin.get(state, {}) or {}).get("quarterly", {}) or {}
+    out = {}
+    for date_k, row in qd.items():
+        v = _num(row, EODHD_Q_KEYS[field])
+        if v is not None:
+            out[str(date_k)[:10]] = v
+    return out
+
+
+def _near(d_map: Dict[str, float], end: str, tol: int = 8):
+    """Busca una fecha en d_map cercana a `end` (±tol días) para alinear cierres fiscales distintos."""
+    if end in d_map:
+        return d_map[end], end
+    te = _d(end)
+    for k, v in d_map.items():
+        kd = _d(k)
+        if kd and te and abs((kd - te).days) <= tol:
+            return v, k
+    return None, None
+
+
+def ttm_by_quarters(usg: dict, eodhd_obj: dict, valid_forms: set) -> dict:
+    """TTM por SUMA de 4 trimestres en una VENTANA COMÚN (misma para todas las métricas).
+
+    Deriva trimestres de SEC (YTD-diff) y de EODHD; ancla la ventana en los 4 trimestres más recientes
+    de OCF; suma cada métrica sobre esa ventana; cruza SEC vs EODHD trimestre a trimestre. Selección:
+    SEC (oficial) si están los 4; si no, EODHD. Garantiza consistencia de períodos entre métricas.
+    """
+    metrics = {
+        "revenue": ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues"],
+        "operating_income": ["OperatingIncomeLoss"],
+        "net_income": ["NetIncomeLoss"],
+        "tax": ["IncomeTaxExpenseBenefit", "IncomeTaxExpenseContinuingOperations"],
+        "pretax": ["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+                   "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"],
+        "interest_expense": ["InterestExpense", "InterestExpenseNonoperating", "InterestAndDebtExpense"],
+        "ocf": ["NetCashProvidedByUsedInOperatingActivities"],
+        "capex": ["PaymentsToAcquireProductiveAssets", "PaymentsToAcquirePropertyPlantAndEquipment"],
+    }
+    sec_q = {m: sec_quarters(usg, cands, valid_forms) for m, cands in metrics.items()}
+    eod_q = {m: eod_quarters(eodhd_obj, m) for m in metrics if m in EODHD_Q_KEYS}
+    anchor = sorted(sec_q["ocf"][0].keys()) or sorted(eod_q.get("ocf", {}).keys())
+    window = anchor[-4:]
+    out: Dict[str, dict] = {}
+    controles: List = []
+    for m, cands in metrics.items():
+        sq, sc = sec_q[m]
+        eq = eod_q.get(m, {})
+        per = []; sec_sum = 0.0; eod_sum = 0.0; sec_ok = bool(window); eod_ok = bool(window)
+        for end in window:
+            sv, _sk = _near(sq, end)
+            ev, ek = _near(eq, end)
+            if sv is None: sec_ok = False
+            else: sec_sum += sv
+            if ev is None: eod_ok = False
+            else: eod_sum += ev
+            per.append({"q_end": end, "sec": sv, "eodhd": ev})
+        chosen, src = (sec_sum, "oficial_SEC") if sec_ok else ((eod_sum, "EODHD") if eod_ok else (None, None))
+        if chosen is not None:
+            out[m] = {"ttm": chosen, "fuente": src, "concepto": sc, "trimestres": per, "ventana": window}
+        if sec_ok and eod_ok and abs(sec_sum - eod_sum) / max(1.0, abs(sec_sum)) > 0.02:
+            controles.append((f"{m}_sec_vs_eodhd", False,
+                              f"SEC {sec_sum/1e9:.1f}B vs EODHD {eod_sum/1e9:.1f}B (misma ventana)"))
+    if "ocf" in out and "capex" in out:
+        out["fcf"] = {"ttm": out["ocf"]["ttm"] - abs(out["capex"]["ttm"]), "fuente": "derivado(OCF−|capex|)"}
+    return {"ttm": out, "controles": controles, "fin_ttm": window[-1] if window else None, "ventana": window}
 
 
 def reconstruct_ttm(edgar_rows: List[dict], eodhd_obj: dict) -> dict:
