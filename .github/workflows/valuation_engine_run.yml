@@ -1,0 +1,44 @@
+name: GIIC motor de valoración v2
+
+on:
+  workflow_dispatch:
+    inputs:
+      write:
+        description: "Escribir FV gobernante a Supabase (true/false)"
+        type: boolean
+        default: false
+      snapshot_date:
+        description: "Fecha de captura (override; vacío=hoy)"
+        type: string
+        default: ""
+      tickers:
+        description: "Tickers (vacío = las 11)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  engine:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-job.txt
+      - name: Motor de valoración v2
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+        run: |
+          ARGS=""
+          if [ "${{ inputs.write }}" = "true" ]; then ARGS="--write"; fi
+          if [ -n "${{ inputs.snapshot_date }}" ]; then ARGS="$ARGS --snapshot-date ${{ inputs.snapshot_date }}"; fi
+          if [ -n "${{ inputs.tickers }}" ]; then ARGS="$ARGS --tickers ${{ inputs.tickers }}"; fi
+          python -m app.jobs.valuation_engine_run $ARGS
