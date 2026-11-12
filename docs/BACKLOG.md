@@ -25,3 +25,12 @@ ejecutables**.
   tamaño cuando la brecha DCF–FCFF es grande (mayor incertidumbre ⇒ recorte más conservador) y/o acotar
   por sensibilidad del modelo. Requiere cambio en `advisor3.ts` (trim) → NO se hace sin aprobación por la
   restricción de "no reconstruir motores". No tocar Fair Values.
+
+## B3 · Reconstrucción del NAV por transacciones (evolución de patrimonio real)
+**Origen:** cierre técnico de P3.0 (2026-11-12).
+La evolución mostrada en Inicio/Mi cartera es "a composición ACTUAL × precio histórico" (ya etiquetada
+como tal: *no es la rentabilidad real*). Pendiente: reconstruir el NAV histórico a partir de las
+transacciones (compras, ventas, aportes) para una rentabilidad realizada fiel.
+- **Hecho ya (etiquetado):** la UI dice explícitamente que no reconstruye compras/ventas.
+- **Pendiente (no bloquea P3.0):** serie de tenencias por fecha desde `transactions` + precios, con
+  flujos de caja, para TWR/MWR. Solo lectura; no toca motores ni Fair Values.
