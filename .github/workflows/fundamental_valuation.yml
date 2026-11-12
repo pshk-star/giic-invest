@@ -13,6 +13,10 @@ on:
       tickers:
         type: string
         default: ""
+      snapshot_date:
+        description: "Fecha de captura (override; vacío=hoy). Para aflorar una versión corregida."
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -34,6 +38,7 @@ jobs:
           EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SNAPSHOT_DATE: ${{ inputs.snapshot_date }}
         run: |
           ARGS=""
           if [ "${{ inputs.write }}" = "true" ]; then ARGS="--write"; fi

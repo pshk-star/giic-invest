@@ -186,7 +186,10 @@ def main(argv=None):
         try:
             from app.jobs.supabase_writer import SupabaseWriter
             w = SupabaseWriter(os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""))
-            snap = date.today().isoformat()
+            # override SNAPSHOT_DATE: la tabla es append-only inmutable con UNIQUE(...,snapshot_date). Para
+            # que una versión corregida AFLORE por encima de una captura previa (p. ej. con fecha futura),
+            # se permite fijar la fecha de captura. No borra el histórico.
+            snap = os.getenv("SNAPSHOT_DATE") or date.today().isoformat()
             rows = [{"kind": "fundamental_valuation", "ticker": t, "observation_date": PRICE_DATE,
                      "published_at": PRICE_DATE, "snapshot_date": snap,
                      "captured_at": datetime.now(timezone.utc).isoformat(),
