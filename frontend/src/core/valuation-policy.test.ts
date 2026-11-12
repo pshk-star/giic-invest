@@ -71,4 +71,34 @@ describe("P2.4 política de valoración única", () => {
     expect(g.blocked).toBeFalsy();
     expect(passesValueGate(v, 0.10, { fcffFallback: true })).toBe(true);
   });
+
+  // --- MOTOR v2: FV único gobernante con estado de validación ---
+  it("MOTOR v2 validado GOBIERNA sobre productivo/FCFF y es accionable", () => {
+    const v = { engineMargin: 0.15, engineStatus: "validado" as const, engineConfidence: "media" as const,
+                productiveMargin: -0.30, productiveConfidence: "media" as const, fcffMargin: 0.40, fcffConfidence: "media" as const };
+    const g = governingValuation(v);
+    expect(g.source).toBe("motor_v2");
+    expect(g.margin).toBeCloseTo(0.15, 6);     // manda el motor, no productivo ni FCFF
+    expect(g.blocked).toBeFalsy();
+    expect(passesValueGate(v, 0.10)).toBe(true);
+  });
+
+  it("MOTOR v2 en_revision: FV visible pero BLOQUEADO (no accionable)", () => {
+    const v = { engineMargin: 0.24, engineStatus: "en_revision" as const,
+                productiveMargin: null, productiveConfidence: null };
+    const g = governingValuation(v);
+    expect(g.source).toBe("motor_v2");
+    expect(g.blocked).toBe(true);
+    expect(g.margin).toBeCloseTo(0.24, 6);     // el FV no se altera
+    expect(passesValueGate(v, 0.10)).toBe(false);   // no validado ⇒ no accionable
+  });
+
+  it("MOTOR v2 no_valorable: bloqueado y no accionable", () => {
+    const v = { engineMargin: 0.50, engineStatus: "no_valorable" as const,
+                productiveMargin: null, productiveConfidence: null };
+    const g = governingValuation(v);
+    expect(g.source).toBe("motor_v2");
+    expect(g.blocked).toBe(true);
+    expect(passesValueGate(v, 0.10)).toBe(false);
+  });
 });

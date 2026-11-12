@@ -7,10 +7,15 @@
 //   - Datos insuficientes → sin valoración (no se inventa Fair Value).
 // Tiers: calculado (corre) / confiable (productivo) / experimental (FCFF fallback) / insuficiente.
 export type Conf = "alta" | "media" | "baja" | null;
-export type GovSource = "productivo" | "fcff_fallback" | "fcff(contexto)" | "ninguno";
+export type GovSource = "motor_v2" | "productivo" | "fcff_fallback" | "fcff(contexto)" | "ninguno";
 export type ValTier = "confiable" | "experimental" | "insuficiente";
 
 export interface GovInput {
+  // MOTOR v2 (FCFF DCF data-driven reconciliado) — FV ÚNICO GOBERNANTE con estado de validación.
+  // Cuando existe, MANDA sobre todo lo demás. Accionable SOLO si engineStatus === "validado".
+  // "en_revision"/"no_valorable" ⇒ FV visible pero BLOQUEADO (no genera compras/asignaciones).
+  engineMargin?: number | null; engineStatus?: "validado" | "en_revision" | "no_valorable" | null;
+  engineConfidence?: Conf; engineReason?: string | null;
   productiveMargin: number | null; productiveConfidence: Conf;
   fcffMargin?: number | null; fcffConfidence?: Conf;
   priceComparable?: boolean;
@@ -43,6 +48,20 @@ function guardExtreme(r: GovResult): GovResult {
 export function governingValuation(v: GovInput | undefined, opts?: PolicyOpts): GovResult {
   const fallback = !!opts?.fcffFallback;
   if (!v) return { margin: null, conf: null, source: "ninguno", tier: "insuficiente", note: "sin valoración" };
+  // 0) MOTOR v2 — FV ÚNICO GOBERNANTE. Si existe, manda. Accionable solo si validado; en revisión o no
+  //    valorable ⇒ FV visible pero bloqueado (no accionable). Reemplaza la jerarquía productivo/FCFF.
+  if (v.engineMargin != null && v.engineStatus) {
+    const validated = v.engineStatus === "validado";
+    const blk = !validated;
+    const reason = v.engineReason ?? (v.engineStatus === "no_valorable"
+      ? "no valorable (datos no reconstruibles)" : "en revisión (control financiero no superado)");
+    return guardExtreme({
+      margin: v.engineMargin, conf: v.engineConfidence ?? (validated ? "media" : "baja"),
+      source: "motor_v2" as GovSource, tier: validated ? "confiable" : "experimental",
+      note: validated ? "Motor v2 (FCFF DCF reconciliado) — validado" : `Motor v2 — ${reason}`,
+      blocked: blk, blockReason: blk ? reason : null,
+    });
+  }
   // 1) FV productivo primario (el FCFF, si existe y es suficiente, solo corrobora)
   if (v.productiveMargin != null && v.priceComparable !== false) {
     const corro = v.fcffMargin != null && sufficient(v.fcffConfidence ?? null)
@@ -65,7 +84,7 @@ export function governingValuation(v: GovInput | undefined, opts?: PolicyOpts): 
 export function passesValueGate(v: GovInput | undefined, minMargin: number, opts?: PolicyOpts): boolean {
   const g = governingValuation(v, opts);
   return !g.blocked && g.margin != null && g.margin >= minMargin && sufficient(g.conf)
-    && (g.source === "productivo" || g.source === "fcff_fallback");
+    && (g.source === "motor_v2" || g.source === "productivo" || g.source === "fcff_fallback");
 }
 
 // ¿La valoración que gobernaría está EN REVISIÓN (barrera activa)? Para que la UI lo muestre.

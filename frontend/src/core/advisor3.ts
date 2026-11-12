@@ -20,7 +20,10 @@ export interface Adv3Position {
   currency?: string | null; assetClass?: string | null; marketValue: number; weight: number;
 }
 export interface Adv3Valuation {
-  // Fair Value PRODUCTIVO (referencia que manda) + FCFF experimental (contexto, no desplaza).
+  // MOTOR v2 — FV ÚNICO GOBERNANTE con estado de validación (manda sobre todo cuando existe).
+  engineMargin?: number | null; engineStatus?: "validado" | "en_revision" | "no_valorable" | null;
+  engineConfidence?: Conf; engineReason?: string | null;
+  // Fair Value PRODUCTIVO (referencia histórica de transición) + FCFF experimental (contexto).
   productiveMargin: number | null; productiveConfidence: Conf;
   fcffMargin?: number | null; fcffConfidence?: Conf;
   priceComparable?: boolean;
@@ -48,7 +51,7 @@ export interface Explain {
 }
 export interface PositionDecision {
   ticker: string; action: PositionAction; confidence: Conf;
-  marginUsed: number | null; marginSource: "productivo" | "fcff_fallback" | "fcff(contexto)" | "ninguno";
+  marginUsed: number | null; marginSource: "motor_v2" | "productivo" | "fcff_fallback" | "fcff(contexto)" | "ninguno";
   riskContribPct: number;
   trimPct: number | null;         // cuánto reducir (fracción de la posición); 1 = salida total; null = no aplica
   trimToWeight: number | null;    // peso objetivo tras el recorte

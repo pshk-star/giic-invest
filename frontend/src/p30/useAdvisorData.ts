@@ -101,7 +101,15 @@ export function useAdvisorData(): AdvisorData {
         for (const t of universe) {
           const cv = fv[t]; const prod = modelMargin(cv, "DCF_productivo"); const giic = modelMargin(cv, "FCFF_GIIC");
           const giicB = cv?.modelos.find((x) => x.modelo === "FCFF_GIIC");
-          valuation[t] = { productiveMargin: prod.m, productiveConfidence: prod.m != null ? "media" : null, fcffMargin: giic.m, fcffConfidence: (giic.c as any) ?? null, priceComparable: true,
+          // MOTOR v2 — FV único gobernante. Si existe para el ticker, manda (con estado de validación).
+          const eng = modelMargin(cv, "motor_v2");
+          const engB: any = cv?.modelos.find((x) => x.modelo === "motor_v2");
+          valuation[t] = {
+            engineMargin: eng.m, engineStatus: engB?.status ?? null,
+            engineConfidence: eng.m != null ? ((engB?.confianza as any) ?? "media") : null,
+            engineReason: (engB?.review_reasons ?? []).join("; ") || null,
+            productiveMargin: prod.m, productiveConfidence: prod.m != null ? "media" : null,
+            fcffMargin: giic.m, fcffConfidence: (giic.c as any) ?? null, priceComparable: true,
             reviewBlock: !!giicB?.review_block, reviewReason: (giicB?.review_reasons ?? []).join("; ") || null };
           const sector = sectorOf(t); const ac = instruments[t]?.asset_class ?? null;
           candidates.push({ ticker: t, name: instruments[t]?.name ?? null, sector, country: null, currency: instruments[t]?.currency ?? null, assetClass: ac, kind: kindOf(ac, sector), inPortfolio: ptk.includes(t), composite: scan.find((s) => s.ticker.toUpperCase() === t)?.composite ?? null });

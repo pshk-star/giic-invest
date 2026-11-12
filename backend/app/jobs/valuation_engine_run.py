@@ -90,19 +90,38 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
                       "nopat0": r.inputs.get("nopat0"), "invested_capital": r.inputs.get("invested_capital"),
                       "op_margin": r.inputs.get("op_margin"), "mktcap_implied": (r.price_local or 0) * (r.inputs.get("shares") or 0)},
         }
-        # FV gobernante: se escribe con estado de validación. Bloqueado si no está validado.
+        # FV gobernante: payload con forma CompanyValuation (el frontend lee el snapshot más reciente por
+        # ticker). UN solo modelo gobernante "motor_v2" con estado de validación. No mezcla modelos viejos.
+        conf = "media" if r.validated else "baja"
+        model_block = {
+            "modelo": "motor_v2", "disponible": True,
+            "fair_value_usd": r.fair_value_usd, "precio": r.price_local,
+            "margen_seguridad_pct": results[t]["margen_seguridad_pct"], "confianza": conf,
+            "status": r.status, "validado": r.validated, "accionable": bool(r.validated),
+            # BARRERA: no validado ⇒ bloqueado para compra/asignación (FV visible, no accionable)
+            "review_block": not r.validated,
+            "review_reasons": results[t]["controles_fallidos"] or ([r.status] if not r.validated else []),
+            "wacc_pct": results[t]["wacc_pct"], "ke_pct": results[t]["ke_pct"],
+            "g_terminal_pct": results[t]["gT_pct"], "peso_terminal_pct": results[t]["peso_terminal_pct"],
+            "roic_pct": results[t]["roic_pct"], "reinversion": f"{results[t]['reinversion_pct']}%",
+            "crecimiento_g1_pct": results[t]["g1_pct"], "fcff0": r.fcff0, "fcfe0_hist": r.fcfe0,
+            "divergencia_fcff_vs_fcfe_pct": results[t]["divergencia_fcff_vs_fcfe_pct"],
+            "escenarios": {"conservador": r.sensitivity.get("wacc+1"), "base": r.fair_value_usd,
+                           "optimista": r.sensitivity.get("wacc-1")},
+            "procedencia": {"fuente": "Motor v2 FCFF DCF reconciliado (EODHD+EDGAR)",
+                            "fuentes_por_campo": r.inputs.get("provenance"), "fecha": today,
+                            "params": r.inputs.get("params_date")},
+            "nota": "Motor v2: FCFF DCF data-driven reconciliado. FV único gobernante con estado de validación.",
+        }
         payload = {
-            "ticker": t, "ccy": r.ccy, "precio": r.price_local, "origen": "motor_v2",
-            "status": r.status, "validado": r.validated,
-            "fair_value_usd": r.fair_value_usd, "margen_seguridad_pct": results[t]["margen_seguridad_pct"],
-            "gobernante": True,
-            "accionable": bool(r.validated),   # SOLO validado es accionable
+            "ticker": t, "ccy": r.ccy, "precio": r.price_local, "gT_pct": results[t]["gT_pct"],
+            "origen": "motor_v2", "gobernante": True, "status": r.status, "validado": r.validated,
+            "modelos": [model_block],
             "indicadores": {k: results[t][k] for k in ("wacc_pct", "ke_pct", "g1_pct", "gT_pct", "roic_pct",
                             "reinversion_pct", "fcff0", "fcfe0_hist", "peso_terminal_pct",
                             "divergencia_fcff_vs_fcfe_pct")},
-            "sensibilidad": r.sensitivity, "controles_fallidos": results[t]["controles_fallidos"],
-            "fuentes": r.inputs.get("provenance"), "params_date": r.inputs.get("params_date"),
-            "nota": "Motor v2 FCFF DCF data-driven reconciliado (EODHD+EDGAR). FV gobernante con estado de validación.",
+            "sensibilidad": r.sensitivity,
+            "no_calibrado_a_mercado": False,
         }
         rev_periods = sorted((edgar.get("by_field", {}).get("revenue") or eod.get("by_field", {}).get("revenue") or {}).keys())
         obs_date = rev_periods[-1] if rev_periods else today

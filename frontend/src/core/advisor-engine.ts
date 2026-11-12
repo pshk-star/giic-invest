@@ -59,6 +59,17 @@ export interface BuildAdvisorArgs { profile: Profile; scanInput: ScanInput; etfI
 // Un margen positivo por sí solo nunca basta: `passesValueGate`/`governingValuation` exigen confianza y
 // fuente gobernante. No se modifican Fair Values para producir compras.
 function classify(e: ScanEntry, v: GovInput | undefined, g: GovResult, minMargin: number): { cls: OppClass; buyable: boolean } {
+  // MOTOR v2 — FV único gobernante. Validado y accionable con margen ⇒ compra; en revisión/no valorable
+  // (g.blocked) ⇒ nunca comprable (sólo investigación), aunque el margen sea positivo.
+  if (g.source === "motor_v2" && g.margin != null) {
+    if (g.blocked) {
+      return g.margin >= minMargin ? { cls: "candidata_investigacion", buyable: false }
+                                   : { cls: "poco_atractiva", buyable: false };
+    }
+    if (e.actionable && g.margin >= minMargin) return { cls: "compra_recomendada", buyable: true };
+    if (g.margin >= minMargin) return { cls: "oportunidad_analizada", buyable: false };   // validada pero restringida
+    return { cls: "poco_atractiva", buyable: false };
+  }
   if (g.source === "productivo" && g.margin != null) {
     if (e.actionable) return { cls: "compra_recomendada", buyable: true };
     if (g.margin >= minMargin) return { cls: "oportunidad_analizada", buyable: false };   // productiva atractiva pero restringida
