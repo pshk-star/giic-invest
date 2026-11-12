@@ -74,7 +74,7 @@ describe("P2.4 política de valoración única", () => {
 
   // --- MOTOR v2: FV único gobernante con estado de validación ---
   it("MOTOR v2 validado GOBIERNA sobre productivo/FCFF y es accionable", () => {
-    const v = { engineMargin: 0.15, engineStatus: "validado" as const, engineConfidence: "media" as const,
+    const v = { engineMargin: 0.15, engineStatus: "consistente" as const, engineConfidence: "media" as const,
                 productiveMargin: -0.30, productiveConfidence: "media" as const, fcffMargin: 0.40, fcffConfidence: "media" as const };
     const g = governingValuation(v);
     expect(g.source).toBe("motor_v2");

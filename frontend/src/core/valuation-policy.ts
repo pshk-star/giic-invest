@@ -12,9 +12,10 @@ export type ValTier = "confiable" | "experimental" | "insuficiente";
 
 export interface GovInput {
   // MOTOR v2 (FCFF DCF data-driven reconciliado) — FV ÚNICO GOBERNANTE con estado de validación.
-  // Cuando existe, MANDA sobre todo lo demás. Accionable SOLO si engineStatus === "validado".
+  // Cuando existe, MANDA sobre todo lo demás. Accionable SOLO si engineStatus === "consistente"
+  // (consistencia ARITMÉTICA; no implica validación económica/predictiva).
   // "en_revision"/"no_valorable" ⇒ FV visible pero BLOQUEADO (no genera compras/asignaciones).
-  engineMargin?: number | null; engineStatus?: "validado" | "en_revision" | "no_valorable" | null;
+  engineMargin?: number | null; engineStatus?: "consistente" | "en_revision" | "no_valorable" | null;
   engineConfidence?: Conf; engineReason?: string | null;
   productiveMargin: number | null; productiveConfidence: Conf;
   fcffMargin?: number | null; fcffConfidence?: Conf;
@@ -51,14 +52,14 @@ export function governingValuation(v: GovInput | undefined, opts?: PolicyOpts): 
   // 0) MOTOR v2 — FV ÚNICO GOBERNANTE. Si existe, manda. Accionable solo si validado; en revisión o no
   //    valorable ⇒ FV visible pero bloqueado (no accionable). Reemplaza la jerarquía productivo/FCFF.
   if (v.engineMargin != null && v.engineStatus) {
-    const validated = v.engineStatus === "validado";
+    const validated = v.engineStatus === "consistente";
     const blk = !validated;
     const reason = v.engineReason ?? (v.engineStatus === "no_valorable"
       ? "no valorable (datos no reconstruibles)" : "en revisión (control financiero no superado)");
     return guardExtreme({
       margin: v.engineMargin, conf: v.engineConfidence ?? (validated ? "media" : "baja"),
       source: "motor_v2" as GovSource, tier: validated ? "confiable" : "experimental",
-      note: validated ? "Motor v2 (FCFF DCF reconciliado) — validado" : `Motor v2 — ${reason}`,
+      note: validated ? "Motor v2 (FCFF DCF reconciliado) — consistente aritméticamente (no validación económica)" : `Motor v2 — ${reason}`,
       blocked: blk, blockReason: blk ? reason : null,
     });
   }

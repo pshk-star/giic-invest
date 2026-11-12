@@ -72,7 +72,7 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
             continue
         r = out.result
         results[t] = {
-            "status": r.status, "validado": r.validated,
+            "status": r.status, "consistente_aritmeticamente": r.validated,
             "precio": r.price_local, "precio_fecha": pr.get("as_of"),
             "fair_value_usd": r.fair_value_usd, "fair_value_local": r.fair_value_local,
             "margen_seguridad_pct": round(r.margin_of_safety * 100, 1) if r.margin_of_safety is not None else None,
@@ -97,7 +97,7 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
             "modelo": "motor_v2", "disponible": True,
             "fair_value_usd": r.fair_value_usd, "precio": r.price_local,
             "margen_seguridad_pct": results[t]["margen_seguridad_pct"], "confianza": conf,
-            "status": r.status, "validado": r.validated, "accionable": bool(r.validated),
+            "status": r.status, "consistente_aritmeticamente": r.validated, "accionable": bool(r.validated),
             # BARRERA: no validado ⇒ bloqueado para compra/asignación (FV visible, no accionable)
             "review_block": not r.validated,
             "review_reasons": results[t]["controles_fallidos"] or ([r.status] if not r.validated else []),
@@ -115,7 +115,7 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
         }
         payload = {
             "ticker": t, "ccy": r.ccy, "precio": r.price_local, "gT_pct": results[t]["gT_pct"],
-            "origen": "motor_v2", "gobernante": True, "status": r.status, "validado": r.validated,
+            "origen": "motor_v2", "gobernante": True, "status": r.status, "consistente_aritmeticamente": r.validated,
             "modelos": [model_block],
             "indicadores": {k: results[t][k] for k in ("wacc_pct", "ke_pct", "g1_pct", "gT_pct", "roic_pct",
                             "reinversion_pct", "fcff0", "fcfe0_hist", "peso_terminal_pct",
@@ -138,7 +138,7 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
         except Exception as e:
             write_err = f"{type(e).__name__}: {str(e)[:160]}"
 
-    tally = {"validado": 0, "en_revision": 0, "no_valorable": 0}
+    tally = {"consistente": 0, "en_revision": 0, "no_valorable": 0}
     for v in results.values():
         tally[v.get("status", "no_valorable")] = tally.get(v.get("status", "no_valorable"), 0) + 1
     return {"as_of": today, "snapshot_date": snap, "params": "2026-11",

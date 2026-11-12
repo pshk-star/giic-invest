@@ -451,8 +451,10 @@ export async function getFundamentalValuations(): Promise<import("./core/fundval
   const { data, error } = await supabase
     .from("pit_snapshots").select("ticker,snapshot_date,observation_date,captured_at,payload")
     .eq("kind", "fundamental_valuation")
-    .order("snapshot_date", { ascending: false })
-    .order("captured_at", { ascending: false });   // en empate de día, gana la captura más reciente (valores corregidos)
+    // Gobierna la captura REALMENTE más reciente por hora de escritura (captured_at), no por snapshot_date
+    // (que podría datarse a futuro). Evita que una fecha de snapshot adelantada tape una corrección posterior.
+    .order("captured_at", { ascending: false })
+    .order("snapshot_date", { ascending: false });
   if (error) throw error;
   const resultados: Record<string, import("./core/fundval").CompanyValuation> = {};
   let generado: string | undefined;

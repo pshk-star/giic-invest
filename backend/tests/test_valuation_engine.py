@@ -44,7 +44,7 @@ def test_empresa_sana_valida_y_fv_positivo_reproducible():
     assert r.fair_value_usd and r.fair_value_usd > 0
     assert r.wacc > r.gT                                 # WACC > crecimiento terminal
     assert 0 < r.terminal_weight < 1
-    assert r.status in ("validado", "en_revision")
+    assert r.status in ("consistente", "en_revision")
     # reproducibilidad: Ke = RF + beta·ERP
     assert abs(r.ke - (RF["USD"] + r.inputs["beta"] * ERP["USD"])) < 1e-9
 
@@ -56,7 +56,7 @@ def test_control_reinversion_mayor_que_roic_falla_duro():
     # o falla duro por reinversión>ROIC, o queda no_valorable; nunca 'validado'
     assert out.status in ("no_valorable", "en_revision")
     if out.result:
-        assert out.result.status != "validado"
+        assert out.result.status != "consistente"
 
 
 def test_capital_no_reconstruible_no_valorable():

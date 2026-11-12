@@ -21,7 +21,7 @@ export interface Adv3Position {
 }
 export interface Adv3Valuation {
   // MOTOR v2 — FV ÚNICO GOBERNANTE con estado de validación (manda sobre todo cuando existe).
-  engineMargin?: number | null; engineStatus?: "validado" | "en_revision" | "no_valorable" | null;
+  engineMargin?: number | null; engineStatus?: "consistente" | "en_revision" | "no_valorable" | null;
   engineConfidence?: Conf; engineReason?: string | null;
   // Fair Value PRODUCTIVO (referencia histórica de transición) + FCFF experimental (contexto).
   productiveMargin: number | null; productiveConfidence: Conf;

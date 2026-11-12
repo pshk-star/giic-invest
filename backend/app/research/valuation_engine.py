@@ -147,6 +147,8 @@ class NormInputs:
     prov: Dict[str, str] = field(default_factory=dict)
     discrepancies: Dict[str, float] = field(default_factory=dict)
     reasons: List[str] = field(default_factory=list)
+    fcf_real_recent: Optional[float] = None
+    split_flag: bool = False
     ok: bool = True
     fail: Optional[str] = None
 
@@ -216,11 +218,20 @@ def normalize(ticker: str, rec: Reconciled, price_local: Optional[float], adr: i
     if not sh or sh < MIN_SHARES:
         return fail(f"acciones no fiables ({sh}) ⇒ escala/unidad inconsistente")
 
-    # ancla de reconciliación: margen FCF histórico (OCF − capex)/ingresos
+    # ancla de reconciliación: margen FCF histórico (OCF − capex)/ingresos + NIVEL de FCF real reciente.
+    # El FCF real reciente es la prueba de realidad del FCFF proyectado (control item 6): si el motor
+    # proyecta un FCFF base muy por debajo del FCF que la empresa YA genera, el supuesto de reinversión
+    # (g/ROIC con ROIC medio) es económicamente falso para esa empresa (caso NVDA: capex ligero).
     ocf = by.get("ocf", {}); capex = by.get("capex", {})
-    fcf_margins = [(ocf[p] - abs(capex[p])) / rev[p] for p in sorted(rev)
-                   if p in ocf and p in capex and rev[p] > 0]
+    fcf_levels = [(p, ocf[p] - abs(capex[p])) for p in sorted(rev) if p in ocf and p in capex and rev[p] > 0]
+    fcf_margins = [lvl / rev[p] for (p, lvl) in fcf_levels]
     hist_fcf_margin = median(fcf_margins[-5:]) if fcf_margins else None
+    # FCF real reciente: promedio de los 2 últimos años (nivel), ancla de la prueba de realidad.
+    fcf_real_recent = (sum(l for _, l in fcf_levels[-2:]) / len(fcf_levels[-2:])) if fcf_levels else None
+
+    # detección de split no ajustado: salto YoY de acciones > 3x (señal de datos precio/acciones dudosos)
+    sh_series = [by["shares"][p] for p in sorted(by.get("shares", {})) if by["shares"][p]]
+    split_flag = any(b > 0 and (max(a, b) / min(a, b)) > 3.0 for a, b in zip(sh_series, sh_series[1:]))
 
     # WACC: Ke = RF + β·ERP ; Kd = (interés/deuda)·(1−t) acotado ; pesos por valor de mercado
     beta = _clamp(BETA.get(ticker, BETA_DEFAULT), 0.5, 2.2)
@@ -235,9 +246,12 @@ def normalize(ticker: str, rec: Reconciled, price_local: Optional[float], adr: i
 
     prov = dict(rec.provenance)
     reasons = list(rec.notes)
-    return NormInputs(ticker, ccy, revenue0, op_margin, tax_eff, g1, gT, ic, roic, net_debt, sh,
-                      hist_fcf_margin, beta, kd_after_tax, w_equity, w_debt, nopat0, prov=prov,
-                      discrepancies=dict(rec.discrepancies), reasons=reasons)
+    n = NormInputs(ticker, ccy, revenue0, op_margin, tax_eff, g1, gT, ic, roic, net_debt, sh,
+                   hist_fcf_margin, beta, kd_after_tax, w_equity, w_debt, nopat0, prov=prov,
+                   discrepancies=dict(rec.discrepancies), reasons=reasons)
+    n.fcf_real_recent = fcf_real_recent
+    n.split_flag = split_flag
+    return n
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -383,18 +397,31 @@ def value_from_norm(n: NormInputs, price_local: Optional[float], adr: int = 1) -
                 and v is not None and v > 0.25}
     controls.append(("fuentes_consistentes", not bad_disc,
                      ("ok" if not bad_disc else "; ".join(f"{k} difiere {v*100:.0f}%" for k, v in bad_disc.items()))))
+    # PRUEBA DE REALIDAD (item 6): el FCFF base proyectado debe reconciliar con el FCF que la empresa YA
+    # genera. Si difieren >30%, el supuesto de reinversión (g/ROIC con ROIC medio) es económicamente
+    # inconsistente para esta empresa (p. ej. NVDA: FCFF proyectado 43B vs FCF real 97B) ⇒ revisión.
+    if n.fcf_real_recent and n.fcf_real_recent > 0:
+        div_fcf = abs(fcff0 - n.fcf_real_recent) / n.fcf_real_recent
+        controls.append(("FCFF_proy_vs_FCF_real", div_fcf <= 0.30,
+                         f"FCFF proy {fcff0/1e9:.0f}B vs FCF real {n.fcf_real_recent/1e9:.0f}B (dif {div_fcf*100:.0f}%)"))
+    # DATOS DUDOSOS (item 5): split de acciones no ajustado en la serie ⇒ precio/acciones en verificación.
+    controls.append(("datos_precio_acciones", not n.split_flag,
+                     "ok" if not n.split_flag else "posible split no ajustado (precio/acciones en verificación)"))
 
     hard_fail = [c for c in controls if not c[1] and c[0] in
                  ("WACC>gT", "reinversion_vs_ROIC", "margen_operativo_plausible", "acciones_escala")]
     review = [c for c in controls if not c[1] and c[0] in
-              ("peso_terminal", "FCFF_vs_FCFE", "margen_no_extremo", "fuentes_consistentes")]
+              ("peso_terminal", "FCFF_vs_FCFE", "margen_no_extremo", "fuentes_consistentes",
+               "FCFF_proy_vs_FCF_real", "datos_precio_acciones")]
+    # "consistente" = pasa los controles ARITMÉTICOS (no es validación económica ni predictiva: eso exige
+    # backtest/track record, pendiente). Solo lo consistente es accionable; el resto queda bloqueado.
     validated = not hard_fail and not review
     if hard_fail:
         status = "no_valorable"
     elif review:
         status = "en_revision"
     else:
-        status = "validado"
+        status = "consistente"
     reasons = list(n.reasons) + [f"{c[0]}: {c[2]}" for c in controls if not c[1]]
 
     return DcfResult(
