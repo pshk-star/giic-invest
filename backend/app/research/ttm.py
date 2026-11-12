@@ -123,9 +123,14 @@ def quarters_from_ytd(periods, concept):
         ps = sorted(ps, key=lambda x: x["end"])
         prev = None
         for p in ps:
-            val = p["val"] if prev is None else p["val"] - prev["val"]
-            q[p["end"]] = {"val": val, "q_end": p["end"], "deriv": ("3m" if prev is None else f"{p['days']}d−{prev['days']}d"),
-                           "form": p.get("form"), "filed": p.get("filed"), "concepto": concept}
+            # span IMPLÍCITO del trimestre derivado; solo se acepta si es ~trimestral (70–100 días).
+            # Emisores semestrales/anuales (20-F: ASML, etc.) producen spans de ~180d ⇒ se descartan
+            # (su TTM trimestral se toma de EODHD, que sí trae trimestres genuinos).
+            span = p["days"] if prev is None else (_dur(prev["end"], p["end"]) or 0)
+            if 70 <= span <= 100:
+                val = p["val"] if prev is None else p["val"] - prev["val"]
+                q[p["end"]] = {"val": val, "q_end": p["end"], "deriv": ("3m" if prev is None else f"{p['days']}d−{prev['days']}d"),
+                               "form": p.get("form"), "filed": p.get("filed"), "concepto": concept}
             prev = p
     return q
 
