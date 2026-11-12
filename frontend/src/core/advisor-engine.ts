@@ -23,6 +23,7 @@ export interface PositionRec {
 export interface OpportunityRec {
   ticker: string; name?: string | null; sector: string | null; class: OppClass;
   buyable: boolean; margin: number | null; source: string; confidence: string | null; why: string;
+  review?: boolean;   // BARRERA: valoración en revisión (inconsistencia económica) ⇒ nunca comprable
 }
 export interface AdvisorReport {
   asOf: string; currency: string;
@@ -148,8 +149,11 @@ export function buildUnifiedAdvisor(args: BuildAdvisorArgs): AdvisorReport {
     .map((e) => {
       const v = scanInput.valuation[e.ticker];
       const g = governingValuation(v, pol);
-      const { cls, buyable } = classify(e, v, g, c.minMarginToBuy);
-      const why = cls === "compra_recomendada" ? "FV productivo con margen y confianza suficientes: compra recomendada."
+      let { cls, buyable } = classify(e, v, g, c.minMarginToBuy);
+      // BARRERA: valoración en revisión ⇒ nunca comprable; se muestra como INVESTIGACIÓN (en revisión).
+      if (g.blocked) { cls = "candidata_investigacion"; buyable = false; }
+      const why = g.blocked ? `EN REVISIÓN — no comprable: ${g.blockReason ?? "inconsistencia económica no resuelta"}. El Fair Value no se usa para asignar capital hasta corregir el motor.`
+        : cls === "compra_recomendada" ? "FV productivo con margen y confianza suficientes: compra recomendada."
         : cls === "oportunidad_analizada" && buyable ? `Accionable por FCFF como fallback bajo controles (confianza ${g.conf}, tier experimental): oportunidad analizada, menor convicción que un FV productivo.`
         : cls === "oportunidad_analizada" ? "Valorada y atractiva, pero restringida para TU cartera (concentración/límites de peso)."
         : cls === "candidata_investigacion" ? "Señal por FCFF que NO gobierna la decisión (confianza insuficiente o VALPOLICY apagado): candidata de INVESTIGACIÓN, no comprable hasta análisis profundo."
@@ -157,7 +161,7 @@ export function buildUnifiedAdvisor(args: BuildAdvisorArgs): AdvisorReport {
         : "Sin valoración concluyente: evidencia insuficiente.";
       const displayMargin = g.margin ?? e.margin ?? v?.fcffMargin ?? null;
       return { ticker: e.ticker, name: e.name, sector: e.sector ?? null, class: cls, buyable,
-               margin: displayMargin, source: g.source, confidence: g.conf, why };
+               margin: displayMargin, source: g.source, confidence: g.conf, why, review: !!g.blocked };
     })
     .sort((a, b) => {
       const rank: Record<OppClass, number> = { compra_recomendada: 0, oportunidad_analizada: 1, candidata_investigacion: 2, poco_atractiva: 3, evidencia_insuficiente: 4 };
@@ -166,7 +170,8 @@ export function buildUnifiedAdvisor(args: BuildAdvisorArgs): AdvisorReport {
 
   const researchCandidates = opportunities.filter((o) => o.class === "candidata_investigacion")
     .sort((a, b) => (b.margin ?? -9) - (a.margin ?? -9)).slice(0, 10)
-    .map((o) => ({ ticker: o.ticker, name: o.name, margin: o.margin, reason: `Señal preliminar FCFF (${o.margin != null ? (o.margin * 100).toFixed(0) + "%" : "n/d"}); requiere valoración productiva/análisis profundo antes de ser comprable.` }));
+    .map((o) => ({ ticker: o.ticker, name: o.name, margin: o.margin, reason: o.review ? o.why : `Señal preliminar FCFF (${o.margin != null ? (o.margin * 100).toFixed(0) + "%" : "n/d"}); requiere valoración productiva/análisis profundo antes de ser comprable.` }));
+  const reviewBlocked = opportunities.filter((o) => o.review);
   const researchPriorities = researchCandidates.slice(0, 8).map((o) => ({ ticker: o.ticker, reason: o.reason }));
 
   // --- riesgos ---
@@ -175,6 +180,7 @@ export function buildUnifiedAdvisor(args: BuildAdvisorArgs): AdvisorReport {
   risks.push(`Volatilidad anual estimada ${(report.baseVol * 100).toFixed(0)}%, HHI sector ${report.baseHhiSector.toFixed(3)}.`);
   if (vehicleWeight > c.maxSectorWeight) risks.push(`Los vehículos (ETF) suman ${(vehicleWeight * 100).toFixed(0)}% de la cartera (incluye renta variable amplia y metales): revisa la concentración agregada en vehículos.`);
   if (researchCandidates.length) risks.push(`${researchCandidates.length} candidata(s) de investigación (FCFF experimental) FUERA de la asignación ejecutable: no se compran hasta tener valoración productiva/análisis profundo.`);
+  if (reviewBlocked.length) risks.push(`BARRERA DE SEGURIDAD: ${reviewBlocked.length} valoración(es) EN REVISIÓN por inconsistencia económica no resuelta (${reviewBlocked.map((o) => o.ticker).join(", ")}): bloqueadas para compra/asignación hasta corregir el motor. Los Fair Values no se alteran.`);
   const needData = positionRecs.filter((p) => p.action === "VENDER" || p.action === "REDUCIR");
   if (needData.length) risks.push("Las ventas/reducciones son ESCENARIOS INDICATIVOS, no instrucciones ejecutables: el % de recorte deriva del margen productivo (½·|margen|, acotado) y NO incorpora horizonte, costos/impuestos ni alternativas de reinversión; considéralos antes de ejecutar.");
 

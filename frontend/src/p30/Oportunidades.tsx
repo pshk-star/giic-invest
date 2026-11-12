@@ -9,6 +9,7 @@ import { pct } from "../format";
 type Filter = "todo" | "comprable" | "investig";
 
 function stateOf(o: OpportunityRec): { cls: string; label: string; color: string } {
+  if (o.review) return { cls: "c-rev", label: "En revisión", color: "var(--gold)" };
   switch (o.class) {
     case "compra_recomendada": return { cls: "c-buy", label: "Comprar", color: "var(--buy)" };
     case "oportunidad_analizada": return o.buyable

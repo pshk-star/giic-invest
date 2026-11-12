@@ -59,6 +59,11 @@ export function FichaP30() {
         <span className={"mini-chip " + chip.cls} style={{ alignSelf: "center" }}>{chip.label}</span>
       </div>
 
+      {opp?.review && (
+        <div className="flag gold" style={{ marginTop: 14, fontSize: 12 }}>
+          <b>Valoración EN REVISIÓN — no accionable.</b> {opp.why} El Fair Value se muestra pero no genera señales de compra ni asignación de capital hasta corregir el motor.
+        </div>
+      )}
       {cv == null ? (
         <div className="minibox" style={{ marginTop: 16 }}>
           Sin valoración concluyente para {t}: evidencia insuficiente. GIIC no inventa un Fair Value.

@@ -14,6 +14,7 @@ function scanInput(): ScanInput {
       emp("NVDA", "Tech", true), emp("KO", "Staples", true),
       { ticker: "SPY", name: "SPY", sector: "ETF", country: "US", currency: "USD", assetClass: "etf", kind: "etf", inPortfolio: true },
       emp("AAA", "Health"), emp("EXP", "Energy"), emp("POOR", "Retail"), emp("INSUF", "Materials"),
+      emp("REV", "Health"),
     ],
     valuation: {
       NVDA: { productiveMargin: -0.30, productiveConfidence: "media", priceComparable: true },
@@ -23,6 +24,7 @@ function scanInput(): ScanInput {
       EXP: { productiveMargin: null, productiveConfidence: null, fcffMargin: 0.30, fcffConfidence: "media", priceComparable: true },
       POOR: { productiveMargin: 0.05, productiveConfidence: "media", priceComparable: true },
       INSUF: { productiveMargin: null, productiveConfidence: null, priceComparable: true },
+      REV: { productiveMargin: null, productiveConfidence: null, fcffMargin: 0.30, fcffConfidence: "media", priceComparable: true, reviewBlock: true, reviewReason: "crecimiento gratis: reinversión neta <0 con g1 >0" },
     },
     fundamentals: {},
     portfolio: {
@@ -36,6 +38,7 @@ function scanInput(): ScanInput {
     priceHistory: {
       NVDA: series(100, 0.3, 1), KO: series(60, 0.08, 2), SPY: series(400, 0.12, 3),
       AAA: series(80, 0.1, 4), EXP: series(50, 0.09, 5), POOR: series(70, 0.07, 6), INSUF: series(55, 0.11, 7),
+      REV: series(45, 0.08, 8),
     },
     contributions: [3000],
     constraints: { maxPositionWeight: 0.45, maxSectorWeight: 0.50, minMarginToBuy: 0.10 },
@@ -106,6 +109,16 @@ describe("Etapa A — orquestador (una sola recomendación)", () => {
     const r = buildUnifiedAdvisor({ profile: PROFILE, scanInput: inp });
     expect(r.newMoney.legs.map((l) => l.ticker)).not.toContain("EXP");
     expect(r.researchCandidates.map((x) => x.ticker)).toContain("EXP");   // queda en investigación (confiable sólo con FV productivo)
+  });
+
+  it("BARRERA: una valoración FCFF en revisión NO es comprable y se marca 'en revisión' (FV intacto)", () => {
+    const r = buildUnifiedAdvisor({ profile: PROFILE, scanInput: scanInput() });   // VALPOLICY activo
+    const rev = r.opportunities.find((o) => o.ticker === "REV")!;
+    expect(rev.review).toBe(true);
+    expect(rev.buyable).toBe(false);                                   // bloqueada pese a margen 30% y confianza media
+    expect(rev.margin).toBeCloseTo(0.30, 6);                          // el Fair Value/margen NO se altera
+    expect(r.newMoney.legs.map((l) => l.ticker)).not.toContain("REV"); // no entra a la asignación de capital
+    expect(r.risks.some((x) => /BARRERA DE SEGURIDAD/.test(x) && /REV/.test(x))).toBe(true);
   });
 
   it("propone asignación concreta de dinero nuevo y conserva el resto", () => {

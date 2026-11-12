@@ -135,9 +135,17 @@ def run(write: bool) -> dict:
                 "modelo": "FCFF_GIIC", "fair_value_usd": r.fair_value_usd, "precio": px,
                 "margen_seguridad_pct": r.margin_pct, "confianza": r.confidence, "status": r.status,
                 "limitaciones": r.reasons,
+                # BARRERA (diagnóstico PFE): marca de accionabilidad bloqueada por inconsistencia económica
+                # no resuelta. NO altera fair_value_usd; la política compartida la respeta.
+                "review_block": bool(r.inputs.get("review_block")),
+                "review_reasons": r.inputs.get("review_reasons") or [],
                 "procedencia": {"fuente": "driver data-driven P2.4 (serie reportada EODHD)", "fecha": today},
                 "nota": "experimental: FCFF con supuestos derivados de datos; no es FV productivo",
             }],
+            "controles": {"review_block": bool(r.inputs.get("review_block")),
+                          "reinv_neta_pct": r.inputs.get("reinv_neta_pct"),
+                          "free_growth": bool(r.inputs.get("free_growth")),
+                          "adr_fx_review": bool(r.inputs.get("adr_fx_review"))},
             "no_calibrado_a_mercado": True,
         }
         rows_to_write.append({"kind": "fundamental_valuation", "ticker": t, "observation_date": obs_date,

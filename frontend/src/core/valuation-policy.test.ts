@@ -49,4 +49,26 @@ describe("P2.4 política de valoración única", () => {
     const g = governingValuation({ productiveMargin: 0.20, productiveConfidence: "media", priceComparable: false });
     expect(g.source).not.toBe("productivo");
   });
+
+  it("BARRERA: valoración FCFF en revisión NO pasa la criba aunque margen y confianza sean suficientes", () => {
+    const v = { productiveMargin: null, productiveConfidence: null, fcffMargin: 0.28, fcffConfidence: "media" as const, reviewBlock: true, reviewReason: "crecimiento gratis" };
+    const g = governingValuation(v, { fcffFallback: true });
+    expect(g.blocked).toBe(true);
+    expect(g.source).toBe("fcff_fallback");      // el FV se conserva (no se altera), pero bloqueado
+    expect(g.margin).toBeCloseTo(0.28, 6);
+    expect(passesValueGate(v, 0.10, { fcffFallback: true })).toBe(false);
+  });
+
+  it("BARRERA: no afecta a una valoración FCFF sin marca de revisión (sigue accionable)", () => {
+    const v = { productiveMargin: null, productiveConfidence: null, fcffMargin: 0.28, fcffConfidence: "media" as const };
+    expect(passesValueGate(v, 0.10, { fcffFallback: true })).toBe(true);
+  });
+
+  it("BARRERA: no bloquea al FV productivo (modelo no afectado por los hallazgos)", () => {
+    const v = { productiveMargin: 0.20, productiveConfidence: "media" as const, fcffMargin: 0.28, fcffConfidence: "media" as const, reviewBlock: true };
+    const g = governingValuation(v, { fcffFallback: true });
+    expect(g.source).toBe("productivo");
+    expect(g.blocked).toBeFalsy();
+    expect(passesValueGate(v, 0.10, { fcffFallback: true })).toBe(true);
+  });
 });

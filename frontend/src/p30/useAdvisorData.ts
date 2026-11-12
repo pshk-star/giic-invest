@@ -100,7 +100,9 @@ export function useAdvisorData(): AdvisorData {
         const sectorOf = (t: string) => instruments[t]?.sector ?? (scan.find((s) => s.ticker.toUpperCase() === t)?.sector ?? null);
         for (const t of universe) {
           const cv = fv[t]; const prod = modelMargin(cv, "DCF_productivo"); const giic = modelMargin(cv, "FCFF_GIIC");
-          valuation[t] = { productiveMargin: prod.m, productiveConfidence: prod.m != null ? "media" : null, fcffMargin: giic.m, fcffConfidence: (giic.c as any) ?? null, priceComparable: true };
+          const giicB = cv?.modelos.find((x) => x.modelo === "FCFF_GIIC");
+          valuation[t] = { productiveMargin: prod.m, productiveConfidence: prod.m != null ? "media" : null, fcffMargin: giic.m, fcffConfidence: (giic.c as any) ?? null, priceComparable: true,
+            reviewBlock: !!giicB?.review_block, reviewReason: (giicB?.review_reasons ?? []).join("; ") || null };
           const sector = sectorOf(t); const ac = instruments[t]?.asset_class ?? null;
           candidates.push({ ticker: t, name: instruments[t]?.name ?? null, sector, country: null, currency: instruments[t]?.currency ?? null, assetClass: ac, kind: kindOf(ac, sector), inPortfolio: ptk.includes(t), composite: scan.find((s) => s.ticker.toUpperCase() === t)?.composite ?? null });
         }

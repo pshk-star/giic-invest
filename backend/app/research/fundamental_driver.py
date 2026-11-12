@@ -191,6 +191,23 @@ def build(ticker: str, ccy: str, px: Optional[float], series: Dict[str, Dict[str
         confidence = "baja" if (extreme or len(weak) >= 2) else "media"
     else:
         status, confidence = "confiable", "media"
+    # --- BARRERA DE SEGURIDAD (diagnóstico PFE): marca inconsistencias económicas no resueltas que NO
+    # deben generar compras/asignaciones. NO cambia el Fair Value; solo señaliza "en revisión". Criterio
+    # económico, NO un umbral de diferencia vs consenso.
+    reinv_neta = (rr[0] - rr[1]) if rr else None          # capex% − D&A% (reinversión neta sobre ventas)
+    free_growth = bool(reinv_neta is not None and reinv_neta < 0 and g1 > 0)
+    adr_fx_review = bool((adr or 1) != 1 or ccy != "USD")  # ruta ADR/divisa del driver NO validada
+    review_reasons: List[str] = []
+    if free_growth:
+        review_reasons.append(f"crecimiento gratis: reinversión neta {reinv_neta*100:.1f}% (<0) con g1 {g1*100:.1f}% (>0) sin justificación económica")
+    if adr_fx_review:
+        review_reasons.append(f"ADR/divisa sin resolver (adr={adr}, ccy={ccy}): conversión no validada")
+    review_block = free_growth or adr_fx_review
     inputs.update({"g1": g1, "margin_terminal": margin_terminal, "s2c": s2c, "dv": dv,
-                   "wacc": val["wacc"]["wacc"], "terminal_weight": tw, "n_years": n_years})
+                   "wacc": val["wacc"]["wacc"], "terminal_weight": tw, "n_years": n_years,
+                   "reinv_neta_pct": reinv_neta, "free_growth": free_growth,
+                   "adr_fx_review": adr_fx_review, "review_block": review_block,
+                   "review_reasons": review_reasons})
+    if review_block:
+        reasons.append("EN REVISIÓN (barrera): " + "; ".join(review_reasons))
     return DriverResult(status, round(fv, 2), round(margin, 1), confidence, base, assump, reasons, inputs)

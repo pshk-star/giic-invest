@@ -79,7 +79,9 @@ async function main() {
   const sectorOf = (t: string) => instr[t]?.sector ?? (scan.find((s: any) => String(s.ticker).toUpperCase() === t)?.sector ?? null);
   for (const t of universe) {
     const prod = mm(fv[t], "DCF_productivo"); const giic = mm(fv[t], "FCFF_GIIC");
-    valuation[t] = { productiveMargin: prod.m, productiveConfidence: prod.m != null ? "media" : null, fcffMargin: giic.m, fcffConfidence: (giic.c as any) ?? null, priceComparable: true };
+    const giicB = fv[t]?.modelos.find((x) => x.modelo === "FCFF_GIIC");
+    valuation[t] = { productiveMargin: prod.m, productiveConfidence: prod.m != null ? "media" : null, fcffMargin: giic.m, fcffConfidence: (giic.c as any) ?? null, priceComparable: true,
+      reviewBlock: !!giicB?.review_block, reviewReason: (giicB?.review_reasons ?? []).join("; ") || null };
     const s = sectorOf(t); const ac = instr[t]?.asset_class ?? null;
     candidates.push({ ticker: t, name: instr[t]?.name ?? null, sector: s, country: null, currency: instr[t]?.currency ?? null, assetClass: ac, kind: kindOf(ac, s), inPortfolio: ptk.includes(t), composite: scan.find((x: any) => String(x.ticker).toUpperCase() === t)?.composite ?? null });
   }

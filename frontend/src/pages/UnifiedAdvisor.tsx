@@ -87,7 +87,9 @@ export function UnifiedAdvisor() {
       const sectorOf = (t: string) => instruments[t]?.sector ?? (scan.find((s) => s.ticker.toUpperCase() === t)?.sector ?? null);
       for (const t of universe) {
         const cv = fv.resultados[t]; const prod = modelMargin(cv, "DCF_productivo"); const giic = modelMargin(cv, "FCFF_GIIC");
-        valuation[t] = { productiveMargin: prod.m, productiveConfidence: prod.m != null ? "media" : null, fcffMargin: giic.m, fcffConfidence: (giic.c as any) ?? null, priceComparable: true };
+        const giicB = cv?.modelos.find((x) => x.modelo === "FCFF_GIIC");
+        valuation[t] = { productiveMargin: prod.m, productiveConfidence: prod.m != null ? "media" : null, fcffMargin: giic.m, fcffConfidence: (giic.c as any) ?? null, priceComparable: true,
+          reviewBlock: !!giicB?.review_block, reviewReason: (giicB?.review_reasons ?? []).join("; ") || null };
         const f = fundamentals[t] as any;
         scanFund[t] = { roic: f?.roic ?? null, revGrowth: f?.rev_growth_yoy ?? null, netMargin: f?.net_margin ?? null, operatingMargin: f?.operating_margin ?? null, fcfTtm: f?.fcf_ttm ?? null };
         const sector = sectorOf(t); const ac = instruments[t]?.asset_class ?? null;

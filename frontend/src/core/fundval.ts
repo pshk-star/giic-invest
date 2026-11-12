@@ -36,6 +36,9 @@ export interface ModelBlock {
   proyeccion_10a?: ProjYear[];
   procedencia?: Provenance;
   nota?: string;
+  // BARRERA de seguridad: accionabilidad bloqueada por inconsistencia económica no resuelta (no altera FV).
+  review_block?: boolean;
+  review_reasons?: string[];
 }
 
 export interface CompanyValuation {

@@ -14,9 +14,15 @@ export interface GovInput {
   productiveMargin: number | null; productiveConfidence: Conf;
   fcffMargin?: number | null; fcffConfidence?: Conf;
   priceComparable?: boolean;
+  // BARRERA DE SEGURIDAD (diagnóstico PFE): el backend marca una valoración FCFF data-driven con
+  // inconsistencia económica no resuelta (reinversión neta negativa persistente con crecimiento
+  // positivo = "crecimiento gratis", o ADR/divisa/acciones sin resolver). No cambia el Fair Value;
+  // solo IMPIDE que esa valoración genere compras/asignaciones hasta corregir el motor.
+  reviewBlock?: boolean; reviewReason?: string | null;
 }
 export interface GovResult {
   margin: number | null; conf: Conf; source: GovSource; tier: ValTier; note: string;
+  blocked?: boolean; blockReason?: string | null;   // en revisión: no accionable (FV intacto)
 }
 export interface PolicyOpts { fcffFallback?: boolean }
 
@@ -43,10 +49,12 @@ export function governingValuation(v: GovInput | undefined, opts?: PolicyOpts): 
       ? ` (FCFF ${v.fcffMargin >= 0 ? "+" : ""}${(v.fcffMargin * 100).toFixed(0)}% corrobora)` : "";
     return guardExtreme({ margin: v.productiveMargin, conf: v.productiveConfidence, source: "productivo", tier: "confiable", note: `FV productivo${corro}` });
   }
-  // 2) sin FV productivo: FCFF como FALLBACK (solo si flag + confianza suficiente) o CONTEXTO
+  // 2) sin FV productivo: FCFF como FALLBACK (solo si flag + confianza suficiente) o CONTEXTO.
+  //    BARRERA: si la valoración está marcada en revisión, se bloquea su accionabilidad (FV intacto).
+  const blk = !!v.reviewBlock; const blkR = v.reviewReason ?? "valoración en revisión (inconsistencia económica no resuelta)";
   if (v.fcffMargin != null && sufficient(v.fcffConfidence ?? null)) {
-    if (fallback) return guardExtreme({ margin: v.fcffMargin, conf: v.fcffConfidence ?? null, source: "fcff_fallback", tier: "experimental", note: "sin FV productivo; FCFF como fallback bajo controles (experimental)" });
-    return { margin: v.fcffMargin, conf: "baja", source: "fcff(contexto)", tier: "experimental", note: "sin FV productivo; FCFF solo como contexto (no gobierna; fallback apagado)" };
+    if (fallback) return guardExtreme({ margin: v.fcffMargin, conf: v.fcffConfidence ?? null, source: "fcff_fallback", tier: "experimental", note: blk ? `sin FV productivo; FCFF en REVISIÓN: ${blkR}` : "sin FV productivo; FCFF como fallback bajo controles (experimental)", blocked: blk, blockReason: blk ? blkR : null });
+    return { margin: v.fcffMargin, conf: "baja", source: "fcff(contexto)", tier: "experimental", note: "sin FV productivo; FCFF solo como contexto (no gobierna; fallback apagado)", blocked: blk, blockReason: blk ? blkR : null };
   }
   // 3) nada utilizable → no se inventa FV
   return { margin: null, conf: null, source: "ninguno", tier: "insuficiente", note: "sin FV productivo; FCFF insuficiente" };
@@ -56,6 +64,12 @@ export function governingValuation(v: GovInput | undefined, opts?: PolicyOpts): 
 // que manda (productivo, o FCFF fallback bajo controles). Un margen positivo por sí solo NO basta.
 export function passesValueGate(v: GovInput | undefined, minMargin: number, opts?: PolicyOpts): boolean {
   const g = governingValuation(v, opts);
-  return g.margin != null && g.margin >= minMargin && sufficient(g.conf)
+  return !g.blocked && g.margin != null && g.margin >= minMargin && sufficient(g.conf)
     && (g.source === "productivo" || g.source === "fcff_fallback");
+}
+
+// ¿La valoración que gobernaría está EN REVISIÓN (barrera activa)? Para que la UI lo muestre.
+export function underReview(v: GovInput | undefined, opts?: PolicyOpts): { blocked: boolean; reason: string | null } {
+  const g = governingValuation(v, opts);
+  return { blocked: !!g.blocked, reason: g.blockReason ?? null };
 }

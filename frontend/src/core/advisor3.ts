@@ -24,6 +24,8 @@ export interface Adv3Valuation {
   productiveMargin: number | null; productiveConfidence: Conf;
   fcffMargin?: number | null; fcffConfidence?: Conf;
   priceComparable?: boolean;
+  // BARRERA de seguridad: valoración FCFF marcada en revisión (inconsistencia económica no resuelta).
+  reviewBlock?: boolean; reviewReason?: string | null;
 }
 export interface Adv3Quality { eligible: boolean; fresh: boolean }
 export interface Adv3Constraints { maxPositionWeight: number; maxSectorWeight: number; minMarginToBuy?: number }
