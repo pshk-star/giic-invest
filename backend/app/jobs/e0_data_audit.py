@@ -77,9 +77,9 @@ def run() -> dict:
 
     # instruments (sector/currency/status + adr si existe)
     try:
-        instr_rows = w.select_rows("instruments", select="ticker,sector,currency,status,asset_class,adr_ratio")
+        instr_rows = w.select_rows("instruments", select="ticker,sector,currency,status,asset_class,adr_ratio", params={"order": "ticker"})
     except Exception:
-        instr_rows = w.select_rows("instruments", select="ticker,sector,currency,status,asset_class")
+        instr_rows = w.select_rows("instruments", select="ticker,sector,currency,status,asset_class", params={"order": "ticker"})
     instr = {str(r["ticker"]).upper(): r for r in instr_rows}
     sector_of = {t: (r.get("sector") or "—") for t, r in instr.items()}
 
