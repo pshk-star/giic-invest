@@ -32,6 +32,9 @@ CONCEPTS = [
     "IncomeTaxExpenseBenefit",
     "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
     "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
+    # interés: para reconstruir EBIT (= pretax + interés) donde no se reporta OperatingIncomeLoss (PFE, MRK)
+    "InterestExpense", "InterestExpenseNonoperating", "InterestAndDebtExpense",
+    "InterestIncomeExpenseNonoperatingNet",
     "EarningsPerShareDiluted", "EarningsPerShareBasic",
     "NetCashProvidedByUsedInOperatingActivities",
     "PaymentsToAcquirePropertyPlantAndEquipment",
@@ -62,6 +65,7 @@ IFRS_CONCEPTS = [
     "Revenue", "RevenueFromContractsWithCustomers",
     "ProfitLoss", "GrossProfit", "ProfitLossFromOperatingActivities",
     "IncomeTaxExpenseContinuingOperations", "TaxExpense",
+    "FinanceCosts", "FinanceIncomeCost",
     "DilutedEarningsLossPerShare", "BasicEarningsLossPerShare",
     "CashFlowsFromUsedInOperatingActivities",
     "PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",

@@ -33,6 +33,8 @@ FLOW_MAP: Dict[str, List[str]] = {
     "tax": ["IncomeTaxExpenseBenefit", "IncomeTaxExpenseContinuingOperations", "TaxExpense"],
     "pretax": ["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
                "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"],
+    "interest_expense": ["InterestExpense", "InterestExpenseNonoperating", "InterestAndDebtExpense",
+                         "InterestIncomeExpenseNonoperatingNet", "FinanceCosts", "FinanceIncomeCost"],
     "ocf": ["NetCashProvidedByUsedInOperatingActivities", "CashFlowsFromUsedInOperatingActivities"],
     "capex": ["PaymentsToAcquirePropertyPlantAndEquipment",
               "PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities"],
@@ -188,6 +190,18 @@ def build_series_from_rows(rows: List[dict], as_of: Optional[str] = None) -> dic
         gw = inst["goodwill"].get(fy, (None,))[0]
         intang = inst["intangibles"].get(fy, (None,))[0]
 
+        # EBIT: usar OperatingIncomeLoss si se reporta; si no (PFE, MRK no lo reportan), reconstruir por la
+        # identidad contable EBIT = pretax + interés (o NI + impuesto + interés). Conservador y trazable.
+        pretax = flow["pretax"].get(fy, (None,))[0]
+        interest = flow["interest_expense"].get(fy, (None,))[0]
+        ebit_reconstructed = False
+        if ebit is None:
+            base_pre = pretax if pretax is not None else (
+                (ni + abs(tax)) if (ni is not None and tax is not None) else None)
+            if base_pre is not None:
+                ebit = base_pre + (abs(interest) if interest is not None else 0.0)
+                ebit_reconstructed = True
+
         put("revenue", p, rev)
         put("net_income", p, ni)
         put("operating_income", p, ebit)
@@ -229,7 +243,9 @@ def build_series_from_rows(rows: List[dict], as_of: Optional[str] = None) -> dic
             prev_wc = wc
 
         meta[p] = {"dna_total": dna_total, "amort_acq": (abs(amort) if amort is not None else None),
-                   "goodwill": gw, "intangibles": intang, "pretax": flow["pretax"].get(fy, (None,))[0],
+                   "goodwill": gw, "intangibles": intang, "pretax": pretax,
+                   "interest_expense": (abs(interest) if interest is not None else None),
+                   "ebit_reconstructed": ebit_reconstructed,
                    "equity": equity, "total_debt": total_debt, "cash": cash}
 
     return {"currency": ccy, "by_field": by, "meta": meta}

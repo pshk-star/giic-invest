@@ -119,6 +119,42 @@ def test_long_term_debt_total_incluye_porcion_corriente():
     assert s["by_field"]["invested_capital"]["2023-12-31"] == 50.0 + 40.0 - 10.0
 
 
+def test_ebit_reconstruido_cuando_no_hay_operating_income():
+    # patrón PFE/MRK: sin OperatingIncomeLoss, pero con pretax + interés ⇒ EBIT = pretax + interés
+    rows = [
+        _row("Revenues", 62579e6, "2025-12-31", "2026-02-15", "2025-01-01"),
+        _row("NetIncomeLoss", 7771e6, "2025-12-31", "2026-02-15", "2025-01-01"),
+        _row("IncomeTaxExpenseBenefit", 266e6, "2025-12-31", "2026-02-15", "2025-01-01"),
+        _row("IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+             7520e6, "2025-12-31", "2026-02-15", "2025-01-01"),
+        _row("InterestExpense", 2600e6, "2025-12-31", "2026-02-15", "2025-01-01"),
+        _row("StockholdersEquity", 86476e6, "2025-12-31", "2026-02-15"),
+        _row("LongTermDebtNoncurrent", 64638e6, "2025-12-31", "2026-02-15"),
+        _row("CashAndCashEquivalentsAtCarryingValue", 1142e6, "2025-12-31", "2026-02-15"),
+        _row("WeightedAverageNumberOfDilutedSharesOutstanding", 5713e6, "2025-12-31", "2026-02-15", "2025-01-01"),
+    ]
+    s = build_series_from_rows(rows)
+    by, meta = s["by_field"], s["meta"]
+    p = "2025-12-31"
+    # EBIT reconstruido = pretax(7520) + interés(2600) = 10120
+    assert abs(by["operating_income"][p] - 10120e6) < 1e6
+    assert meta[p]["ebit_reconstructed"] is True
+    # capital invertido real presente ⇒ valorable
+    assert by["invested_capital"][p] is not None and by["invested_capital"][p] > 0
+
+
+def test_ebit_no_reconstruido_si_hay_operating_income():
+    rows = [
+        _row("Revenues", 100e6, "2025-12-31", "2026-02-15", "2025-01-01"),
+        _row("OperatingIncomeLoss", 25e6, "2025-12-31", "2026-02-15", "2025-01-01"),
+        _row("NetIncomeLoss", 18e6, "2025-12-31", "2026-02-15", "2025-01-01"),
+        _row("InterestExpense", 5e6, "2025-12-31", "2026-02-15", "2025-01-01"),
+    ]
+    s = build_series_from_rows(rows)
+    assert s["by_field"]["operating_income"]["2025-12-31"] == 25e6   # reportado, no reconstruido
+    assert s["meta"]["2025-12-31"]["ebit_reconstructed"] is False
+
+
 def test_sin_equity_o_deuda_no_hay_capital_invertido():
     # sin balance no se inventa capital invertido (queda ausente)
     rows = [_row("Revenues", 100.0, "2023-12-31", "2024-02-15", "2023-01-01")]
