@@ -155,6 +155,11 @@ def eodhd_annual_series_full(obj: dict) -> dict:
             td = (lt or 0) + (st or 0) if (lt is not None or st is not None) else None
         put("total_debt", period, td)
         put("shares", period, _num(brow, ["commonStockSharesOutstanding"]))
+        # balance adicional para capital invertido (motor v2): equity, goodwill, intangibles.
+        # Clave para internacionales (TSM/ASML) donde EDGAR no mapea bien el balance IFRS.
+        put("equity", period, _num(brow, ["totalStockholderEquity", "totalEquity"]))
+        put("goodwill", period, _num(brow, ["goodWill", "goodwill"]))
+        put("intangibles", period, _num(brow, ["intangibleAssets"]))
     return {"currency": ccy, "by_field": by}
 
 
