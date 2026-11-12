@@ -75,13 +75,17 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
         except Exception as e:
             erows = []; edgar = {"currency": None, "by_field": {}}
         eod, eod_obj = _eodhd_obj(t)
-        official = None
+        official = None; official_err = None
         if prov is not None:
             try:
                 from app.jobs.official_reconcile import authoritative_ttm
                 official = authoritative_ttm(prov, t, eod_obj)
-            except Exception:
-                official = None
+                if not (official and official.get("ttm")):
+                    official_err = f"ttm vacío (companyfacts? {bool(prov._facts(t))}, cik {prov._cik.get(t.upper())})"
+            except Exception as e:
+                official = None; official_err = f"{type(e).__name__}: {str(e)[:140]}"
+        else:
+            official_err = "prov=None"
         out, ttm_info = evaluate_ttm(t, edgar, eod, erows, eod_obj, price_local=px, adr=adr, official_ttm=official)
         if out.result is None:
             results[t] = {"status": out.status, "error": out.error,
@@ -106,7 +110,7 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
             "ccy": r.ccy, "adr": r.inputs.get("adr"),
             "ttm": {"campos_usados": ttm_info.get("campos_ttm_usados"), "fin_ttm": ttm_info.get("fin_ttm"),
                     "tiene_ttm_real": ttm_info.get("tiene_ttm_real"), "valores": ttm_info.get("ttm"),
-                    "controles_ttm": ttm_info.get("controles_ttm")},
+                    "controles_ttm": ttm_info.get("controles_ttm"), "official_err": official_err},
             "_diag": {"revenue0": r.inputs.get("revenue0"), "shares": r.inputs.get("shares"),
                       "nopat0": r.inputs.get("nopat0"), "invested_capital": r.inputs.get("invested_capital"),
                       "op_margin": r.inputs.get("op_margin"), "mktcap_implied": (r.price_local or 0) * (r.inputs.get("shares") or 0)},
