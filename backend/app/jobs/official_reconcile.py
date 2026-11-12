@@ -36,6 +36,10 @@ STD = {
 }
 
 
+# Solo documentos de estados financieros (no proxy/8-K/otros): evita cifras resumidas o no comparables.
+VALID_FORMS = {"10-K", "10-K/A", "10-Q", "10-Q/A", "20-F", "20-F/A", "40-F", "6-K"}
+
+
 def _periods_from_facts(facts_usgaap: dict, concept: str) -> List[dict]:
     node = (facts_usgaap or {}).get(concept)
     if not node:
@@ -46,6 +50,8 @@ def _periods_from_facts(facts_usgaap: dict, concept: str) -> List[dict]:
             start, end, val = f.get("start"), f.get("end"), f.get("val")
             if val is None or not end:
                 continue
+            if (f.get("form") or "") not in VALID_FORMS:   # filtra DEF 14A, 8-K, etc.
+                continue
             c = _cls(_dur(start, end))
             if c is None:
                 continue
@@ -55,6 +61,17 @@ def _periods_from_facts(facts_usgaap: dict, concept: str) -> List[dict]:
                           "accn": f.get("accn"), "form": f.get("form"), "fy": f.get("fy"), "fp": f.get("fp"),
                           "unit": unit}
     return sorted(out.values(), key=lambda x: (x["end"] or ""))
+
+
+def _pick_recent_concept(usg: dict, cands: List[str]):
+    """Entre conceptos equivalentes, elige el que tenga el FY más RECIENTE (evita tags en desuso)."""
+    best = None
+    for c in cands:
+        pers = _periods_from_facts(usg, c)
+        fy = _fy_latest(pers)
+        if fy and (best is None or (fy["end"] or "") > (best[1]["end"] or "")):
+            best = (c, fy, pers)
+    return best  # (concepto, fy, periodos) o None
 
 
 def _ttm(periods) -> Tuple[Optional[float], dict]:
@@ -98,14 +115,13 @@ def reconcile_ticker(prov, t: str, eodhd_obj: dict) -> dict:
     out_metrics = {}
     for m, cands in STD.items():
         chosen = None
-        for c in cands:
-            pers = _periods_from_facts(usg, c)
-            if pers:
-                fy = _fy_latest(pers); ttm_v, ttm_m = _ttm(pers)
-                chosen = {"concepto": c, "fy_val": fy["val"] if fy else None, "fy_fin": fy["end"] if fy else None,
-                          "ttm": ttm_v, "ttm_metodo": ttm_m.get("metodo"), "accn": fy["accn"] if fy else None,
-                          "form": fy["form"] if fy else None, "filed": fy["filed"] if fy else None}
-                break
+        pick = _pick_recent_concept(usg, cands)   # concepto con FY más reciente (no tags en desuso)
+        if pick:
+            c, fy, pers = pick
+            ttm_v, ttm_m = _ttm(pers)
+            chosen = {"concepto": c, "fy_val": fy["val"], "fy_fin": fy["end"],
+                      "ttm": ttm_v, "ttm_metodo": ttm_m.get("metodo"), "accn": fy["accn"],
+                      "form": fy["form"], "filed": fy["filed"]}
         eod_v = eod.get(m)
         diff = None
         if chosen and chosen.get("ttm") and eod_v:
