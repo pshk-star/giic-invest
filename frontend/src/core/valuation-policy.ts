@@ -34,7 +34,10 @@ export interface GovResult {
   margin: number | null; conf: Conf; source: GovSource; tier: ValTier; note: string;
   blocked?: boolean; blockReason?: string | null;   // en revisión: no accionable (FV intacto)
 }
-export interface PolicyOpts { fcffFallback?: boolean }
+// methodologyValidated: barrera GLOBAL (item 7). Si es === false, NINGUNA fuente (motor_v2, productivo o
+// FCFF) es accionable: todas las valoraciones dependen de una metodología aún no validada por backtest.
+// Ausente ⇒ no se aplica la barrera global (compatibilidad). El data layer la envía en false hoy.
+export interface PolicyOpts { fcffFallback?: boolean; methodologyValidated?: boolean }
 
 // Margen implausible (FV muy lejos del precio) ⇒ modelo frágil: la confianza se degrada a 'baja' para
 // que no respalde una asignación, aunque la fila guardada diga otra cosa (control de calidad P2.4.1).
@@ -52,6 +55,10 @@ function guardExtreme(r: GovResult): GovResult {
 
 export function governingValuation(v: GovInput | undefined, opts?: PolicyOpts): GovResult {
   const fallback = !!opts?.fcffFallback;
+  // Barrera GLOBAL de metodología (item 7): si está explícitamente no validada, cualquier fuente que
+  // gobierne queda BLOQUEADA (FV visible e informativo, no accionable). Reversible al validar por backtest.
+  const methodBlocked = opts?.methodologyValidated === false;
+  const mReason = "metodología no validada (backtest pendiente) — FV informativo, no accionable";
   if (!v) return { margin: null, conf: null, source: "ninguno", tier: "insuficiente", note: "sin valoración" };
   // 0) MOTOR v2 — FV ÚNICO GOBERNANTE. Si existe, manda. Accionable solo si validado; en revisión o no
   //    valorable ⇒ FV visible pero bloqueado (no accionable). Reemplaza la jerarquía productivo/FCFF.
@@ -79,13 +86,17 @@ export function governingValuation(v: GovInput | undefined, opts?: PolicyOpts): 
   if (v.productiveMargin != null && v.priceComparable !== false) {
     const corro = v.fcffMargin != null && sufficient(v.fcffConfidence ?? null)
       ? ` (FCFF ${v.fcffMargin >= 0 ? "+" : ""}${(v.fcffMargin * 100).toFixed(0)}% corrobora)` : "";
-    return guardExtreme({ margin: v.productiveMargin, conf: v.productiveConfidence, source: "productivo", tier: "confiable", note: `FV productivo${corro}` });
+    return guardExtreme({ margin: v.productiveMargin, conf: v.productiveConfidence, source: "productivo",
+      tier: methodBlocked ? "experimental" : "confiable",
+      note: methodBlocked ? `FV productivo — ${mReason}` : `FV productivo${corro}`,
+      blocked: methodBlocked, blockReason: methodBlocked ? mReason : null });
   }
   // 2) sin FV productivo: FCFF como FALLBACK (solo si flag + confianza suficiente) o CONTEXTO.
-  //    BARRERA: si la valoración está marcada en revisión, se bloquea su accionabilidad (FV intacto).
-  const blk = !!v.reviewBlock; const blkR = v.reviewReason ?? "valoración en revisión (inconsistencia económica no resuelta)";
+  //    BARRERA: si la valoración está marcada en revisión, o la metodología no está validada, se bloquea.
+  const blk = !!v.reviewBlock || methodBlocked;
+  const blkR = methodBlocked ? mReason : (v.reviewReason ?? "valoración en revisión (inconsistencia económica no resuelta)");
   if (v.fcffMargin != null && sufficient(v.fcffConfidence ?? null)) {
-    if (fallback) return guardExtreme({ margin: v.fcffMargin, conf: v.fcffConfidence ?? null, source: "fcff_fallback", tier: "experimental", note: blk ? `sin FV productivo; FCFF en REVISIÓN: ${blkR}` : "sin FV productivo; FCFF como fallback bajo controles (experimental)", blocked: blk, blockReason: blk ? blkR : null });
+    if (fallback) return guardExtreme({ margin: v.fcffMargin, conf: v.fcffConfidence ?? null, source: "fcff_fallback", tier: "experimental", note: blk ? `sin FV productivo; FCFF BLOQUEADO: ${blkR}` : "sin FV productivo; FCFF como fallback bajo controles (experimental)", blocked: blk, blockReason: blk ? blkR : null });
     return { margin: v.fcffMargin, conf: "baja", source: "fcff(contexto)", tier: "experimental", note: "sin FV productivo; FCFF solo como contexto (no gobierna; fallback apagado)", blocked: blk, blockReason: blk ? blkR : null };
   }
   // 3) nada utilizable → no se inventa FV

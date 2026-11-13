@@ -80,7 +80,16 @@ async function main() {
   for (const t of universe) {
     const prod = mm(fv[t], "DCF_productivo"); const giic = mm(fv[t], "FCFF_GIIC");
     const giicB = fv[t]?.modelos.find((x) => x.modelo === "FCFF_GIIC");
-    valuation[t] = { productiveMargin: prod.m, productiveConfidence: prod.m != null ? "media" : null, fcffMargin: giic.m, fcffConfidence: (giic.c as any) ?? null, priceComparable: true,
+    // MOTOR v2 — FV único gobernante (igual que useAdvisorData.ts): cuando existe, manda, y la barrera de
+    // metodología (engineMethodologyValidated, hoy false) lo mantiene NO accionable.
+    const eng = mm(fv[t], "motor_v2");
+    const engB: any = fv[t]?.modelos.find((x) => x.modelo === "motor_v2");
+    valuation[t] = {
+      engineMargin: eng.m, engineStatus: engB?.status ?? null,
+      engineConfidence: eng.m != null ? ((engB?.confianza as any) ?? "media") : null,
+      engineReason: (engB?.review_reasons ?? []).join("; ") || null,
+      engineMethodologyValidated: !!engB?.metodologia_validada,
+      productiveMargin: prod.m, productiveConfidence: prod.m != null ? "media" : null, fcffMargin: giic.m, fcffConfidence: (giic.c as any) ?? null, priceComparable: true,
       reviewBlock: !!giicB?.review_block, reviewReason: (giicB?.review_reasons ?? []).join("; ") || null };
     const s = sectorOf(t); const ac = instr[t]?.asset_class ?? null;
     candidates.push({ ticker: t, name: instr[t]?.name ?? null, sector: s, country: null, currency: instr[t]?.currency ?? null, assetClass: ac, kind: kindOf(ac, s), inPortfolio: ptk.includes(t), composite: scan.find((x: any) => String(x.ticker).toUpperCase() === t)?.composite ?? null });
@@ -90,6 +99,8 @@ async function main() {
     portfolio: { positions: positionsAll.map((p) => ({ ticker: p.ticker, name: p.name, sector: instr[p.ticker]?.sector ?? null, country: null, currency: p.currency, assetClass: p.asset_class, marketValue: p.marketValue ?? 0, weight: total > 0 ? (p.marketValue ?? 0) / total : 0 })), cash: profile.capitalAvailable ?? 0 },
     priceHistory, contributions: [1000], constraints: { maxPositionWeight: 0.45, maxSectorWeight: 0.50, minMarginToBuy: 0.10 },
     fcffFallback: process.env.FF_VALPOLICY === "1",
+    // BARRERA GLOBAL item 7: validada solo si existe motor_v2 y todos lo declaran validado (hoy false).
+    methodologyValidated: (() => { const e = Object.values(fv).map((cv: any) => cv?.modelos?.find((m: any) => m.modelo === "motor_v2")).filter(Boolean); return e.length > 0 && e.every((m: any) => m?.metodologia_validada === true); })(),
   };
 
   // política de ETF (rol/solapamiento) desde X-ray

@@ -52,7 +52,7 @@ export function buildDecisionRecord(args: BuildDecisionArgs): DecisionRecord {
   const algoVersion = args.algoVersion ?? "P2.6";
   const featureFlags = args.featureFlags ?? {};
   const emittedAt = args.emittedAt ?? new Date().toISOString();
-  const pol = { fcffFallback: !!input.fcffFallback };
+  const pol = { fcffFallback: !!input.fcffFallback, methodologyValidated: input.methodologyValidated };
 
   const chosen = plan.proposals.find((p) => p.id === plan.chosen)!;
   const recommendations: DecisionLeg[] = chosen.legs.map((l) => ({

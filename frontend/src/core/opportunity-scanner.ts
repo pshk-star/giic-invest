@@ -35,6 +35,7 @@ export interface ScanInput {
   contributions?: number[];                                          // por defecto [1000, 3000]
   constraints: Adv3Constraints;
   fcffFallback?: boolean;   // política única: habilita FCFF como fallback sin FV productivo (flag reversible)
+  methodologyValidated?: boolean;   // item 7: false ⇒ barrera GLOBAL, nada accionable (backtest pendiente)
 }
 
 export interface SimPoint {
@@ -110,7 +111,7 @@ export function buildScanner(inp: ScanInput, asOf = new Date().toISOString().sli
   const contributions = (inp.contributions && inp.contributions.length ? inp.contributions : [1000, 3000]).slice().sort((a, b) => a - b);
   const { UNDER, RISK_TRIM, DIVERSIFY_MIN } = ADV3_THRESHOLDS;
   const minMargin = constraints.minMarginToBuy ?? UNDER;
-  const pol = { fcffFallback: inp.fcffFallback ?? false };   // política única (Scanner ↔ Advisor 3.0)
+  const pol = { fcffFallback: inp.fcffFallback ?? false, methodologyValidated: inp.methodologyValidated };   // política única (Scanner ↔ Advisor 3.0)
 
   const positions = portfolio.positions;
   const cash = portfolio.cash;

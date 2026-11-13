@@ -42,6 +42,7 @@ export interface Adv3Input {
   etfLookthrough?: Record<string, Record<string, number>>;
   constraints: Adv3Constraints;
   fcffFallback?: boolean;   // política: habilita FCFF como fallback cuando no hay FV productivo (flag)
+  methodologyValidated?: boolean;   // item 7: false ⇒ barrera GLOBAL, nada accionable (backtest pendiente)
 }
 
 export interface Explain {
@@ -110,7 +111,7 @@ export function passesValueGate(v: Adv3Valuation | undefined, minMargin: number,
 
 export function buildAdvisor3(inp: Adv3Input, asOf = new Date().toISOString().slice(0, 10)): Advisor3Report {
   const { positions, cash, contribution, returns, valuation, quality, constraints } = inp;
-  const pol: PolicyOpts = { fcffFallback: inp.fcffFallback ?? false };
+  const pol: PolicyOpts = { fcffFallback: inp.fcffFallback ?? false, methodologyValidated: inp.methodologyValidated };
   const totalInvested = positions.reduce((s, p) => s + p.marketValue, 0);
   const portfolioValue = totalInvested + cash;
   const weights: Record<string, number> = {};

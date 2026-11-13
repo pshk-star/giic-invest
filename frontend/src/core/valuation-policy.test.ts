@@ -104,6 +104,18 @@ describe("P2.4 política de valoración única", () => {
     expect(passesValueGate(v, 0.10)).toBe(false);   // no validado ⇒ no accionable
   });
 
+  it("BARRERA GLOBAL item 7: metodología no validada bloquea TAMBIÉN productivo y FCFF", () => {
+    // Productivo con margen suficiente, pero metodología global no validada ⇒ bloqueado (no accionable).
+    const prod = { productiveMargin: 0.20, productiveConfidence: "media" as const, priceComparable: true };
+    expect(passesValueGate(prod, 0.10)).toBe(true);                                   // sin barrera ⇒ accionable
+    expect(passesValueGate(prod, 0.10, { methodologyValidated: false })).toBe(false); // barrera ⇒ bloqueado
+    const gb = governingValuation(prod, { methodologyValidated: false });
+    expect(gb.source).toBe("productivo"); expect(gb.blocked).toBe(true);
+    // FCFF fallback también bloqueado bajo la barrera
+    const fc = { productiveMargin: null, productiveConfidence: null, fcffMargin: 0.30, fcffConfidence: "media" as const };
+    expect(passesValueGate(fc, 0.10, { fcffFallback: true, methodologyValidated: false })).toBe(false);
+  });
+
   it("MOTOR v2 no_valorable: bloqueado y no accionable", () => {
     const v = { engineMargin: 0.50, engineStatus: "no_valorable" as const,
                 productiveMargin: null, productiveConfidence: null };

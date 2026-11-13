@@ -115,11 +115,16 @@ export function useAdvisorData(): AdvisorData {
           const sector = sectorOf(t); const ac = instruments[t]?.asset_class ?? null;
           candidates.push({ ticker: t, name: instruments[t]?.name ?? null, sector, country: null, currency: instruments[t]?.currency ?? null, assetClass: ac, kind: kindOf(ac, sector), inPortfolio: ptk.includes(t), composite: scan.find((s) => s.ticker.toUpperCase() === t)?.composite ?? null });
         }
+        // BARRERA GLOBAL item 7: validada solo si EXISTE motor_v2 y TODOS sus modelos la declaran validada
+        // (hoy el backend la envía en false ⇒ nada accionable hasta backtest).
+        const engModels = Object.values(fv).map((cv: any) => cv?.modelos?.find((m: any) => m.modelo === "motor_v2")).filter(Boolean);
+        const methodologyValidated = engModels.length > 0 && engModels.every((m: any) => m?.metodologia_validada === true);
         const scanInput: ScanInput = {
           candidates, valuation, fundamentals: {},
           portfolio: { positions: positionsAll.map((p) => ({ ticker: p.ticker, name: p.name, sector: instruments[p.ticker]?.sector ?? null, country: null, currency: p.currency, assetClass: p.asset_class, marketValue: p.marketValue ?? 0, weight: total > 0 ? (p.marketValue ?? 0) / total : 0 })), cash: profile.capitalAvailable ?? 0 },
           priceHistory, etfLookthrough, contributions: [1000], constraints: { maxPositionWeight: 0.45, maxSectorWeight: 0.50, minMarginToBuy: 0.10 },
           fcffFallback: import.meta.env.VITE_FF_VALPOLICY === "1",
+          methodologyValidated,
         };
         const report = buildUnifiedAdvisor({ profile, scanInput, etfInfo });
         if (!cancelled) setState({ loading: false, err: null, missing: null, profile, report, positions: positionsAll, priceHistory, fv, fundamentals, prices, instruments, etfInfo, scanInput });

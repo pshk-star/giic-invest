@@ -110,7 +110,7 @@ export function buildUnifiedAdvisor(args: BuildAdvisorArgs): AdvisorReport {
   // clasificación. Proviene del flag VITE_FF_VALPOLICY (cableado en scanInput.fcffFallback por la página).
   // El orquestador NO lo sobrescribe: honra la política compartida en lugar de reimponer "sólo productivo".
   const fallback = !!args.scanInput.fcffFallback;
-  const pol = { fcffFallback: fallback };
+  const pol = { fcffFallback: fallback, methodologyValidated: args.scanInput.methodologyValidated };
   const currency = profile.baseCurrency ?? "USD";
 
   // constraints del perfil gobiernan TODOS los motores (sin parámetros manuales); el flag de fallback se
