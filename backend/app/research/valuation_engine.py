@@ -205,13 +205,15 @@ def normalize(ticker: str, rec: Reconciled, price_local: Optional[float], adr: i
     g1 = _clamp(cagr, G1_MIN, G1_MAX)
     gT = min(RF[ccy], GDP_NOMINAL_LT[ccy])
 
-    # capital invertido (equity + deuda − caja). Preferir el campo reconstruido; si no, equity+deuda−caja.
+    # capital invertido = equity + deuda − caja. Preferir el campo precomputado SOLO si es positivo; si es
+    # nulo o no positivo (p. ej. invested_capital roto de un 20-F parcial, como el −1,9B TWD de TSM), usar
+    # el cálculo equity+deuda−caja desde las fuentes coherentes (evita capital invertido negativo espurio).
     eq = (_last(by.get("equity", {})) or (None, None))[1]
     debt = (_last(by.get("total_debt", {})) or (None, None))[1]
     cash = (_last(by.get("cash", {})) or (None, None))[1]
-    ic = (_last(by.get("invested_capital", {})) or (None, None))[1]
-    if ic is None and eq is not None and debt is not None:
-        ic = eq + debt - (cash or 0)
+    ic_field = (_last(by.get("invested_capital", {})) or (None, None))[1]
+    ic_calc = (eq + debt - (cash or 0)) if (eq is not None and debt is not None) else None
+    ic = ic_field if (ic_field is not None and ic_field > 0) else ic_calc
     net_debt = (debt or 0) - (cash or 0)
 
     # NOPAT y ROIC
