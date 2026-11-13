@@ -107,6 +107,10 @@ def test_live_price_contract_is_explicit_and_finite():
     assert evaluate("NAN", _series(), {}, math.nan).result is None
 
 
+def test_missing_quote_does_not_invent_wacc_capital_weights():
+    assert evaluate("NO_QUOTE", _series(), {}, None).result is None
+
+
 def test_job_publishes_same_day_revisions_and_invalidations(monkeypatch):
     from app.jobs import valuation_engine_run as job
     from app.jobs import supabase_writer

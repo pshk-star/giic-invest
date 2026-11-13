@@ -23,7 +23,7 @@ la valoración económica ni resuelve los modelos dedicados y supuestos sectoria
 | Defecto | Corrección | Evidencia automatizada |
 |---|---|---|
 | USD/TWD y orden de filas | Unidad exacta por concepto; moneda explícita o inferencia sin empate; ambigüedad rechazada | `test_dual_currency_requires_explicit_reporting_currency_on_tie`, F1 del PR #1 |
-| Capitalización incompatible con deuda | Precio USD / FX / ADR × acciones ordinarias; ratios fraccionarios positivos admitidos; contrato de precio y acciones validado | `test_dimensions_are_equivalent_across_currencies_and_adr`, `test_live_price_contract_is_explicit_and_finite` |
+| Capitalización incompatible con deuda | Precio USD / FX / ADR × acciones ordinarias; ratios fraccionarios positivos admitidos; contrato de precio y acciones validado | `test_dimensions_are_equivalent_across_currencies_and_adr`, `test_live_price_contract_is_explicit_and_finite`, `test_missing_quote_does_not_invent_wacc_capital_weights` |
 | TTM con huecos o ancla antigua | Cuatro cierres a 80–100 días; última ventana completa SEC/EODHD; todos los fallbacks usan el mismo validador | `test_ttm_rejects_gaps_through_all_fallbacks`, `test_latest_complete_window_beats_older_sec_window` |
 | Controles TTM perdidos | Se preservan en controles/estado; ausencia de campos necesarios invalida | `test_failed_ttm_control_is_not_silently_discarded` |
 | Pérdidas artificialmente positivas / recuperación rechazada | Selección de base TTM antes de normalizar; historia observada sin reescritura; pérdidas sin truncado a +1% | `test_ttm_operating_loss_never_becomes_positive_margin`, `test_recovery_is_assessed_using_the_actual_ttm_base` |
@@ -154,6 +154,6 @@ pendientes de conciliación P1. No se presentan estos FV como validados económi
 los flujos descontados, EV, deuda neta, equity, acciones, ADR y FX. Es una prueba de aritmética y
 trazabilidad histórica, no un objetivo económico para futuras versiones del modelo.
 
-Resultado local final: **480 backend aprobadas, 1 omitida; 322 frontend aprobadas; build correcto;
+Resultado local final: **481 backend aprobadas, 1 omitida; 322 frontend aprobadas; build correcto;
 7 rutas Chromium sin fallos**. CI de código: https://github.com/pshk-star/giic-invest/actions/runs/43474195231
 (el replay adicional se incorpora después de esa corrida y se ejecuta en el CI del commit final).

@@ -181,7 +181,9 @@ def normalize(ticker: str, rec: Reconciled, price_local: Optional[float], adr: f
         return fail("contrato precio/acciones: exige precio USD y acciones ordinarias")
     if not isinstance(adr, (float, int)) or not math.isfinite(adr) or adr <= 0:
         return fail("ratio ADR inválido")
-    if price_local is not None and (not math.isfinite(price_local) or price_local <= 0):
+    if price_local is None:
+        return fail("sin precio para ponderar el WACC; no se asume estructura 90/10")
+    if not math.isfinite(price_local) or price_local <= 0:
         return fail("precio no finito/positivo")
     if any(not math.isfinite(v) for values in by.values() for v in values.values()):
         return fail("dato financiero no finito")
