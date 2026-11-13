@@ -17,6 +17,10 @@ export interface GovInput {
   // "en_revision"/"no_valorable" ⇒ FV visible pero BLOQUEADO (no genera compras/asignaciones).
   engineMargin?: number | null; engineStatus?: "consistente" | "en_revision" | "no_valorable" | null;
   engineConfidence?: Conf; engineReason?: string | null;
+  // BARRERA DE METODOLOGÍA (item 7): accionable SOLO si además la metodología está validada por backtest.
+  // Ausente o false ⇒ el FV es visible e informativo pero NO accionable (no genera compras), aunque sea
+  // "consistente" aritméticamente. Hoy el backend la envía en false (backtest pendiente).
+  engineMethodologyValidated?: boolean;
   productiveMargin: number | null; productiveConfidence: Conf;
   fcffMargin?: number | null; fcffConfidence?: Conf;
   priceComparable?: boolean;
@@ -52,14 +56,22 @@ export function governingValuation(v: GovInput | undefined, opts?: PolicyOpts): 
   // 0) MOTOR v2 — FV ÚNICO GOBERNANTE. Si existe, manda. Accionable solo si validado; en revisión o no
   //    valorable ⇒ FV visible pero bloqueado (no accionable). Reemplaza la jerarquía productivo/FCFF.
   if (v.engineMargin != null && v.engineStatus) {
-    const validated = v.engineStatus === "consistente";
-    const blk = !validated;
-    const reason = v.engineReason ?? (v.engineStatus === "no_valorable"
-      ? "no valorable (datos no reconstruibles)" : "en revisión (control financiero no superado)");
+    const arithmeticOk = v.engineStatus === "consistente";
+    const methodOk = v.engineMethodologyValidated ?? false;      // metodología validada por backtest
+    const actionable = arithmeticOk && methodOk;                 // accionable SOLO con ambas
+    const blk = !actionable;
+    const reason = !arithmeticOk
+      ? (v.engineReason ?? (v.engineStatus === "no_valorable"
+          ? "no valorable (datos no reconstruibles)" : "en revisión (control financiero no superado)"))
+      : "metodología no validada (backtest pendiente) — FV informativo, no accionable";
     return guardExtreme({
-      margin: v.engineMargin, conf: v.engineConfidence ?? (validated ? "media" : "baja"),
-      source: "motor_v2" as GovSource, tier: validated ? "confiable" : "experimental",
-      note: validated ? "Motor v2 (FCFF DCF reconciliado) — consistente aritméticamente (no validación económica)" : `Motor v2 — ${reason}`,
+      margin: v.engineMargin, conf: v.engineConfidence ?? (arithmeticOk ? "media" : "baja"),
+      source: "motor_v2" as GovSource, tier: actionable ? "confiable" : "experimental",
+      note: actionable
+        ? "Motor v2 (FCFF DCF reconciliado) — consistente y metodología validada"
+        : arithmeticOk
+          ? "Motor v2 — consistente aritméticamente; metodología no validada (no accionable)"
+          : `Motor v2 — ${reason}`,
       blocked: blk, blockReason: blk ? reason : null,
     });
   }

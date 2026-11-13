@@ -1,3 +1,7 @@
+> **SUPERSEDIDO** por `REINVERSION_ROIIC_OBSERVADO.md`. La fórmula `ROIC_incremental = g1/RR_real` de este
+> documento es **circular** (fuerza FCFF=FCF por construcción) y se retiró del motor. Se conserva solo como
+> registro histórico.
+
 # Corrección de la reinversión del FCFF — ROIC incremental (NVDA y universo)
 
 El problema central del Fair Value era la **reinversión proyectada**, no los datos (ya conciliados). Se

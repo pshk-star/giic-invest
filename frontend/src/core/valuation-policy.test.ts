@@ -73,12 +73,23 @@ describe("P2.4 política de valoración única", () => {
   });
 
   // --- MOTOR v2: FV único gobernante con estado de validación ---
-  it("MOTOR v2 validado GOBIERNA sobre productivo/FCFF y es accionable", () => {
+  it("MOTOR v2 consistente pero metodología NO validada: GOBIERNA, FV visible, NO accionable (barrera item 7)", () => {
     const v = { engineMargin: 0.15, engineStatus: "consistente" as const, engineConfidence: "media" as const,
+                engineMethodologyValidated: false,
                 productiveMargin: -0.30, productiveConfidence: "media" as const, fcffMargin: 0.40, fcffConfidence: "media" as const };
     const g = governingValuation(v);
     expect(g.source).toBe("motor_v2");
     expect(g.margin).toBeCloseTo(0.15, 6);     // manda el motor, no productivo ni FCFF
+    expect(g.blocked).toBe(true);              // metodología no validada ⇒ bloqueado
+    expect(passesValueGate(v, 0.10)).toBe(false);
+  });
+
+  it("MOTOR v2 consistente Y metodología validada: accionable", () => {
+    const v = { engineMargin: 0.15, engineStatus: "consistente" as const, engineConfidence: "media" as const,
+                engineMethodologyValidated: true,
+                productiveMargin: -0.30, productiveConfidence: "media" as const, fcffMargin: 0.40, fcffConfidence: "media" as const };
+    const g = governingValuation(v);
+    expect(g.source).toBe("motor_v2");
     expect(g.blocked).toBeFalsy();
     expect(passesValueGate(v, 0.10)).toBe(true);
   });

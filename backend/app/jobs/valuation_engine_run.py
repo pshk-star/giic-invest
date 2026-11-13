@@ -16,7 +16,7 @@ import sys
 from datetime import date, datetime, timezone
 from typing import Dict, List, Optional
 
-from app.research.valuation_engine import evaluate_ttm
+from app.research.valuation_engine import evaluate_ttm, METHODOLOGY_VALIDATED
 from app.research.edgar_series import build_series_from_rows, fetch_edgar_rows
 
 ELEVEN = ["NVDA", "META", "NFLX", "TSM", "ASML", "PFE", "AMGN", "ADBE", "LOW", "HD", "UPS"]
@@ -122,10 +122,15 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
             "modelo": "motor_v2", "disponible": True,
             "fair_value_usd": r.fair_value_usd, "precio": r.price_local,
             "margen_seguridad_pct": results[t]["margen_seguridad_pct"], "confianza": conf,
-            "status": r.status, "consistente_aritmeticamente": r.validated, "accionable": bool(r.validated),
-            # BARRERA: no validado ⇒ bloqueado para compra/asignación (FV visible, no accionable)
-            "review_block": not r.validated,
-            "review_reasons": results[t]["controles_fallidos"] or ([r.status] if not r.validated else []),
+            "status": r.status, "consistente_aritmeticamente": r.validated,
+            # ACCIONABLE sólo si pasa aritmética Y la metodología está validada (backtest). Hoy la metodología
+            # NO está validada ⇒ accionable=False para TODAS (FV visible e informativo, no recomendación).
+            "accionable": bool(r.validated and METHODOLOGY_VALIDATED),
+            "metodologia_validada": METHODOLOGY_VALIDATED,
+            # BARRERA: no accionable ⇒ bloqueado para compra/asignación (FV visible, no accionable)
+            "review_block": not (r.validated and METHODOLOGY_VALIDATED),
+            "review_reasons": (results[t]["controles_fallidos"] or ([r.status] if not r.validated else []))
+                              + ([] if METHODOLOGY_VALIDATED else ["metodologia_no_validada_backtest_pendiente"]),
             "wacc_pct": results[t]["wacc_pct"], "ke_pct": results[t]["ke_pct"],
             "g_terminal_pct": results[t]["gT_pct"], "peso_terminal_pct": results[t]["peso_terminal_pct"],
             "roic_pct": results[t]["roic_pct"], "reinversion": f"{results[t]['reinversion_pct']}%",

@@ -165,20 +165,45 @@ ENGINE_FLOWS = {
 }
 
 
+def observed_roiic(usg: dict) -> Optional[dict]:
+    """ROIIC OBSERVADO = ΔNOPAT/ΔCapital invertido (vista financiación) de balances oficiales 10-K, en
+    ventanas 3a y plurianual. Devuelve {roiic_3y, roiic_all, stable} o None si no es medible. NO fabrica
+    nada: si falta EBIT/NOPAT o capital en los estados, la ventana queda vacía. 'stable' exige ambas
+    ventanas positivas y consistentes (razón ≤ 3×), condición para usarlo en el motor (si no, supuesto
+    conservador por defecto)."""
+    try:
+        from app.jobs.capital_roiic_diag import analyze
+        ro = (analyze(usg) or {}).get("ROIIC_observado", {})
+    except Exception:
+        return None
+    r3 = (ro.get("3a") or [None])[0]
+    rall = (ro.get("plurianual") or [None])[0]
+    if r3 is None and rall is None:
+        return None
+    stable = False
+    if r3 and rall and r3 > 0 and rall > 0:
+        hi, lo = max(r3, rall), min(r3, rall)
+        stable = lo > 0 and hi / lo <= 3.0
+    return {"roiic_3y": r3, "roiic_all": rall, "stable": stable}
+
+
 def authoritative_ttm(prov, ticker: str, eodhd_obj: dict) -> dict:
-    """TTM AUTORITATIVO por SUMA de 4 trimestres en VENTANA COMÚN (ttm.ttm_by_quarters).
+    """TTM AUTORITATIVO por SUMA de 4 trimestres en VENTANA COMÚN (ttm.ttm_by_quarters) + ROIIC observado.
 
     Deriva trimestres de SEC (YTD-diff) y EODHD, fija una sola ventana (4 trimestres de OCF), suma cada
     métrica sobre ESA ventana y cruza SEC vs EODHD trimestre a trimestre. Garantiza que todas las métricas
     usen los MISMOS períodos (corrige el bug de ventanas distintas del selector FY+YTD−YTD). No completa
     con cero: si una fuente no cubre la ventana, se usa la otra; si ninguna, la métrica queda ausente.
+    Adjunta el ROIIC observado (ΔNOPAT/ΔIC de balances oficiales) para la economía de reinversión.
     """
     from app.research.ttm import ttm_by_quarters
     facts = prov._facts(ticker)
     if not facts:
         return {"ttm": {}, "controles": [("sin_companyfacts", False, "emisor no-US/sin XBRL")], "fin_ttm": None}
     usg = (facts.get("facts", {}) or {}).get("us-gaap", {}) or {}
-    return ttm_by_quarters(usg, eodhd_obj, VALID_FORMS)
+    res = ttm_by_quarters(usg, eodhd_obj, VALID_FORMS)
+    res["roiic_observed"] = observed_roiic(usg)
+    return res
 
 
 def run(tickers: List[str]) -> dict:

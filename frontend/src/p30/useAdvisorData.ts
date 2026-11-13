@@ -108,6 +108,7 @@ export function useAdvisorData(): AdvisorData {
             engineMargin: eng.m, engineStatus: engB?.status ?? null,
             engineConfidence: eng.m != null ? ((engB?.confianza as any) ?? "media") : null,
             engineReason: (engB?.review_reasons ?? []).join("; ") || null,
+            engineMethodologyValidated: !!engB?.metodologia_validada,   // barrera item 7 (hoy false)
             productiveMargin: prod.m, productiveConfidence: prod.m != null ? "media" : null,
             fcffMargin: giic.m, fcffConfidence: (giic.c as any) ?? null, priceComparable: true,
             reviewBlock: !!giicB?.review_block, reviewReason: (giicB?.review_reasons ?? []).join("; ") || null };

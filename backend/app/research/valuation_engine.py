@@ -48,6 +48,12 @@ TERMINAL_WEIGHT_WARN = 0.80          # peso del valor terminal que dispara adver
 MARGIN_EXTREME = 0.60                # |margen de seguridad| extremo ⇒ señal de REVISIÓN (no objetivo)
 MIN_SHARES = 1e5                     # escala de acciones plausible
 
+# BARRERA DE METODOLOGÍA (item 7): "consistente" = pasa controles ARITMÉTICOS; NO es validación económica
+# ni predictiva. Esta requiere backtest/track record contra retornos realizados (pendiente). Mientras sea
+# False, NINGÚN Fair Value es accionable aunque sea aritméticamente consistente: el FV y los indicadores
+# son INFORMATIVOS, no recomendaciones. No se pone True por pasar pruebas aritméticas.
+METHODOLOGY_VALIDATED = False
+
 
 def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
@@ -148,6 +154,7 @@ class NormInputs:
     discrepancies: Dict[str, float] = field(default_factory=dict)
     reasons: List[str] = field(default_factory=list)
     fcf_real_recent: Optional[float] = None
+    roiic_observed: Optional[Dict[str, float]] = None   # {roiic_3y, roiic_all, stable} de balances oficiales
     split_flag: bool = False
     ok: bool = True
     fail: Optional[str] = None
@@ -294,42 +301,45 @@ def _wacc(n: NormInputs) -> float:
     return n.w_equity * ke + n.w_debt * n.kd_after_tax
 
 
-def _marginal_roic(n: NormInputs) -> Tuple[float, str]:
-    """ROIC INCREMENTAL para la economía de reinversión. Preferido: revelado por la reinversión REAL
-    (datos de flujo de caja, confiables) = g1 / RR_real, con RR_real = (NOPAT − FCF_real)/NOPAT
-    (= ΔNOPAT/reinversión = retorno sobre el capital NUEVO). Si no hay FCF real, usa el ROIC medio.
-    Así la reinversión proyectada coincide con la estructura REAL de la empresa (capital-ligera o
-    intensiva) sin ajustar nada hacia el precio de mercado."""
-    if n.fcf_real_recent is not None and n.nopat0 and n.nopat0 > 0 and n.g1 > 0:
-        rr_real = (n.nopat0 - n.fcf_real_recent) / n.nopat0
-        if 0.01 < rr_real < 0.98:
-            return _clamp(n.g1 / rr_real, ROIC_FLOOR, 2.5), "incremental(RR real)"
-    return n.roic, "medio"
+ROIIC_CEIL = 0.60          # techo conservador sobre el ROIIC inicial (retornos extraordinarios se erosionan)
+ROIIC_DEFAULT = 0.15       # supuesto conservador documentado cuando el ROIIC observado no es medible/estable
+
+
+def _roiic_assumed(n: NormInputs) -> Tuple[float, str]:
+    """ROIIC para la economía de reinversión (NO circular; NO fuerza FCFF=FCF).
+
+    Preferido: ROIIC OBSERVADO = ΔNOPAT/ΔCapital invertido (balances oficiales, ventanas plurianuales),
+    usado SOLO si es estable (ventanas 3a y plurianual positivas, consistentes), acotado a ≤60%. Si es
+    inestable o no medible, se usa un SUPUESTO CONSERVADOR documentado (15%). No se fabrica un ROIIC para
+    cerrar una identidad contable."""
+    obs = n.roiic_observed or {}
+    r3, rall, stable = obs.get("roiic_3y"), obs.get("roiic_all"), obs.get("stable")
+    if stable and r3 and rall and r3 > 0 and rall > 0:
+        return _clamp((r3 + rall) / 2, 0.08, ROIIC_CEIL), f"observado 3a={r3*100:.0f}% plurianual={rall*100:.0f}% (capado)"
+    return ROIIC_DEFAULT, "conservador por defecto (ROIIC observado inestable/no medible)"
 
 
 def _project_fcff(n: NormInputs, wacc: float, gT: Optional[float] = None) -> Tuple[float, float, float, float]:
-    """FCFF = NOPAT·(1 − g/ROIC_incremental). Devuelve (PV explícito, PV terminal, FCFF0, reinvest_rate0).
-
-    Usa el ROIC INCREMENTAL (retorno sobre capital nuevo) para la reinversión del periodo explícito, de
-    modo que FCFF año 1 = NOPAT·(1 − RR_real) = FCF real (reconcilia por construcción). El ROIC terminal
-    es CONSERVADOR (la competencia erosiona los retornos excedentes) ⇒ reinversión terminal = gT/ROIC_T.
-    """
+    """FCFF = NOPAT·(1 − g/ROIIC). Reinversión económica con ROIIC observado (si estable) o supuesto
+    conservador, que SE ERONA hacia un ROIIC terminal ≈ 2×WACC (competencia). Devuelve
+    (PV explícito, PV terminal, FCFF0, reinvest_rate0). No reconcilia por construcción con el FCF real;
+    la comparación FCFF vs FCF real queda como DIAGNÓSTICO (no como validación)."""
     gt = n.gT if gT is None else gT
-    roic, _basis = _marginal_roic(n)
+    roiic0, _basis = _roiic_assumed(n)
+    roiic_term = _clamp(2 * wacc, 0.10, 0.18)            # ROIIC sostenible terminal (≈2×WACC)
     nopat = n.nopat0
     pv = 0.0
-    fcff0 = nopat * (1 - n.g1 / roic)
-    reinv0 = n.g1 / roic
+    fcff0 = nopat * (1 - n.g1 / roiic0)
+    reinv0 = n.g1 / roiic0
     for t in range(1, YEARS + 1):
         g = n.g1 + (gt - n.g1) * (t - 1) / max(1, YEARS - 1)
+        roiic_t = roiic0 + (roiic_term - roiic0) * (t - 1) / max(1, YEARS - 1)   # erosión lineal del ROIIC
         nopat *= (1 + g)
-        reinv = g / roic
+        reinv = g / roiic_t
         fcff = nopat * (1 - reinv)
         pv += fcff / (1 + wacc) ** t
-    # terminal: ROIC terminal CONSERVADOR (≤25%; la competencia erosiona el ROIC incremental alto)
-    roic_term = _clamp(min(roic, 0.25), wacc + 0.01, 0.25)
     nopat_term = nopat * (1 + gt)
-    fcff_term = nopat_term * (1 - gt / roic_term)
+    fcff_term = nopat_term * (1 - gt / roiic_term)
     tv = fcff_term / (wacc - gt) if wacc > gt else 0.0
     pv_tv = tv / (1 + wacc) ** YEARS
     return pv, pv_tv, fcff0, reinv0
@@ -354,7 +364,7 @@ def _project_fcfe(n: NormInputs, ke: float) -> Optional[float]:
 
 def value_from_norm(n: NormInputs, price_local: Optional[float], adr: int = 1) -> DcfResult:
     ke = _ke(n); wacc = _wacc(n)
-    roic_marg, roic_basis = _marginal_roic(n)
+    roiic_asm, roiic_basis = _roiic_assumed(n)
     pv_exp, pv_tv, fcff0, reinv0 = _project_fcff(n, wacc)
     ev = pv_exp + pv_tv
     equity_value = ev - n.net_debt
@@ -416,13 +426,15 @@ def value_from_norm(n: NormInputs, price_local: Optional[float], adr: int = 1) -
                 and v is not None and v > 0.25}
     controls.append(("fuentes_consistentes", not bad_disc,
                      ("ok" if not bad_disc else "; ".join(f"{k} difiere {v*100:.0f}%" for k, v in bad_disc.items()))))
-    # PRUEBA DE REALIDAD (item 6): el FCFF base proyectado debe reconciliar con el FCF que la empresa YA
-    # genera. Si difieren >30%, el supuesto de reinversión (g/ROIC con ROIC medio) es económicamente
-    # inconsistente para esta empresa (p. ej. NVDA: FCFF proyectado 43B vs FCF real 97B) ⇒ revisión.
+    # DIAGNÓSTICO (NO validación): el FCFF proyectado (NOPAT − reinversión por ROIIC asumido) NO se fuerza a
+    # igualar el FCF histórico (OCF − CAPEX): son magnitudes distintas (FCFF excluye intereses/no-operativo
+    # e incluye ΔNWC). Se reporta la divergencia como señal informativa; solo una brecha EXTREMA (>3×, que
+    # sugeriría un error de datos, no economía) manda a revisión. No se usa la coincidencia como prueba.
     if n.fcf_real_recent and n.fcf_real_recent > 0:
         div_fcf = abs(fcff0 - n.fcf_real_recent) / n.fcf_real_recent
-        controls.append(("FCFF_proy_vs_FCF_real", div_fcf <= 0.30,
-                         f"FCFF proy {fcff0/1e9:.0f}B vs FCF real {n.fcf_real_recent/1e9:.0f}B (dif {div_fcf*100:.0f}%)"))
+        controls.append(("FCFF_proy_vs_FCF_real_diag", div_fcf <= 2.0,
+                         f"FCFF proy {fcff0/1e9:.0f}B vs FCF real {n.fcf_real_recent/1e9:.0f}B "
+                         f"(dif {div_fcf*100:.0f}%; diagnóstico, no se fuerza igualdad)"))
     # DATOS DUDOSOS (item 5): split de acciones no ajustado en la serie ⇒ precio/acciones en verificación.
     controls.append(("datos_precio_acciones", not n.split_flag,
                      "ok" if not n.split_flag else "posible split no ajustado (precio/acciones en verificación)"))
@@ -431,7 +443,7 @@ def value_from_norm(n: NormInputs, price_local: Optional[float], adr: int = 1) -
                  ("WACC>gT", "reinversion_vs_ROIC", "margen_operativo_plausible", "acciones_escala")]
     review = [c for c in controls if not c[1] and c[0] in
               ("peso_terminal", "FCFF_vs_FCFE", "margen_no_extremo", "fuentes_consistentes",
-               "FCFF_proy_vs_FCF_real", "datos_precio_acciones")]
+               "FCFF_proy_vs_FCF_real_diag", "datos_precio_acciones")]
     # "consistente" = pasa los controles ARITMÉTICOS (no es validación económica ni predictiva: eso exige
     # backtest/track record, pendiente). Solo lo consistente es accionable; el resto queda bloqueado.
     validated = not hard_fail and not review
@@ -457,8 +469,9 @@ def value_from_norm(n: NormInputs, price_local: Optional[float], adr: int = 1) -
                 "invested_capital": n.invested_capital, "net_debt": n.net_debt, "shares": n.shares,
                 "beta": n.beta, "hist_fcf_margin": n.hist_fcf_margin, "w_equity": round(n.w_equity, 3),
                 "w_debt": round(n.w_debt, 3), "nopat0": round(n.nopat0, 0), "adr": adr,
-                "roic_medio": round(n.roic, 4), "roic_incremental": round(roic_marg, 4),
-                "roic_base": roic_basis, "fcf_real_recent": n.fcf_real_recent,
+                "roic_medio": round(n.roic, 4), "roiic_asumido": round(roiic_asm, 4),
+                "roiic_base": roiic_basis, "roiic_observado": n.roiic_observed,
+                "fcf_real_recent": n.fcf_real_recent,
                 "fx_to_usd": FX_TO_USD.get(n.ccy, 1.0), "provenance": n.prov, "params_date": PARAMS_DATE})
 
 
@@ -501,6 +514,8 @@ def evaluate_ttm(ticker: str, edgar_series: dict, eodhd_series: dict, edgar_rows
                    "tiene_ttm_real": bool(official_ttm["ttm"].get("ocf"))}
     else:
         ttm_res = reconstruct_ttm(edgar_rows or [], eodhd_obj or {})
+    if official_ttm and official_ttm.get("roiic_observed"):
+        n.roiic_observed = official_ttm["roiic_observed"]   # ROIIC observado de balances oficiales (plurianual)
     T = ttm_res.get("ttm", {})
     rev_ttm = (T.get("revenue") or {}).get("ttm")
     ebit_ttm = (T.get("operating_income") or {}).get("ttm")
