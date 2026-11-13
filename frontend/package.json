@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "emit:decision": "tsx scripts/emit_decision.ts",
-    "advisor:preview": "tsx scripts/advisor_preview.ts"
+    "advisor:preview": "tsx scripts/advisor_preview.ts",
+    "test:browser": "node scripts/financial_integrity_browser.cjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.45.4",
@@ -19,14 +20,16 @@
     "xlsx": "0.18.5"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.16",
     "@types/react": "18.3.5",
     "@types/react-dom": "18.3.0",
     "@vitejs/plugin-react": "4.3.1",
     "autoprefixer": "10.4.20",
+    "playwright": "1.65.0",
     "postcss": "8.4.47",
     "tailwindcss": "3.4.13",
-    "typescript": "5.5.4",
     "tsx": "4.19.2",
+    "typescript": "5.5.4",
     "vite": "5.4.8",
     "vitest": "2.1.1"
   }

@@ -1,3 +1,4 @@
+import { valuationInput } from "../core/valuation-feed";
 // Etapa A — Investment Advisor UNIFICADO (EXPERIMENTAL, flag VITE_FF_UNIFIED). Pantalla principal que
 // RECOMIENDA automáticamente: qué hacer con cada posición, qué comprar con dinero nuevo, cuánto,
 // oportunidades, riesgos y por qué. Sin parámetros manuales: todo viene del PERFIL. Reutiliza el
@@ -14,7 +15,6 @@ import { buildUnifiedAdvisor, type AdvisorReport, type PositionAction, type EtfI
 import { profileFromSettings, missingEssentials, type Profile } from "../core/advisor-profile";
 import type { ScanInput, ScanCandidate, InstrumentKind } from "../core/opportunity-scanner";
 import type { Adv3Valuation } from "../core/advisor3";
-import type { CompanyValuation } from "../core/fundval";
 import { money, pct } from "../format";
 
 const ETF = ["etf", "fund", "etn", "mutualfund"];
@@ -24,11 +24,6 @@ function kindOf(ac: string | null | undefined, sector: string | null | undefined
   if (/financ|bank|banco|insurance|seguro/i.test(sector ?? "")) return "banco";
   if (a && !["equity", "stock", "adr", "common"].includes(a)) return "otro";
   return "empresa";
-}
-function modelMargin(cv: CompanyValuation | undefined, m: string): { m: number | null; c: string | null } {
-  const b = cv?.modelos.find((x) => x.modelo === m);
-  if (!b || b.disponible === false || b.margen_seguridad_pct == null) return { m: null, c: null };
-  return { m: b.margen_seguridad_pct / 100, c: b.confianza ?? null };
 }
 
 const actionTone = (a: PositionAction) => a === "VENDER" ? "text-term-crit" : a === "REDUCIR" ? "text-term-warn"
@@ -86,16 +81,16 @@ export function UnifiedAdvisor() {
       const candidates: ScanCandidate[] = [];
       const sectorOf = (t: string) => instruments[t]?.sector ?? (scan.find((s) => s.ticker.toUpperCase() === t)?.sector ?? null);
       for (const t of universe) {
-        const cv = fv.resultados[t]; const prod = modelMargin(cv, "DCF_productivo"); const giic = modelMargin(cv, "FCFF_GIIC");
-        const giicB = cv?.modelos.find((x) => x.modelo === "FCFF_GIIC");
-        valuation[t] = { productiveMargin: prod.m, productiveConfidence: prod.m != null ? "media" : null, fcffMargin: giic.m, fcffConfidence: (giic.c as any) ?? null, priceComparable: true,
-          reviewBlock: !!giicB?.review_block, reviewReason: (giicB?.review_reasons ?? []).join("; ") || null };
+        const cv = fv.resultados[t];
+
+        valuation[t] = valuationInput(cv);
         const f = fundamentals[t] as any;
         scanFund[t] = { roic: f?.roic ?? null, revGrowth: f?.rev_growth_yoy ?? null, netMargin: f?.net_margin ?? null, operatingMargin: f?.operating_margin ?? null, fcfTtm: f?.fcf_ttm ?? null };
         const sector = sectorOf(t); const ac = instruments[t]?.asset_class ?? null;
         candidates.push({ ticker: t, name: instruments[t]?.name ?? null, sector, country: null, currency: instruments[t]?.currency ?? null, assetClass: ac, kind: kindOf(ac, sector), inPortfolio: ptk.includes(t), composite: scan.find((s) => s.ticker.toUpperCase() === t)?.composite ?? null });
       }
       const scanInput: ScanInput = {
+        methodologyValidated: Object.values(valuation).length > 0 && Object.values(valuation).every(v => v.engineMethodologyValidated === true),
         candidates, valuation, fundamentals: scanFund,
         portfolio: { positions: positionsAll.map((p) => ({ ticker: p.ticker, name: p.name, sector: instruments[p.ticker]?.sector ?? null, country: null, currency: p.currency, assetClass: p.asset_class, marketValue: p.marketValue ?? 0, weight: total > 0 ? (p.marketValue ?? 0) / total : 0 })), cash: profile.capitalAvailable ?? 0 },
         priceHistory, etfLookthrough, contributions: [1000], constraints: { maxPositionWeight: 0.45, maxSectorWeight: 0.50, minMarginToBuy: 0.10 },

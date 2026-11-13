@@ -1,3 +1,4 @@
+import { latestValuations, valuationInput } from "../src/core/valuation-feed";
 // Etapa A — Vista previa del Investment Advisor unificado con DATOS REALES (solo lectura). Reutiliza el
 // orquestador advisor-engine (sin duplicar lógica de decisión) y arma el ScanInput desde Supabase REST.
 // Imprime la recomendación para verificar el resultado funcional end-to-end. No escribe nada.
@@ -57,9 +58,8 @@ async function main() {
   const txns = (await get("transactions", { select: "*" })) as Txn[];
   const ptk = [...new Set(txns.map((t) => t.ticker.toUpperCase()))];
   const scan = await get("v_latest_scan", { select: "ticker,sector,composite,rank", order: "rank" });
-  const fvRows = await get("pit_snapshots", { select: "ticker,payload", kind: "eq.fundamental_valuation", order: "snapshot_date.desc,captured_at.desc" });
-  const fv: Record<string, CompanyValuation> = {};
-  for (const r of fvRows) { const t = String(r.ticker).toUpperCase(); if (!fv[t]) fv[t] = r.payload; }
+  const fvRows = await get("valuation_snapshots", { select: "ticker,payload", order: "id.desc" });
+  const fv = latestValuations(fvRows).resultados;
   const universe = [...new Set([...ptk, ...scan.map((s: any) => String(s.ticker).toUpperCase()), ...Object.keys(fv)])];
   const inF = "in.(" + universe.join(",") + ")";
   const instr: Record<string, InstrumentMeta> = {};
@@ -84,13 +84,7 @@ async function main() {
     // metodología (engineMethodologyValidated, hoy false) lo mantiene NO accionable.
     const eng = mm(fv[t], "motor_v2");
     const engB: any = fv[t]?.modelos.find((x) => x.modelo === "motor_v2");
-    valuation[t] = {
-      engineMargin: eng.m, engineStatus: engB?.status ?? null,
-      engineConfidence: eng.m != null ? ((engB?.confianza as any) ?? "media") : null,
-      engineReason: (engB?.review_reasons ?? []).join("; ") || null,
-      engineMethodologyValidated: !!engB?.metodologia_validada,
-      productiveMargin: prod.m, productiveConfidence: prod.m != null ? "media" : null, fcffMargin: giic.m, fcffConfidence: (giic.c as any) ?? null, priceComparable: true,
-      reviewBlock: !!giicB?.review_block, reviewReason: (giicB?.review_reasons ?? []).join("; ") || null };
+    valuation[t] = valuationInput(fv[t]);
     const s = sectorOf(t); const ac = instr[t]?.asset_class ?? null;
     candidates.push({ ticker: t, name: instr[t]?.name ?? null, sector: s, country: null, currency: instr[t]?.currency ?? null, assetClass: ac, kind: kindOf(ac, s), inPortfolio: ptk.includes(t), composite: scan.find((x: any) => String(x.ticker).toUpperCase() === t)?.composite ?? null });
   }

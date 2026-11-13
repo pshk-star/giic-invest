@@ -128,6 +128,7 @@ export function buildUnifiedAdvisor(args: BuildAdvisorArgs): AdvisorReport {
   const adv3Input: Adv3Input = {
     positions, cash: scanInput.portfolio.cash, contribution: contribution || 0, returns,
     valuation: scanInput.valuation, quality: Object.fromEntries(positions.map((p) => [p.ticker, { eligible: true, fresh: true }])),
+    methodologyValidated: scanInput.methodologyValidated,
     constraints: scanInput.constraints, etfLookthrough: scanInput.etfLookthrough, fcffFallback: fallback,
   };
   const adv3 = buildAdvisor3(adv3Input, asOf);

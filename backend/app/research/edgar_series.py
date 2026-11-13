@@ -83,20 +83,38 @@ def _fy(period_end: Optional[str]) -> Optional[int]:
     return e.year if e else None
 
 
+import re as _re
+
+_CCY_RE = _re.compile(r"^[A-Z]{3}$")   # código de moneda ISO puro (USD, TWD, EUR...); 'shares', 'USD/shares' no matchean
+
+
+def _is_currency_unit(u: Optional[str]) -> bool:
+    return bool(u) and bool(_CCY_RE.fullmatch(str(u).upper()))
+
+
 def _pick_pit(rows: List[dict], concepts: List[str], want_annual: Optional[bool],
-              as_of: Optional[date]) -> Dict[int, Tuple[float, str, str]]:
+              as_of: Optional[date], ccy: Optional[str] = None) -> Dict[int, Tuple[float, str, str]]:
     """Para los `concepts` dados (en orden de prioridad), devuelve {año_fiscal: (valor, period_end, concepto)}.
 
     PIT: por (concepto, año) toma el `filing_date` más reciente <= as_of. Entre conceptos del mapa,
     gana el de mayor prioridad que tenga dato ese año. want_annual=True exige duración anual (flujo),
     False exige instante (balance), None no filtra.
+
+    FILTRO DE MONEDA (Codex P0 #1): si se pasa `ccy`, se RECHAZA toda fila cuyo `unit` sea una moneda ISO
+    distinta de `ccy` (p. ej. equity USD en una serie TWD). Los conceptos de acciones exigen shares;
+    los monetarios exigen la moneda elegida. Unidades ausentes/por acción se rechazan.
     """
     # best_by_concept[concept][fy] = (filing_date, value, period_end)
     best: Dict[str, Dict[int, Tuple[str, float, str]]] = {}
+    ccy_u = str(ccy).upper() if ccy else None
     for r in rows:
         c = r.get("concept")
         if c not in concepts:
             continue
+        u = str(r.get("unit") or "").upper()
+        is_shares = c in FLOW_MAP["shares_diluted_wavg"] + INSTANT_MAP["shares_outstanding"]
+        if u != ("SHARES" if is_shares else ccy_u):
+            continue  # moneda incompatible: no mezclar (TSM equity USD vs serie TWD)
         ps, pe = r.get("period_start"), r.get("period_end")
         if want_annual is True and not _is_annual(ps, pe):
             continue
@@ -126,7 +144,7 @@ def _pick_pit(rows: List[dict], concepts: List[str], want_annual: Optional[bool]
     return out
 
 
-def build_series_from_rows(rows: List[dict], as_of: Optional[str] = None) -> dict:
+def build_series_from_rows(rows: List[dict], as_of: Optional[str] = None, reporting_currency: Optional[str] = None) -> dict:
     """Construye {'currency', 'by_field', 'meta'} desde filas fundamentals_pit de UN ticker.
 
     `rows`: lista de dicts con las columnas de fundamentals_pit (concept, period_start, period_end,
@@ -140,14 +158,22 @@ def build_series_from_rows(rows: List[dict], as_of: Optional[str] = None) -> dic
         if r.get("concept") in FLOW_MAP["revenue"] and r.get("unit"):
             u = str(r["unit"]).upper()
             rev_units[u] = rev_units.get(u, 0) + 1
-    if rev_units:
-        ccy = max(rev_units, key=rev_units.get)
+    if reporting_currency:
+        ccy = reporting_currency.upper()
+        if not _is_currency_unit(ccy):
+            raise ValueError("moneda de reporte inválida")
+    elif rev_units:
+        candidates = sorted(u for u, n in rev_units.items()
+                            if n == max(rev_units.values()) and _is_currency_unit(u))
+        if len(candidates) != 1:
+            raise ValueError("moneda de reporte ambigua: especificar reporting_currency")
+        ccy = candidates[0]
 
     flow: Dict[str, Dict[int, Tuple[float, str, str]]] = {
-        f: _pick_pit(rows, concepts, True, asof) for f, concepts in FLOW_MAP.items()
+        f: _pick_pit(rows, concepts, True, asof, ccy=ccy) for f, concepts in FLOW_MAP.items()
     }
     inst: Dict[str, Dict[int, Tuple[float, str, str]]] = {
-        f: _pick_pit(rows, concepts, False, asof) for f, concepts in INSTANT_MAP.items()
+        f: _pick_pit(rows, concepts, False, asof, ccy=ccy) for f, concepts in INSTANT_MAP.items()
     }
 
     def end_iso(fy: int, *tables: Dict[int, Tuple[float, str, str]]) -> str:

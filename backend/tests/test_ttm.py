@@ -5,7 +5,7 @@ from app.research.ttm import ttm_edgar, _edgar_periods, reconstruct_ttm
 
 
 def _row(concept, val, ps, pe, filed):
-    return {"concept": concept, "value": val, "period_start": ps, "period_end": pe, "filing_date": filed}
+    return {"concept": concept, "unit": "USD", "value": val, "period_start": ps, "period_end": pe, "filing_date": filed}
 
 
 def _nvda_ocf_rows():
@@ -63,7 +63,7 @@ def test_reconstruct_ttm_capex_prefiere_fuente_completa():
     }}}}
     res = reconstruct_ttm(ocf_rows + capex_rows, eodhd)
     assert res["ttm"]["capex"]["fuente"] == "EODHD"        # EDGAR subestimaba
-    assert any(c[0] == "capex_fuentes_divergen" for c in res["controles"])
+    assert any(c[0] == "capex_sec_incompleto" for c in res["controles"])
     assert "fcf" in res["ttm"]
 
 

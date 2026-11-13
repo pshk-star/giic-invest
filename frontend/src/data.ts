@@ -1,6 +1,7 @@
 // Acceso a datos vía Supabase (con RLS). La cartera es privada por usuario;
 // mercado y scanner son de solo lectura para autenticados.
 import { supabase } from "./lib/supabase";
+import { latestValuations } from "./core/valuation-feed";
 import type { ETFHolding, Position, PriceInfo } from "./core/analytics";
 import type { InstrumentMeta, Split, Txn } from "./core/portfolio-tx";
 import type { FundamentalsPayload } from "./core/valuation";
@@ -448,21 +449,18 @@ export async function getDecisionRecords(): Promise<import("./core/decision-reco
 }
 
 export async function getFundamentalValuations(): Promise<import("./core/fundval").FundValPayload> {
-  const { data, error } = await supabase
-    .from("pit_snapshots").select("ticker,snapshot_date,observation_date,captured_at,payload")
-    .eq("kind", "fundamental_valuation")
-    // Gobierna la captura REALMENTE más reciente por hora de escritura (captured_at), no por snapshot_date
-    // (que podría datarse a futuro). Evita que una fecha de snapshot adelantada tape una corrección posterior.
-    .order("captured_at", { ascending: false })
-    .order("snapshot_date", { ascending: false });
-  if (error) throw error;
-  const resultados: Record<string, import("./core/fundval").CompanyValuation> = {};
-  let generado: string | undefined;
-  for (const r of (data ?? []) as any[]) {
-    if (!resultados[r.ticker]) {            // primer visto = captura más reciente
-      resultados[r.ticker] = r.payload;
-      generado = generado ?? r.observation_date ?? r.snapshot_date;
-    }
+  const rows: {ticker:string;payload:unknown}[] = [];
+  // Freeze an identity upper bound across pages; no mixed partial publication batch.
+  const head = await supabase.from("valuation_snapshots").select("id").order("id", {ascending:false}).limit(1);
+  if (head.error) throw head.error;
+  if (!head.data?.length) return latestValuations([]);
+  const maxId = head.data[0].id;
+  for (let offset=0; ; offset+=1000) {
+    const {data,error} = await supabase.from("valuation_snapshots").select("ticker,payload,id")
+      .lte("id", maxId).order("id", {ascending:false}).range(offset,offset+999);
+    if (error) throw error;
+    rows.push(...(data ?? []));
+    if ((data?.length ?? 0) < 1000) break;
   }
-  return { resultados, generado, no_calibrado_a_mercado: true };
+  return latestValuations(rows);
 }

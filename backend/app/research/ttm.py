@@ -130,15 +130,16 @@ def quarters_from_ytd(periods, concept):
             if 70 <= span <= 100:
                 val = p["val"] if prev is None else p["val"] - prev["val"]
                 q[p["end"]] = {"val": val, "q_end": p["end"], "deriv": ("3m" if prev is None else f"{p['days']}d−{prev['days']}d"),
-                               "form": p.get("form"), "filed": p.get("filed"), "concepto": concept}
+                               "form": p.get("form"), "filed": p.get("filed"), "accn": p.get("accn"), "unit": p.get("unit"), "concepto": concept}
             prev = p
     return q
 
 
-def sec_periods(usg, concept, valid_forms):
+def sec_periods(usg, concept, valid_forms, currency=None):
     node = (usg or {}).get(concept) or {}
     out = {}
     for unit, rows in (node.get("units", {}) or {}).items():
+        if currency and unit != currency: continue
         for f in rows:
             s, e, v = f.get("start"), f.get("end"), f.get("val")
             if v is None or not e or not s or (f.get("form") or "") not in valid_forms:
@@ -146,15 +147,15 @@ def sec_periods(usg, concept, valid_forms):
             k = (s, e)
             if k not in out or (f.get("filed") or "") > (out[k]["filed"] or ""):
                 out[k] = {"start": s, "end": e, "val": float(v), "filed": f.get("filed"),
-                          "form": f.get("form"), "days": _dur(s, e)}
+                          "form": f.get("form"), "accn": f.get("accn"), "unit": unit, "days": _dur(s, e)}
     return sorted(out.values(), key=lambda x: (x["start"], x["end"]))
 
 
-def sec_quarters(usg, concepts, valid_forms):
+def sec_quarters(usg, concepts, valid_forms, currency=None):
     """Prueba conceptos equivalentes; devuelve (quarters, concepto) con MÁS trimestres recientes."""
     best = ({}, None)
     for c in concepts:
-        q = quarters_from_ytd(sec_periods(usg, c, valid_forms), c)
+        q = quarters_from_ytd(sec_periods(usg, c, valid_forms, currency), c)
         if len(q) > len(best[0]):
             best = (q, c)
     return best
@@ -196,7 +197,13 @@ def _near(d_map: Dict[str, float], end: str, tol: int = 8):
     return None, None
 
 
-def ttm_by_quarters(usg: dict, eodhd_obj: dict, valid_forms: set) -> dict:
+def valid_quarter_window(window):
+    if len(window) != 4 or len(set(window)) != 4: return False
+    ds = [_d(x) for x in window]
+    return all(ds) and all(80 <= (ds[i + 1] - ds[i]).days <= 100 for i in range(3))
+
+
+def ttm_by_quarters(usg: dict, eodhd_obj: dict, valid_forms: set, currency=None) -> dict:
     """TTM por SUMA de 4 trimestres en una VENTANA COMÚN (misma para todas las métricas).
 
     Deriva trimestres de SEC (YTD-diff) y de EODHD; ancla la ventana en los 4 trimestres más recientes
@@ -214,12 +221,44 @@ def ttm_by_quarters(usg: dict, eodhd_obj: dict, valid_forms: set) -> dict:
         "ocf": ["NetCashProvidedByUsedInOperatingActivities"],
         "capex": ["PaymentsToAcquireProductiveAssets", "PaymentsToAcquirePropertyPlantAndEquipment"],
     }
-    sec_q = {m: sec_quarters(usg, cands, valid_forms) for m, cands in metrics.items()}
+    for m in metrics:
+        metrics[m] = list(dict.fromkeys(metrics[m] + FLOW_CONCEPTS.get(m, [])))
+    fin = (eodhd_obj or {}).get("Financials", {})
+    currencies = {block.get("currency_symbol") for block in fin.values()
+                  if isinstance(block, dict) and block.get("currency_symbol")}
+    if currency: currencies.add(currency)
+    if len(currencies) > 1:
+        return {"ttm": {}, "controles": [("moneda_ttm", False, "monedas de estados incompatibles")], "ventana": []}
+    currency = currency or (fin.get("Income_Statement", {}) or {}).get("currency_symbol")
+    if not currency:
+        units = {u for node in usg.values() for u in node.get("units", {}) if isinstance(u, str) and len(u) == 3 and u.isupper()}
+        if len(units) == 1: currency = next(iter(units))
+        elif len(units) > 1:
+            return {"ttm": {}, "controles": [("moneda_ttm", False, "moneda ambigua")], "ventana": []}
+    sec_q = {m: sec_quarters(usg, cands, valid_forms, currency) for m, cands in metrics.items()}
     eod_q = {m: eod_quarters(eodhd_obj, m) for m in metrics if m in EODHD_Q_KEYS}
-    anchor = sorted(sec_q["ocf"][0].keys()) or sorted(eod_q.get("ocf", {}).keys())
-    window = anchor[-4:]
+    candidates = []
+    for keys in (sec_q["ocf"][0].keys(), eod_q.get("ocf", {}).keys()):
+        keys = sorted(keys)
+        for i in range(3, len(keys)):
+            w = keys[i-3:i+1]
+            if valid_quarter_window(w): candidates.append(w)
+    if not candidates:
+        return {"ttm": {}, "controles": [("ttm_cuatro_trimestres_contiguos", False,
+                "sin cuatro trimestres contiguos")], "fin_ttm": None, "ventana": []}
+    window = max(candidates, key=lambda w: w[-1])
+    # Vendor calendar-month labels within the fiscal tolerance are the same quarters,
+    # not a newer reporting period. Prefer SEC's actual fiscal ends in that case.
+    fiscal = [w for w in candidates if all(e in sec_q["ocf"][0] for e in w)
+              and all(abs((_d(a) - _d(b)).days) <= 8 for a, b in zip(w, window))]
+    if fiscal:
+        window = max(fiscal, key=lambda w: w[-1])
+    latest = max(list(sec_q["ocf"][0]) + list(eod_q.get("ocf", {})))
+    incomplete_recent = (_d(latest) - _d(window[-1])).days > 8
     out: Dict[str, dict] = {}
     controles: List = []
+    if incomplete_recent:
+        controles.append(("ttm_actualidad", False, "datos más recientes sin ventana completa"))
     for m, cands in metrics.items():
         sq, sc = sec_q[m]
         eq = eod_q.get(m, {})
@@ -232,8 +271,10 @@ def ttm_by_quarters(usg: dict, eodhd_obj: dict, valid_forms: set) -> dict:
             else: sec_sum += sv
             if ev is None: eod_ok = False
             else: eod_sum += ev
-            per.append({"q_end": end, "sec": sv, "eodhd": ev})
+            per.append({"q_end": end, "sec": sv, "eodhd": ev, "eodhd_end": ek, "sec_context": sv_obj})
         chosen, src = (sec_sum, "oficial_SEC") if sec_ok else ((eod_sum, "EODHD") if eod_ok else (None, None))
+        if src == "EODHD" and not sec_ok and any(c in usg for c in cands):
+            controles.append((f"{m}_sec_incompleto", False, "SEC no cubre la ventana; fallback EODHD documentado"))
         if chosen is not None:
             out[m] = {"ttm": chosen, "fuente": src, "concepto": sc, "trimestres": per, "ventana": window}
         if sec_ok and eod_ok and abs(sec_sum - eod_sum) / max(1.0, abs(sec_sum)) > 0.02:
@@ -241,54 +282,20 @@ def ttm_by_quarters(usg: dict, eodhd_obj: dict, valid_forms: set) -> dict:
                               f"SEC {sec_sum/1e9:.1f}B vs EODHD {eod_sum/1e9:.1f}B (misma ventana)"))
     if "ocf" in out and "capex" in out:
         out["fcf"] = {"ttm": out["ocf"]["ttm"] - abs(out["capex"]["ttm"]), "fuente": "derivado(OCF−|capex|)"}
-    return {"ttm": out, "controles": controles, "fin_ttm": window[-1] if window else None, "ventana": window}
+    return {"ttm": out, "controles": controles, "fin_ttm": window[-1] if window else None, "ventana": window, "currency": currency}
 
 
-def reconstruct_ttm(edgar_rows: List[dict], eodhd_obj: dict) -> dict:
-    """Devuelve {campo: {ttm, fuente, meta}} para flujos + controles. Flujos: revenue, operating_income,
-    net_income, tax, pretax, interest_expense, ocf, capex (+ fcf derivado)."""
-    out: Dict[str, dict] = {}
-    controls: List[Tuple[str, bool, str]] = []
-    for field, concepts in FLOW_CONCEPTS.items():
-        e_val, e_meta = ttm_edgar(_edgar_periods(edgar_rows, concepts))
-        o_val, o_meta = ttm_eodhd(eodhd_obj, field)
-        chosen, src, meta = None, None, {}
-        if e_val is not None and o_val is not None:
-            # capex: EDGAR subestima a veces (PP&E-only). Si una es <50% de la otra, usar la mayor (más completa).
-            if field == "capex" and min(abs(e_val), abs(o_val)) < 0.5 * max(abs(e_val), abs(o_val)):
-                if abs(o_val) >= abs(e_val):
-                    chosen, src = o_val, "EODHD"
-                else:
-                    chosen, src = e_val, "EDGAR"
-                controls.append(("capex_fuentes_divergen", False,
-                                 f"EDGAR {e_val/1e9:.1f}B vs EODHD {o_val/1e9:.1f}B ⇒ se usa {src} (más completa)"))
-                meta = {"edgar": e_meta, "eodhd": o_meta}
-            else:
-                # discrepancia relativa
-                rel = abs(e_val - o_val) / max(1.0, abs(e_val))
-                chosen, src = e_val, "EDGAR"
-                meta = e_meta
-                if rel > 0.15:
-                    controls.append((f"{field}_fuentes_divergen", False,
-                                     f"EDGAR {e_val/1e9:.1f}B vs EODHD {o_val/1e9:.1f}B ({rel*100:.0f}%)"))
-        elif e_val is not None:
-            chosen, src, meta = e_val, "EDGAR", e_meta
-        elif o_val is not None:
-            chosen, src, meta = o_val, "EODHD", o_meta
-        if chosen is not None:
-            out[field] = {"ttm": chosen, "fuente": src, "meta": meta}
-
-    # FCF TTM = OCF − |capex|
-    if "ocf" in out and "capex" in out:
-        out["fcf"] = {"ttm": out["ocf"]["ttm"] - abs(out["capex"]["ttm"]),
-                      "fuente": f"{out['ocf']['fuente']}/{out['capex']['fuente']}",
-                      "meta": "OCF − |capex|"}
-        # control de consistencia OCF/CAPEX/FCF
-        if out["ocf"]["ttm"] <= 0:
-            controls.append(("ocf_no_positivo", False, f"OCF TTM {out['ocf']['ttm']/1e9:.1f}B"))
-
-    # ¿hay TTM más reciente que el FY? (control item 3: FY cuando ya existe TTM)
-    ocf_meta = out.get("ocf", {}).get("meta", {})
-    tiene_ttm = isinstance(ocf_meta, dict) and ocf_meta.get("metodo", "").startswith("FY +")
-    return {"ttm": out, "controles": controls, "tiene_ttm_real": tiene_ttm,
-            "fin_ttm": ocf_meta.get("fin") if isinstance(ocf_meta, dict) else None}
+def reconstruct_ttm(edgar_rows: List[dict], eodhd_obj: dict, currency=None) -> dict:
+    """Every fallback uses the same quarter-window admission as official companyfacts."""
+    usg = {}
+    forms = {"10-K", "10-K/A", "10-Q", "10-Q/A", "20-F", "20-F/A", "40-F", "6-K"}
+    for r in edgar_rows:
+        unit = r.get("unit")
+        if currency and unit != currency: continue
+        node = usg.setdefault(r.get("concept"), {"units": {}})
+        node["units"].setdefault(unit, []).append({
+            "start": r.get("period_start"), "end": r.get("period_end"), "val": r.get("value"),
+            "filed": r.get("filing_date"), "form": r.get("form_type") or "10-Q"})
+    result = ttm_by_quarters(usg, eodhd_obj, forms, currency=currency)
+    result["tiene_ttm_real"] = bool(result.get("ventana"))
+    return result

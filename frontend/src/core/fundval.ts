@@ -17,7 +17,18 @@ export interface Provenance {
   precio_fecha?: string;
 }
 
+export type ScenarioPoint = number | { fv_usd: number | null; margen?: number | null; supuestos?: string };
+
+// Extrae el FV escalar de un escenario, tolerando el shape objeto o número (contrato back↔front).
+export function scenarioFv(x: ScenarioPoint | undefined | null): number | null {
+  if (x == null) return null;
+  return typeof x === "number" ? x : (x.fv_usd ?? null);
+}
+
 export interface ModelBlock {
+  status?: "consistente" | "en_revision" | "no_valorable";
+  metodologia_validada?: boolean;
+  accionable?: boolean;
   modelo: string;
   disponible?: boolean; // false => no disponible (NO es recomendación)
   motivo?: string;
@@ -25,7 +36,11 @@ export interface ModelBlock {
   fair_value_usd?: number | null;
   precio?: number | null;
   margen_seguridad_pct?: number | null;
-  escenarios?: { conservador: number; base: number; optimista: number };
+  // Escenario: el backend motor_v2 envía objetos {fv_usd, margen, supuestos}; versiones previas enviaban
+  // un número. El tipo acepta ambos (Codex P2 #13/#15) y el render extrae fv_usd de forma tolerante.
+  escenarios?: {
+    conservador: ScenarioPoint; base: ScenarioPoint; optimista: ScenarioPoint; rango_usd?: number[];
+  };
   confianza?: string;
   limitaciones?: string[];
   wacc_pct?: number;
@@ -42,10 +57,12 @@ export interface ModelBlock {
 }
 
 export interface CompanyValuation {
+  status?: "consistente" | "en_revision" | "no_valorable";
+  engine_version?: string;
   ticker: string;
   ccy: string;
-  precio: number;
-  gT_pct: number;
+  precio: number | null;
+  gT_pct: number | null;
   modelos: ModelBlock[];
   comparacion?: { fair_values: Record<string, number>; explicacion: string };
 }

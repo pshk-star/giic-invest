@@ -93,14 +93,34 @@ class SupabaseWriter:
 
     def insert_append(self, table: str, rows: List[dict], on_conflict: str) -> int:
         """Inserta ignorando duplicados (NO hace UPDATE). Para tablas APPEND-ONLY cuyos
-        triggers rechazan UPDATE: on conflict se omite la fila, no se actualiza."""
+        triggers rechazan UPDATE: on conflict se omite la fila, no se actualiza.
+
+        Devuelve el número de filas REALMENTE insertadas (no las enviadas): con `return=representation`
+        el cuerpo contiene solo las filas insertadas; las descartadas por conflicto NO aparecen (Codex P0 #3).
+        Así el conteo no miente cuando una revaloración se ignora por clave de conflicto."""
         if not rows:
             return 0
-        headers = {"Prefer": "resolution=ignore-duplicates,return=minimal"}
+        headers = {"Prefer": "resolution=ignore-duplicates,return=representation"}
         r = self._client.post(f"{self.base}/{table}", json=rows,
                               params={"on_conflict": on_conflict}, headers=headers)
         r.raise_for_status()
-        return len(rows)
+        try:
+            body = r.json()
+            if not isinstance(body, list):
+                raise ValueError("insert acknowledgement must be a list")
+            return len(body)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("invalid insert acknowledgement") from exc
+
+    def publish_valuations(self, run_id: str, rows: List[dict]) -> int:
+        """Atomic immutable publication, including no_valorable tombstones."""
+        r = self._client.post(f"{self.base}/rpc/publish_valuations",
+                              json={"p_run_id": run_id, "p_rows": rows})
+        r.raise_for_status()
+        n = r.json()
+        if not isinstance(n, int) or isinstance(n, bool) or n not in (0, len(rows)):
+            raise ValueError("invalid publication acknowledgement")
+        return n
 
     def select_rows(self, table: str, select: str = "*", page: int = 1000,
                     params: Optional[dict] = None) -> List[dict]:

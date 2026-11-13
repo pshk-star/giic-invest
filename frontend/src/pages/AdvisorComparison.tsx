@@ -1,3 +1,4 @@
+import { valuationInput } from "../core/valuation-feed";
 // P2.1 — Advisor 3.0 (EXPERIMENTAL, bajo feature flag VITE_FF_ADVISOR3). Ensambla posiciones REALES
 // (derivePositions), retornos (price_history) y valoración (P1.9) y renderiza el motor buildAdvisor3.
 // Comparación con Advisor 2.2 (enlace) + simulación de asignación de capital. No ejecuta operaciones.
@@ -9,7 +10,6 @@ import {
 } from "../data";
 import { derivePositions } from "../core/portfolio-tx";
 import { buildAdvisor3, type Adv3Input, type Adv3Valuation } from "../core/advisor3";
-import type { CompanyValuation } from "../core/fundval";
 import { money, pct, num } from "../format";
 
 const ETF = ["etf", "fund", "etn", "mutualfund"];
@@ -36,11 +36,6 @@ function alignedReturns(hist: Record<string, { as_of: string; close: number }[]>
   return out;
 }
 
-function modelMargin(cv: CompanyValuation | undefined, modelo: string): { m: number | null; c: string | null | undefined } {
-  const b = cv?.modelos.find((x) => x.modelo === modelo);
-  if (!b || b.disponible === false || b.margen_seguridad_pct == null) return { m: null, c: null };
-  return { m: b.margen_seguridad_pct / 100, c: b.confianza };
-}
 
 export function AdvisorComparison() {
   const [report, setReport] = useState<ReturnType<typeof buildAdvisor3> | null>(null);
@@ -69,12 +64,9 @@ export function AdvisorComparison() {
       const quality: Record<string, { eligible: boolean; fresh: boolean }> = {};
       for (const p of positions) {
         const cv = fv.resultados[p.ticker];
-        const prod = modelMargin(cv, "DCF_productivo");
-        const giic = modelMargin(cv, "FCFF_GIIC");
-        valuation[p.ticker] = {
-          productiveMargin: prod.m, productiveConfidence: prod.m != null ? "media" : null,
-          fcffMargin: giic.m, fcffConfidence: (giic.c as any) ?? null, priceComparable: true,
-        };
+
+
+        valuation[p.ticker] = valuationInput(cv);
         quality[p.ticker] = { eligible: true, fresh: true };
       }
       const input: Adv3Input = {
@@ -84,6 +76,7 @@ export function AdvisorComparison() {
           marketValue: p.marketValue ?? 0, weight: total > 0 ? (p.marketValue ?? 0) / total : 0,
         })),
         cash, contribution, returns, valuation, quality,
+        methodologyValidated: Object.values(valuation).length > 0 && Object.values(valuation).every(v => v.engineMethodologyValidated === true),
         constraints: { maxPositionWeight: 0.45, maxSectorWeight: 0.50, minMarginToBuy: 0.10 },
         fcffFallback: import.meta.env.VITE_FF_VALPOLICY === "1",
       };
