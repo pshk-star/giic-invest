@@ -36,6 +36,29 @@ def run():
             "revenue": (inc.get(li, {}) or {}).get("totalRevenue") if li else None,
             "ebit": (inc.get(li, {}) or {}).get("operatingIncome") if li else None,
         }
+    # Reproducir reconcile+normalize reales (EDGAR Supabase + EODHD) para ver el capital invertido
+    try:
+        from app.research.edgar_series import build_series_from_rows, fetch_edgar_rows
+        from app.research.valuation_engine import reconcile, normalize, _last
+        from app.core.connectors.eodhd import EodhdFundamentalsConnector, eodhd_annual_series_full
+        from app.jobs.supabase_writer import SupabaseWriter
+        w = SupabaseWriter(os.getenv("SUPABASE_URL", ""), os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""))
+        erows = fetch_edgar_rows(w, "TSM")
+        edgar = build_series_from_rows(erows) if erows else {"currency": None, "by_field": {}}
+        conn = EodhdFundamentalsConnector(api_key=os.getenv("EODHD_API_KEY", ""))
+        _s, _a, obj = conn._resolve("TSM")
+        eod = eodhd_annual_series_full(obj) if obj else {"currency": None, "by_field": {}}
+        rec = reconcile(edgar, eod)
+        diag = {"moneda_edgar": edgar.get("currency"), "moneda_eodhd": eod.get("currency"),
+                "moneda_reconciliada": rec.currency}
+        for f in ("equity", "total_debt", "cash", "invested_capital"):
+            diag[f] = {"reconc_last": (_last(rec.by_field.get(f, {}) or {}) or (None, None))[1],
+                       "fuente": rec.provenance.get(f),
+                       "edgar_last": (_last(edgar.get("by_field", {}).get(f, {}) or {}) or (None, None))[1],
+                       "eodhd_last": (_last(eod.get("by_field", {}).get(f, {}) or {}) or (None, None))[1]}
+        out["_reconcile_TSM"] = diag
+    except Exception as e:
+        out["_reconcile_TSM_error"] = str(e)
     print(json.dumps(out, ensure_ascii=False, indent=1, default=str))
     return 0
 

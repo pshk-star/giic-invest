@@ -21,4 +21,6 @@ jobs:
       - name: TSM EODHD probe
         env:
           EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: python -m app.jobs.tsm_eodhd_probe
