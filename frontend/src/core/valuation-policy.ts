@@ -62,17 +62,17 @@ export function governingValuation(v: GovInput | undefined, opts?: PolicyOpts): 
   if (!v) return { margin: null, conf: null, source: "ninguno", tier: "insuficiente", note: "sin valoración" };
   // 0) MOTOR v2 — FV ÚNICO GOBERNANTE. Si existe, manda. Accionable solo si validado; en revisión o no
   //    valorable ⇒ FV visible pero bloqueado (no accionable). Reemplaza la jerarquía productivo/FCFF.
-  if (v.engineMargin != null && v.engineStatus) {
+  if (v.engineStatus) {
     const arithmeticOk = v.engineStatus === "consistente";
     const methodOk = v.engineMethodologyValidated ?? false;      // metodología validada por backtest
-    const actionable = arithmeticOk && methodOk;                 // accionable SOLO con ambas
+    const actionable = arithmeticOk && methodOk && !methodBlocked && !v.reviewBlock && v.engineMargin != null;                 // accionable SOLO con ambas
     const blk = !actionable;
     const reason = !arithmeticOk
       ? (v.engineReason ?? (v.engineStatus === "no_valorable"
           ? "no valorable (datos no reconstruibles)" : "en revisión (control financiero no superado)"))
       : "metodología no validada (backtest pendiente) — FV informativo, no accionable";
     return guardExtreme({
-      margin: v.engineMargin, conf: v.engineConfidence ?? (arithmeticOk ? "media" : "baja"),
+      margin: v.engineMargin ?? null, conf: v.engineConfidence ?? (arithmeticOk ? "media" : "baja"),
       source: "motor_v2" as GovSource, tier: actionable ? "confiable" : "experimental",
       note: actionable
         ? "Motor v2 (FCFF DCF reconciliado) — consistente y metodología validada"

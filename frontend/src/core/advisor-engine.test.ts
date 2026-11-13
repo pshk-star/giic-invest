@@ -71,6 +71,14 @@ describe("Etapa A — perfil", () => {
 });
 
 describe("Etapa A — orquestador (una sola recomendación)", () => {
+  it("P0: el orquestador propaga bloqueo global a ventas, recortes y asignación", () => {
+    const input = { ...scanInput(), methodologyValidated: false };
+    const r = buildUnifiedAdvisor({ profile: PROFILE, scanInput: input });
+    expect(r.positions.find(p => p.ticker === "NVDA")!.action).toBe("REVISAR");
+    expect(r.positions.find(p => p.ticker === "NVDA")!.trimAmount).toBeNull();
+    expect(r.opportunities.every(o => !o.buyable)).toBe(true);
+  });
+
   it("una acción por posición de cartera", () => {
     const r = buildUnifiedAdvisor({ profile: PROFILE, scanInput: scanInput() });
     expect(r.positions.map((p) => p.ticker).sort()).toEqual(["KO", "NVDA", "SPY"]);
