@@ -285,6 +285,9 @@ class DcfResult:
     equity_value: float
     reconc_divergence: Optional[float]
     sensitivity: Dict[str, float]
+    scenarios: Dict[str, object]
+    method: str
+    method_reason: str
     controls: List[Tuple[str, bool, str]]
     validated: bool
     status: str
@@ -319,21 +322,24 @@ def _roiic_assumed(n: NormInputs) -> Tuple[float, str]:
     return ROIIC_DEFAULT, "conservador por defecto (ROIIC observado inestable/no medible)"
 
 
-def _project_fcff(n: NormInputs, wacc: float, gT: Optional[float] = None) -> Tuple[float, float, float, float]:
+def _project_fcff(n: NormInputs, wacc: float, gT: Optional[float] = None,
+                  g1: Optional[float] = None, roiic0: Optional[float] = None) -> Tuple[float, float, float, float]:
     """FCFF = NOPAT·(1 − g/ROIIC). Reinversión económica con ROIIC observado (si estable) o supuesto
     conservador, que SE ERONA hacia un ROIIC terminal ≈ 2×WACC (competencia). Devuelve
     (PV explícito, PV terminal, FCFF0, reinvest_rate0). No reconcilia por construcción con el FCF real;
-    la comparación FCFF vs FCF real queda como DIAGNÓSTICO (no como validación)."""
+    la comparación FCFF vs FCF real queda como DIAGNÓSTICO (no como validación). g1/roiic0 permiten
+    overrides para escenarios (conservador/optimista); por defecto usan los supuestos base."""
     gt = n.gT if gT is None else gT
-    roiic0, _basis = _roiic_assumed(n)
+    g_1 = n.g1 if g1 is None else g1
+    r0 = _roiic_assumed(n)[0] if roiic0 is None else roiic0
     roiic_term = _clamp(2 * wacc, 0.10, 0.18)            # ROIIC sostenible terminal (≈2×WACC)
     nopat = n.nopat0
     pv = 0.0
-    fcff0 = nopat * (1 - n.g1 / roiic0)
-    reinv0 = n.g1 / roiic0
+    fcff0 = nopat * (1 - g_1 / r0)
+    reinv0 = g_1 / r0
     for t in range(1, YEARS + 1):
-        g = n.g1 + (gt - n.g1) * (t - 1) / max(1, YEARS - 1)
-        roiic_t = roiic0 + (roiic_term - roiic0) * (t - 1) / max(1, YEARS - 1)   # erosión lineal del ROIIC
+        g = g_1 + (gt - g_1) * (t - 1) / max(1, YEARS - 1)
+        roiic_t = r0 + (roiic_term - r0) * (t - 1) / max(1, YEARS - 1)   # erosión lineal del ROIIC
         nopat *= (1 + g)
         reinv = g / roiic_t
         fcff = nopat * (1 - reinv)
@@ -343,6 +349,34 @@ def _project_fcff(n: NormInputs, wacc: float, gT: Optional[float] = None) -> Tup
     tv = fcff_term / (wacc - gt) if wacc > gt else 0.0
     pv_tv = tv / (1 + wacc) ** YEARS
     return pv, pv_tv, fcff0, reinv0
+
+
+# ── Selección de método de valoración por tipo de negocio (sección 3 del mandato) ───────────────────
+#   No se aplica una única fórmula DCF a todo. Se elige el método según la economía del negocio y se
+#   DOCUMENTA la razón. Bancos/aseguradoras (RIM/exceso de capital) y REITs (FFO/NAV) requieren modelos
+#   dedicados aún NO implementados ⇒ se marcan y se bloquean en vez de forzar un FCFF inapropiado.
+SECTOR_METHOD = {
+    "banks": ("RIM", False), "insurance": ("RIM", False), "reit": ("FFO/NAV", False),
+    "real_estate": ("FFO/NAV", False), "utilities": ("FCFF", True), "energy": ("FCFF", True),
+}
+# Mapa explícito de tickers del universo a su clase económica (para enrutar el método).
+TICKER_SECTOR = {
+    "AMT": "reit", "PLD": "reit", "NEE": "utilities", "DUK": "utilities",
+    "JPM": "banks", "BAC": "banks", "WFC": "banks", "C": "banks", "GS": "banks", "MS": "banks",
+    "BRK.B": "insurance", "AIG": "insurance", "MET": "insurance", "PRU": "insurance",
+    "COP": "energy", "EOG": "energy", "FCX": "energy", "XOM": "energy", "CVX": "energy",
+}
+
+
+def _select_method(ticker: str) -> Tuple[str, bool, str]:
+    """Devuelve (metodo, apto_para_FCFF, razon). apto=False ⇒ requiere modelo dedicado no implementado."""
+    sec = TICKER_SECTOR.get(ticker.upper())
+    if sec and sec in SECTOR_METHOD:
+        method, fcff_ok = SECTOR_METHOD[sec]
+        if not fcff_ok:
+            return method, False, f"negocio '{sec}': requiere modelo {method} (no FCFF); dedicado pendiente ⇒ bloqueado"
+        return "FCFF", True, f"negocio '{sec}': flujos operativos descontables ⇒ FCFF DCF"
+    return "FCFF", True, "empresa operativa (opex/capex/NWC estándar) ⇒ FCFF DCF multi-etapa"
 
 
 def _project_fcfe(n: NormInputs, ke: float) -> Optional[float]:
@@ -400,8 +434,36 @@ def value_from_norm(n: NormInputs, price_local: Optional[float], adr: int = 1) -
         if n.shares > 0:
             sens[label_g] = round((eqv / n.shares) * adr * fx, 2)
 
+    # ESCENARIOS (sección 5): conservador / base / optimista con paquetes de supuestos DOCUMENTADOS y
+    # defendibles (NO se calibran al precio). Base = supuestos fundamentados actuales. El rango y el margen
+    # de seguridad se derivan de los tres. Deltas: conservador (WACC +1,5pp, g1 ×0,70, ROIIC ×0,80,
+    # gT −0,5pp); optimista (WACC −1,0pp, g1 ×1,15, ROIIC ×1,15 cap 60%, gT +0,3pp).
+    def _fv_scn(dw: float, gmul: float, rmul: float, dgt: float) -> Optional[float]:
+        w = _clamp(wacc + dw, n.gT + 0.01, 0.30)
+        g1s = _clamp(n.g1 * gmul, 0.0, 0.40)
+        r0s = _clamp(roiic_asm * rmul, 0.08, ROIIC_CEIL)
+        gts = _clamp(n.gT + dgt, 0.0, w - 0.01)
+        pe, pt, _, _ = _project_fcff(n, w, gT=gts, g1=g1s, roiic0=r0s)
+        eqv = (pe + pt) - n.net_debt
+        return round((eqv / n.shares) * adr * fx, 2) if n.shares > 0 else None
+    fv_cons = _fv_scn(+0.015, 0.70, 0.80, -0.005)
+    fv_opt = _fv_scn(-0.010, 1.15, 1.15, +0.003)
+    def _mos(v): return round(v / px_usd - 1, 4) if (v and px_usd) else None
+    scenarios = {
+        "conservador": {"fv_usd": fv_cons, "margen": _mos(fv_cons),
+                        "supuestos": "WACC+1,5pp, g1×0,70, ROIIC×0,80, gT−0,5pp"},
+        "base": {"fv_usd": round(fv_usd, 2) if fv_usd else None, "margen": round(mos, 4) if mos is not None else None,
+                 "supuestos": f"WACC {wacc*100:.1f}%, g1 {n.g1*100:.1f}%, ROIIC {roiic_asm*100:.0f}%, gT {n.gT*100:.1f}%"},
+        "optimista": {"fv_usd": fv_opt, "margen": _mos(fv_opt),
+                      "supuestos": "WACC−1,0pp, g1×1,15, ROIIC×1,15 (cap 60%), gT+0,3pp"},
+        "rango_usd": [v for v in sorted(x for x in (fv_cons, fv_usd, fv_opt) if x is not None)][:1]
+                     + ([round(max(x for x in (fv_cons, fv_usd, fv_opt) if x is not None), 2)] if any(x is not None for x in (fv_cons, fv_usd, fv_opt)) else []),
+    }
+    method, method_fcff_ok, method_reason = _select_method(n.ticker)
+
     # CONTROLES
     controls: List[Tuple[str, bool, str]] = []
+    controls.append(("metodo_apropiado", method_fcff_ok, f"{method}: {method_reason}"))
     controls.append(("WACC>gT", wacc > n.gT, f"WACC={wacc*100:.1f}% gT={n.gT*100:.1f}%"))
     controls.append(("peso_terminal", terminal_weight <= TERMINAL_WEIGHT_WARN,
                      f"{terminal_weight*100:.0f}% del EV"))
@@ -440,7 +502,7 @@ def value_from_norm(n: NormInputs, price_local: Optional[float], adr: int = 1) -
                      "ok" if not n.split_flag else "posible split no ajustado (precio/acciones en verificación)"))
 
     hard_fail = [c for c in controls if not c[1] and c[0] in
-                 ("WACC>gT", "reinversion_vs_ROIC", "margen_operativo_plausible", "acciones_escala")]
+                 ("metodo_apropiado", "WACC>gT", "reinversion_vs_ROIC", "margen_operativo_plausible", "acciones_escala")]
     review = [c for c in controls if not c[1] and c[0] in
               ("peso_terminal", "FCFF_vs_FCFE", "margen_no_extremo", "fuentes_consistentes",
                "FCFF_proy_vs_FCF_real_diag", "datos_precio_acciones")]
@@ -464,6 +526,7 @@ def value_from_norm(n: NormInputs, price_local: Optional[float], adr: int = 1) -
         fcfe0=round(n.hist_fcf_margin * n.revenue0, 0) if n.hist_fcf_margin else None,
         terminal_weight=round(terminal_weight, 4), ev=round(ev, 0), equity_value=round(equity_value, 0),
         reconc_divergence=round(reconc, 4) if reconc is not None else None, sensitivity=sens,
+        scenarios=scenarios, method=method, method_reason=method_reason,
         controls=controls, validated=validated, status=status, reasons=reasons,
         inputs={"revenue0": n.revenue0, "op_margin": n.op_margin, "tax_eff": n.tax_eff,
                 "invested_capital": n.invested_capital, "net_debt": n.net_debt, "shares": n.shares,
