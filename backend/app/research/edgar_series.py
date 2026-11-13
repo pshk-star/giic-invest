@@ -83,20 +83,37 @@ def _fy(period_end: Optional[str]) -> Optional[int]:
     return e.year if e else None
 
 
+import re as _re
+
+_CCY_RE = _re.compile(r"^[A-Z]{3}$")   # código de moneda ISO puro (USD, TWD, EUR...); 'shares', 'USD/shares' no matchean
+
+
+def _is_currency_unit(u: Optional[str]) -> bool:
+    return bool(u) and bool(_CCY_RE.fullmatch(str(u).upper()))
+
+
 def _pick_pit(rows: List[dict], concepts: List[str], want_annual: Optional[bool],
-              as_of: Optional[date]) -> Dict[int, Tuple[float, str, str]]:
+              as_of: Optional[date], ccy: Optional[str] = None) -> Dict[int, Tuple[float, str, str]]:
     """Para los `concepts` dados (en orden de prioridad), devuelve {año_fiscal: (valor, period_end, concepto)}.
 
     PIT: por (concepto, año) toma el `filing_date` más reciente <= as_of. Entre conceptos del mapa,
     gana el de mayor prioridad que tenga dato ese año. want_annual=True exige duración anual (flujo),
     False exige instante (balance), None no filtra.
+
+    FILTRO DE MONEDA (Codex P0 #1): si se pasa `ccy`, se RECHAZA toda fila cuyo `unit` sea una moneda ISO
+    distinta de `ccy` (p. ej. el equity USD de un 20-F dual de TSM cuando la serie es TWD). Unidades no
+    monetarias (shares, USD/shares, pure) no se filtran. Evita mezclar monedas al construir identidades.
     """
     # best_by_concept[concept][fy] = (filing_date, value, period_end)
     best: Dict[str, Dict[int, Tuple[str, float, str]]] = {}
+    ccy_u = str(ccy).upper() if ccy else None
     for r in rows:
         c = r.get("concept")
         if c not in concepts:
             continue
+        u = str(r.get("unit") or "").upper()
+        if ccy_u and _is_currency_unit(u) and u != ccy_u:
+            continue  # moneda incompatible: no mezclar (TSM equity USD vs serie TWD)
         ps, pe = r.get("period_start"), r.get("period_end")
         if want_annual is True and not _is_annual(ps, pe):
             continue
@@ -144,10 +161,10 @@ def build_series_from_rows(rows: List[dict], as_of: Optional[str] = None) -> dic
         ccy = max(rev_units, key=rev_units.get)
 
     flow: Dict[str, Dict[int, Tuple[float, str, str]]] = {
-        f: _pick_pit(rows, concepts, True, asof) for f, concepts in FLOW_MAP.items()
+        f: _pick_pit(rows, concepts, True, asof, ccy=ccy) for f, concepts in FLOW_MAP.items()
     }
     inst: Dict[str, Dict[int, Tuple[float, str, str]]] = {
-        f: _pick_pit(rows, concepts, False, asof) for f, concepts in INSTANT_MAP.items()
+        f: _pick_pit(rows, concepts, False, asof, ccy=ccy) for f, concepts in INSTANT_MAP.items()
     }
 
     def end_iso(fy: int, *tables: Dict[int, Tuple[float, str, str]]) -> str:

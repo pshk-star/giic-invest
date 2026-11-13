@@ -7,7 +7,7 @@ import { Panel } from "./Panel";
 import { money, num } from "../format";
 import {
   type FundValPayload, type CompanyValuation, type ModelBlock,
-  MODEL_LABEL, confidenceTone, marginView,
+  MODEL_LABEL, confidenceTone, marginView, scenarioFv,
 } from "../core/fundval";
 
 function SummaryCell({ m }: { m: ModelBlock }) {
@@ -54,7 +54,7 @@ function Detail({ m }: { m: ModelBlock }) {
       <div className="mt-2 space-y-2">
         {m.escenarios ? (
           <div className="text-xs text-term-muted">
-            Escenarios · cons {money(m.escenarios.conservador, "USD")} · base {money(m.escenarios.base, "USD")} · opt {money(m.escenarios.optimista, "USD")}
+            Escenarios · cons {money(scenarioFv(m.escenarios.conservador), "USD")} · base {money(scenarioFv(m.escenarios.base), "USD")} · opt {money(scenarioFv(m.escenarios.optimista), "USD")}
           </div>
         ) : null}
         <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-term-muted">

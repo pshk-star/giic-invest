@@ -1,8 +1,21 @@
 import { describe, it, expect } from "vitest";
 import {
   availableModels, productiveBlock, isRecommendationFree, confidenceTone, marginView, MODEL_LABEL,
-  type CompanyValuation,
+  scenarioFv, type CompanyValuation,
 } from "./fundval";
+
+describe("F13 (Codex P0): contrato de escenarios back↔front", () => {
+  it("scenarioFv extrae fv_usd del objeto del backend motor_v2", () => {
+    expect(scenarioFv({ fv_usd: 80.84, margen: -0.51 })).toBe(80.84);
+  });
+  it("scenarioFv tolera el shape numérico antiguo", () => {
+    expect(scenarioFv(91)).toBe(91);
+  });
+  it("scenarioFv devuelve null para ausente o fv_usd nulo (money ⇒ '—', no objeto no-finito)", () => {
+    expect(scenarioFv(undefined)).toBeNull();
+    expect(scenarioFv({ fv_usd: null })).toBeNull();
+  });
+});
 
 const company: CompanyValuation = {
   ticker: "NVDA", ccy: "USD", precio: 177.2, gT_pct: 4.1,
