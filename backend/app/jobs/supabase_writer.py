@@ -93,14 +93,22 @@ class SupabaseWriter:
 
     def insert_append(self, table: str, rows: List[dict], on_conflict: str) -> int:
         """Inserta ignorando duplicados (NO hace UPDATE). Para tablas APPEND-ONLY cuyos
-        triggers rechazan UPDATE: on conflict se omite la fila, no se actualiza."""
+        triggers rechazan UPDATE: on conflict se omite la fila, no se actualiza.
+
+        Devuelve el número de filas REALMENTE insertadas (no las enviadas): con `return=representation`
+        el cuerpo contiene solo las filas insertadas; las descartadas por conflicto NO aparecen (Codex P0 #3).
+        Así el conteo no miente cuando una revaloración se ignora por clave de conflicto."""
         if not rows:
             return 0
-        headers = {"Prefer": "resolution=ignore-duplicates,return=minimal"}
+        headers = {"Prefer": "resolution=ignore-duplicates,return=representation"}
         r = self._client.post(f"{self.base}/{table}", json=rows,
                               params={"on_conflict": on_conflict}, headers=headers)
         r.raise_for_status()
-        return len(rows)
+        try:
+            body = r.json()
+            return len(body) if isinstance(body, list) else 0
+        except Exception:
+            return 0
 
     def select_rows(self, table: str, select: str = "*", page: int = 1000,
                     params: Optional[dict] = None) -> List[dict]:

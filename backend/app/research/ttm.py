@@ -216,10 +216,33 @@ def ttm_by_quarters(usg: dict, eodhd_obj: dict, valid_forms: set) -> dict:
     }
     sec_q = {m: sec_quarters(usg, cands, valid_forms) for m, cands in metrics.items()}
     eod_q = {m: eod_quarters(eodhd_obj, m) for m in metrics if m in EODHD_Q_KEYS}
-    anchor = sorted(sec_q["ocf"][0].keys()) or sorted(eod_q.get("ocf", {}).keys())
-    window = anchor[-4:]
     out: Dict[str, dict] = {}
     controles: List = []
+    # EXIGIR 4 TRIMESTRES CONTIGUOS (Codex P0 #7 y #8): un TTM debe cubrir ~12 meses con 4 cierres
+    # consecutivos (~90d entre cierres). Con menos de 4, o con huecos, NO se emite TTM. El ancla no se fija
+    # rígido a SEC: se toman los 4 contiguos más recientes de SEC y, si no existen, los de EODHD.
+    def _as_date(x):
+        from datetime import datetime as _dt
+        try: return _dt.strptime(str(x)[:10], "%Y-%m-%d").date()
+        except Exception: return None
+
+    def _contiguous4(keys):
+        w = sorted(keys)[-4:]
+        if len(w) != 4:
+            return None
+        ds = [_as_date(x) for x in w]
+        if not all(ds):
+            return None
+        if all(60 <= (ds[i + 1] - ds[i]).days <= 100 for i in range(3)):
+            return w
+        return None
+
+    window = _contiguous4(sec_q["ocf"][0].keys()) or _contiguous4(eod_q.get("ocf", {}).keys())
+    if window is None:
+        sec_n = len(sec_q["ocf"][0]); eod_n = len(eod_q.get("ocf", {}))
+        return {"ttm": {}, "controles": [("ttm_cuatro_trimestres_contiguos", False,
+                f"sin 4 trimestres contiguos (~90d): SEC={sec_n} EODHD={eod_n}")],
+                "fin_ttm": None, "ventana": []}
     for m, cands in metrics.items():
         sq, sc = sec_q[m]
         eq = eod_q.get(m, {})

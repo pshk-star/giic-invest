@@ -33,6 +33,14 @@ describe("Advisor 3.0", () => {
     expect(nvda.marginSource).toBe("productivo");
   });
 
+  it("F12 (Codex P0): metodología bloqueada NO genera REDUCIR/VENDER por Fair Value", () => {
+    // Misma cartera (NVDA margen −30%), pero barrera global activa (methodologyValidated:false).
+    const r = buildAdvisor3({ ...baseInput(), methodologyValidated: false });
+    const nvda = r.positionDecisions.find((d) => d.ticker === "NVDA")!;
+    expect(nvda.action).toBe("REVISAR");                 // bloqueado ⇒ no se concluye por FV
+    expect(nvda.trimAmount == null || nvda.trimAmount === 0).toBe(true);  // sin recorte cuantificado por FV
+  });
+
   it("posición: FCFF experimental de baja confianza NO desplaza el FV productivo (=> REVISAR, no COMPRAR)", () => {
     const r = buildAdvisor3(baseInput());
     const tsm = r.positionDecisions.find((d) => d.ticker === "TSM")!;

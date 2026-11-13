@@ -156,6 +156,7 @@ class NormInputs:
     fcf_real_recent: Optional[float] = None
     roiic_observed: Optional[Dict[str, float]] = None   # {roiic_3y, roiic_all, stable} de balances oficiales
     split_flag: bool = False
+    balance_incompleto: bool = False   # caja o deuda ausentes (no se asumieron 0 en silencio)
     ok: bool = True
     fail: Optional[str] = None
 
@@ -184,7 +185,12 @@ def normalize(ticker: str, rec: Reconciled, price_local: Optional[float], adr: i
     margins = [ebit[p] / rev[p] for p in sorted(rev) if p in ebit and rev[p] > 0]
     if not margins:
         return fail("sin margen operativo (EBIT) en ninguna fuente")
-    op_margin = _clamp(median(margins[-5:]), MARGIN_MIN, MARGIN_MAX)
+    med_margin = median(margins[-5:])
+    # Pérdida operativa (margen mediano ≤ 0): NO se trunca a +1% (eso convertiría una pérdida en rentabilidad
+    # positiva y FV positivo). FCFF DCF requiere NOPAT positivo normalizado ⇒ no valorable por este método.
+    if med_margin <= 0:
+        return fail(f"margen operativo mediano no positivo ({med_margin*100:.1f}%): pérdida ⇒ no valorable por FCFF")
+    op_margin = _clamp(med_margin, MARGIN_MIN, MARGIN_MAX)
 
     # tasa efectiva normalizada (impuesto/pretax si hay; si no, 21% US por defecto documentado)
     tax = by.get("tax", {}); ni = by.get("net_income", {})
@@ -206,14 +212,18 @@ def normalize(ticker: str, rec: Reconciled, price_local: Optional[float], adr: i
     gT = min(RF[ccy], GDP_NOMINAL_LT[ccy])
 
     # capital invertido = equity + deuda − caja. Preferir el campo precomputado SOLO si es positivo; si es
-    # nulo o no positivo (p. ej. invested_capital roto de un 20-F parcial, como el −1,9B TWD de TSM), usar
-    # el cálculo equity+deuda−caja desde las fuentes coherentes (evita capital invertido negativo espurio).
+    # nulo o no positivo, recalcular equity+deuda−caja. (El origen del IC negativo de TSM era una MEZCLA de
+    # monedas en el selector EDGAR —equity USD con caja TWD—, corregida aguas arriba con el filtro de unidad
+    # en _pick_pit; esta guarda queda como defensa secundaria, no como explicación del fenómeno.)
     eq = (_last(by.get("equity", {})) or (None, None))[1]
     debt = (_last(by.get("total_debt", {})) or (None, None))[1]
     cash = (_last(by.get("cash", {})) or (None, None))[1]
     ic_field = (_last(by.get("invested_capital", {})) or (None, None))[1]
     ic_calc = (eq + debt - (cash or 0)) if (eq is not None and debt is not None) else None
     ic = ic_field if (ic_field is not None and ic_field > 0) else ic_calc
+    # ausencia ≠ 0: si falta caja o deuda, net_debt usa 0 pero se MARCA el hueco (control de revisión aguas
+    # abajo), para no presentar un balance incompleto como completo (Codex P0 #9).
+    balance_incompleto = (debt is None) or (cash is None)
     net_debt = (debt or 0) - (cash or 0)
 
     # NOPAT y ROIC
@@ -246,7 +256,11 @@ def normalize(ticker: str, rec: Reconciled, price_local: Optional[float], adr: i
     beta = _clamp(BETA.get(ticker, BETA_DEFAULT), 0.5, 2.2)
     kd_pre = RF[ccy] + 0.01
     kd_after_tax = _clamp(kd_pre, RF[ccy], RF[ccy] + KD_SPREAD_MAX) * (1 - tax_eff)
-    mktcap = (price_local or 0) * sh if price_local else None
+    # Capitalización en MONEDA LOCAL, homogénea con la deuda (Codex P0 #2). Para ADRs, price_local es el
+    # precio del ADR en USD y `sh` son acciones ORDINARIAS locales: mktcap_local = precio_ADR × (ordinarias/
+    # ratio_ADR) ÷ FX(local→USD). Para US (adr=1, ccy USD, fx=1) queda precio×acciones, sin cambio.
+    fx_local = FX_TO_USD.get(ccy, 1.0)
+    mktcap = (price_local * (sh / max(adr, 1)) / fx_local) if (price_local and sh and fx_local) else None
     if mktcap and mktcap > 0 and debt is not None:
         tot = mktcap + max(debt, 0)
         w_equity = mktcap / tot; w_debt = max(debt, 0) / tot
@@ -260,6 +274,7 @@ def normalize(ticker: str, rec: Reconciled, price_local: Optional[float], adr: i
                    discrepancies=dict(rec.discrepancies), reasons=reasons)
     n.fcf_real_recent = fcf_real_recent
     n.split_flag = split_flag
+    n.balance_incompleto = balance_incompleto
     return n
 
 
@@ -502,12 +517,15 @@ def value_from_norm(n: NormInputs, price_local: Optional[float], adr: int = 1) -
     # DATOS DUDOSOS (item 5): split de acciones no ajustado en la serie ⇒ precio/acciones en verificación.
     controls.append(("datos_precio_acciones", not n.split_flag,
                      "ok" if not n.split_flag else "posible split no ajustado (precio/acciones en verificación)"))
+    # BALANCE INCOMPLETO (Codex P0 #9): caja o deuda ausentes ⇒ net_debt usó 0; se marca para revisión.
+    controls.append(("balance_completo", not getattr(n, "balance_incompleto", False),
+                     "ok" if not getattr(n, "balance_incompleto", False) else "caja o deuda ausente (net_debt asumió 0)"))
 
     hard_fail = [c for c in controls if not c[1] and c[0] in
                  ("metodo_apropiado", "WACC>gT", "reinversion_vs_ROIC", "margen_operativo_plausible", "acciones_escala")]
     review = [c for c in controls if not c[1] and c[0] in
               ("peso_terminal", "FCFF_vs_FCFE", "margen_no_extremo", "fuentes_consistentes",
-               "FCFF_proy_vs_FCF_real_diag", "datos_precio_acciones")]
+               "FCFF_proy_vs_FCF_real_diag", "datos_precio_acciones", "balance_completo")]
     # "consistente" = pasa los controles ARITMÉTICOS (no es validación económica ni predictiva: eso exige
     # backtest/track record, pendiente). Solo lo consistente es accionable; el resto queda bloqueado.
     validated = not hard_fail and not review

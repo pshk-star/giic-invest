@@ -95,9 +95,11 @@ export function modelDisagreement(v: Adv3Valuation | undefined): { material: boo
 }
 
 // Valoración efectiva: delega en la POLÍTICA ÚNICA (productivo primario; FCFF solo fallback bajo flag).
-export function effectiveMargin(v: Adv3Valuation | undefined, opts?: PolicyOpts): { margin: number | null; conf: Conf; source: PositionDecision["marginSource"]; note: string } {
+export function effectiveMargin(v: Adv3Valuation | undefined, opts?: PolicyOpts): { margin: number | null; conf: Conf; source: PositionDecision["marginSource"]; note: string; blocked: boolean } {
   const g = governingValuation(v, opts);
-  return { margin: g.margin, conf: g.conf, source: g.source, note: g.note };
+  // Propagar el estado de BLOQUEO (Codex P0 #6/#12): una valoración bloqueada no habilita compra NI venta NI
+  // recorte por Fair Value. Antes se descartaba g.blocked y se generaban reducciones sobre FV bloqueado.
+  return { margin: g.margin, conf: g.conf, source: g.source, note: g.note, blocked: !!g.blocked };
 }
 
 export function isEtf(a?: string | null) { return ["etf", "fund", "etn", "mutualfund"].includes((a ?? "").toLowerCase()); }
@@ -149,6 +151,10 @@ export function buildAdvisor3(inp: Adv3Input, asOf = new Date().toISOString().sl
     } else if (isEtf(p.assetClass)) {
       action = overSector ? "REVISAR" : "MANTENER"; factores.push("vehículo");
       motivos.push(overSector ? "Vehículo que agrava concentración sectorial → revisar." : "Vehículo diversificado dentro de límites: cumple su rol (se evalúa por cartera, no por DCF).");
+    } else if (em.blocked) {
+      // METODOLOGÍA BLOQUEADA (Codex P0 #6/#12): no se concluye compra, venta ni recorte por Fair Value.
+      action = "REVISAR"; factores.push("metodología-bloqueada");
+      motivos.push(`Valoración con metodología no validada/bloqueada (${em.note}): no se recomienda comprar, vender ni recortar por Fair Value. La gestión de concentración/riesgo, si procede, exige justificación independiente del FV.`);
     } else if (em.margin == null) {
       action = "REVISAR"; factores.push("sin-valoración");
       motivos.push(`Sin valoración concluyente (${em.note}).`);
