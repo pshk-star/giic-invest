@@ -34,6 +34,10 @@ def run_checks(provider_name: str = "free") -> dict:
         kwargs["user_agent"] = ua
     provider = get_provider(provider_name, **kwargs)
     today = date.today()
+    # Self-test OFFLINE determinista: con datos de muestra, evaluar contra la 'as_of' del propio dato
+    # (fechas fijas), no contra el reloj, para que el harness no caduque al pasar los días.
+    if provider_name == "sample" and getattr(provider, "as_of", None):
+        today = provider.as_of
     checks = []
 
     def add(name, ok, detail):

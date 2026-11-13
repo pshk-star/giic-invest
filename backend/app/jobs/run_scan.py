@@ -67,6 +67,12 @@ def execute(provider_name: str = "free", top: int = 50, dry_run: bool = False,
         kwargs["edgar_user_agent"] = ua
         kwargs["user_agent"] = ua
     provider = get_provider(provider_name, **kwargs)
+    # Self-test OFFLINE determinista: con datos de muestra (fechas fijas) la evaluación se ancla a la
+    # 'as_of' del propio dato, no al reloj. Así el dry-run/self-test no caduca al pasar los días (si no,
+    # los datos de muestra quedan 'rancios' respecto a hoy y el ranking sale vacío). Proveedores reales
+    # siguen usando la fecha real. No afecta producción (que nunca usa 'sample').
+    if provider_name == "sample" and getattr(provider, "as_of", None):
+        today = provider.as_of
 
     # Writer temprano (si corresponde) para leer tickers de la cartera y extender el
     # universo: así los instrumentos que el usuario tiene reciben precio e identificación.
