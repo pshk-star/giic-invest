@@ -573,6 +573,7 @@ def value_from_norm(n: NormInputs, price_local: Optional[float], adr: int = 1) -
                 "roic_medio": round(n.roic, 4), "roiic_asumido": round(roiic_asm, 4),
                 "roiic_base": roiic_basis, "roiic_observado": n.roiic_observed,
                 "fcf_real_recent": n.fcf_real_recent,
+                "market_cap_local": price_local * n.shares / (adr * fx) if price_local else None,
                 "price_currency": "USD", "shares_basis": "ordinary",
                 "w_equity_exact": n.w_equity, "w_debt_exact": n.w_debt,
                 "kd_after_tax": n.kd_after_tax, "wacc_exact": wacc,

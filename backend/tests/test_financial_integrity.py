@@ -63,6 +63,16 @@ def test_latest_complete_window_beats_older_sec_window():
     assert out.result.inputs["revenue0"] == 160e9
 
 
+def test_equivalent_vendor_month_ends_keep_sec_fiscal_dates():
+    ends = ("2025-12-28", "2026-03-29", "2026-06-28", "2026-09-27")
+    starts = ("2025-09-29", "2025-12-29", "2026-03-30", "2026-06-29")
+    sec = {"NetCashProvidedByUsedInOperatingActivities": {"units": {"USD": [
+        {"start": s, "end": e, "val": 10e9, "filed": "2026-11-01", "form": "10-Q"}
+        for s, e in zip(starts, ends)]}}}
+    r = ttm_by_quarters(sec, quarters(), {"10-Q"})
+    assert r["ventana"] == list(ends)
+
+
 def test_ttm_operating_loss_never_becomes_positive_margin():
     out, _ = evaluate_ttm("LOSS", _series(), {}, [], quarters(loss=True), 50)
     assert out.result is None

@@ -133,8 +133,9 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
                     "controles_ttm": ttm_info.get("controles_ttm"), "official_err": official_err},
             "_diag": {"revenue0": r.inputs.get("revenue0"), "shares": r.inputs.get("shares"),
                       "nopat0": r.inputs.get("nopat0"), "invested_capital": r.inputs.get("invested_capital"),
-                      "op_margin": r.inputs.get("op_margin"), "mktcap_implied": (r.price_local or 0) * (r.inputs.get("shares") or 0)},
+                      "op_margin": r.inputs.get("op_margin"), "mktcap_implied": r.inputs.get("market_cap_local"), "mktcap_currency": r.ccy},
         }
+        results[t]["audit_inputs"] = r.inputs
         # FV gobernante: payload con forma CompanyValuation (el frontend lee el snapshot más reciente por
         # ticker). UN solo modelo gobernante "motor_v2" con estado de validación. No mezcla modelos viejos.
         conf = "media" if r.validated else "baja"

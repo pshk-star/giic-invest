@@ -247,6 +247,12 @@ def ttm_by_quarters(usg: dict, eodhd_obj: dict, valid_forms: set, currency=None)
         return {"ttm": {}, "controles": [("ttm_cuatro_trimestres_contiguos", False,
                 "sin cuatro trimestres contiguos")], "fin_ttm": None, "ventana": []}
     window = max(candidates, key=lambda w: w[-1])
+    # Vendor calendar-month labels within the fiscal tolerance are the same quarters,
+    # not a newer reporting period. Prefer SEC's actual fiscal ends in that case.
+    fiscal = [w for w in candidates if all(e in sec_q["ocf"][0] for e in w)
+              and all(abs((_d(a) - _d(b)).days) <= 8 for a, b in zip(w, window))]
+    if fiscal:
+        window = max(fiscal, key=lambda w: w[-1])
     latest = max(list(sec_q["ocf"][0]) + list(eod_q.get("ocf", {})))
     incomplete_recent = (_d(latest) - _d(window[-1])).days > 8
     out: Dict[str, dict] = {}
