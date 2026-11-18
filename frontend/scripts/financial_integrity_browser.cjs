@@ -22,7 +22,7 @@ const path = require('node:path');
   if(u.pathname.endsWith('/transactions')) body=[{id:'1',user_id:uid,ticker:'NVDA',side:'buy',qty:40,quantity:40,price:50,fees:0,currency:'USD',executed_at:'2026-01-02',trade_date:'2026-01-02',date:'2026-01-02',type:'buy'}];
   if(u.pathname.endsWith('/instruments')) body=[{ticker:'NVDA',name:'Fixture NVDA',currency:'USD',asset_class:'equity',sector:'Tech',status:'active'}];
   if(u.pathname.endsWith('/prices')) body=[{ticker:'NVDA',close:50,currency:'USD',as_of:'2026-11-13'}];
-  if(u.pathname.endsWith('/valuation_snapshots')) body=u.searchParams.get('select')==='id'?[{id:2}]:[{id:2,ticker:'NVDA',payload:invalid},{id:1,ticker:'NVDA',payload:{...invalid,status:'consistente',modelos:[{modelo:'motor_v2',status:'consistente',fair_value_usd:500,margen_seguridad_pct:900,metodologia_validada:true,confianza:'alta'}]}}];
+  if(u.pathname.endsWith('/valuation_snapshots')) body=u.searchParams.get('select')==='id'?[{id:2}]:[{id:2,ticker:'NVDA',payload:{...invalid,run_id:'R2',run_kind:'full'}},{id:1,ticker:'NVDA',payload:{...invalid,status:'consistente',run_id:'R1',run_kind:'full',modelos:[{modelo:'motor_v2',status:'consistente',fair_value_usd:500,margen_seguridad_pct:900,metodologia_validada:true,confianza:'alta'}]}}];
   await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(body),headers:{'access-control-allow-origin':'*'}});
  });
  for(const path of ['/advisor','/asesor','/scanner','/advisor3','/research/NVDA','/fundamental','/p30']){
