@@ -16,7 +16,7 @@ Vigencia, medida en tiempo UTC transcurrido:
 | Precio de cada emisor | 7 días desde `audit_inputs.price_date` | Emisor `no_valorable`, sin FV vigente |
 | Último cierre TTM | 185 días desde `ttm.fin_ttm` | Emisor `no_valorable`, sin FV vigente |
 
-Son límites operativos de admisión, no supuestos de valoración. 96 horas toleran fines de semana; 7 días impiden precios indefinidamente arrastrados; 185 días son un techo conservador para un TTM trimestral. No verifican que no exista un informe fiscal más reciente (esa comparación con fuentes y la antigüedad del balance son trabajo pendiente). Fechas ausentes, inválidas o futuras bloquean. El historial y los resultados brutos calculados permanecen intactos. El objeto admitido tiene además `feed_valid_until`: el adaptador de Advisor vuelve a comprobarlo si se reutiliza posteriormente.
+Son límites operativos de admisión, no supuestos de valoración. 96 horas toleran fines de semana; 7 días impiden precios indefinidamente arrastrados; 185 días son un techo conservador para un TTM trimestral. No verifican que no exista un informe fiscal más reciente (esa comparación con fuentes y la antigüedad del balance son trabajo pendiente). Fechas ausentes, inválidas o futuras bloquean. El historial y los resultados brutos calculados permanecen intactos. El objeto admitido tiene además `feed_valid_until`: el adaptador y la política de Advisor vuelven a comprobarlo si se reutiliza posteriormente, incluso cuando el input de una decisión ya estaba en memoria.
 
 ## Publicación, fallo y recuperación
 
@@ -70,7 +70,7 @@ CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium npm run test:browser
 ```
 
 - Backend: 493 passed, 1 skipped; incluye replay independiente de NVDA, TSM, META, PFE y ASML sin modificar sus resultados esperados.
-- Frontend: 344 passed / 35 archivos; TypeScript y build Vite correctos (solo aviso existente de tamaño del bundle). CI se enlaza en el PR.
+- Frontend: 345 passed / 35 archivos; TypeScript y build Vite correctos (solo aviso existente de tamaño del bundle). CI se enlaza en el PR.
 - PostgreSQL real en WASM/PGlite: migraciones 0013 + 0014, permisos de ambos roles, cobertura exacta, parciales, retries, historial inmutable y rollback después de insertar el manifiesto mediante fallo de almacenamiento inyectado.
 - Chromium: 15 rutas activas, más caducidad, REST 503 y metodología mixta (22 visitas en total), contra servicios simulados; no es una prueba de la producción desplegada.
 

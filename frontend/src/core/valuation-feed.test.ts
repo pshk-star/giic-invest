@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { latestValuations, readGoverningFeed, valuationInput, type ValuationRun } from "./valuation-feed";
 import { governingValuation, passesValueGate } from "./valuation-policy";
 import universe from '../../../backend/app/jobs/valuation_universe.json';
@@ -65,6 +65,21 @@ describe('P0-A governing publication coverage and freshness',()=>{
   const d=latestValuations(rows(),run,now);
   expect(valuationInput(d.resultados.TSM,now).engineMargin).not.toBeNull();
   expect(valuationInput(d.resultados.TSM,now+97*3600000).engineMargin).toBeNull();
+ });
+ it('cached Advisor inputs cannot buy or recommend a sale after expiry without reloading the feed',()=>{
+  const r=rows();
+  const t=r.find(r=>r.ticker==='TSM')!;
+  t.payload.status='consistente';
+  Object.assign(t.payload.modelos[0],{status:'consistente',metodologia_validada:true,confianza:'alta',margen_seguridad_pct:20});
+  const clock=vi.spyOn(Date,'now').mockReturnValue(now);
+  try {
+   const input=valuationInput(latestValuations(r,run,now).resultados.TSM,now);
+   expect(passesValueGate(input,.1)).toBe(true);
+   clock.mockReturnValue(now+97*3600000);
+   expect(passesValueGate(input,.1)).toBe(false);
+   expect(governingValuation(input).margin).toBeNull();
+   expect(governingValuation({...input,engineMargin:-.3}).blocked).toBe(true);
+  }finally{clock.mockRestore();}
  });
  it('pins an immutable manifest before reading only its rows',async()=>{
   const requests: any[]=[];

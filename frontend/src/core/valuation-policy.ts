@@ -11,6 +11,7 @@ export type GovSource = "motor_v2" | "productivo" | "fcff_fallback" | "fcff(cont
 export type ValTier = "confiable" | "experimental" | "insuficiente";
 
 export interface GovInput {
+  engineValidUntil?: string; // Admission expiry follows cached inputs into every decision.
   // MOTOR v2 (FCFF DCF data-driven reconciliado) — FV ÚNICO GOBERNANTE con estado de validación.
   // Cuando existe, MANDA sobre todo lo demás. Accionable SOLO si engineStatus === "consistente"
   // (consistencia ARITMÉTICA; no implica validación económica/predictiva).
@@ -54,6 +55,10 @@ function guardExtreme(r: GovResult): GovResult {
 }
 
 export function governingValuation(v: GovInput | undefined, opts?: PolicyOpts): GovResult {
+  if (v?.engineValidUntil && (!Number.isFinite(Date.parse(v.engineValidUntil)) || Date.now() > Date.parse(v.engineValidUntil))) {
+    const reason = "publicación o datos caducados: requiere una corrida completa vigente";
+    return {margin:null, conf:null, source:"motor_v2", tier:"insuficiente", note:reason, blocked:true, blockReason:reason};
+  }
   const fallback = !!opts?.fcffFallback;
   // Barrera GLOBAL de metodología (item 7): si está explícitamente no validada, cualquier fuente que
   // gobierne queda BLOQUEADA (FV visible e informativo, no accionable). Reversible al validar por backtest.

@@ -80,6 +80,7 @@ export function valuationInput(cv?: CompanyValuation, now = Date.now()): GovInpu
   const finite = typeof m?.fair_value_usd === "number" && Number.isFinite(m.fair_value_usd) && m.fair_value_usd > 0
     && typeof m.margen_seguridad_pct === "number" && Number.isFinite(m.margen_seguridad_pct);
   return {
+    engineValidUntil: cv?.feed_valid_until,
     engineMargin: finite ? m!.margen_seguridad_pct! / 100 : null,
     engineStatus: cv?.status !== "no_valorable" && finite && m?.disponible !== false ? (m?.status ?? "no_valorable") : "no_valorable",
     engineConfidence: m?.confianza === "alta" || m?.confianza === "media" ? m.confianza : "baja",
