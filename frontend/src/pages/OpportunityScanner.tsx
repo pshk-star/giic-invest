@@ -1,3 +1,4 @@
+import { valuationInput } from "../core/valuation-feed";
 // P2.2 — Opportunity Scanner (EXPERIMENTAL, bajo feature flag VITE_FF_SCANNER). Ensambla el universo
 // que GIIC ya monitorea (v_latest_scan ∪ cartera ∪ ETF), valoración (P1.9), fundamentales, riesgo
 // (price_history) y look-through (X-ray), y renderiza el motor buildScanner. ALIMENTA a Advisor 3.0
@@ -16,7 +17,6 @@ import { buildAllocationPlan } from "../core/allocation-planner";
 
 const FF_ALLOC = import.meta.env.VITE_FF_ALLOC === "1";
 import type { Adv3Valuation, Adv3Position } from "../core/advisor3";
-import type { CompanyValuation } from "../core/fundval";
 import { money, pct, num } from "../format";
 
 const ETF = ["etf", "fund", "etn", "mutualfund"];
@@ -36,11 +36,6 @@ function kindOf(assetClass: string | null | undefined, sector: string | null | u
   return "empresa";
 }
 
-function modelMargin(cv: CompanyValuation | undefined, modelo: string): { m: number | null; c: string | null } {
-  const b = cv?.modelos.find((x) => x.modelo === modelo);
-  if (!b || b.disponible === false || b.margen_seguridad_pct == null) return { m: null, c: null };
-  return { m: b.margen_seguridad_pct / 100, c: b.confianza ?? null };
-}
 
 export function OpportunityScanner() {
   const [raw, setRaw] = useState<ScanInput | null>(null);
@@ -94,12 +89,9 @@ export function OpportunityScanner() {
       const sectorOf = (t: string) => instruments[t]?.sector ?? (scan.find((s) => s.ticker.toUpperCase() === t)?.sector ?? null);
       for (const t of universe) {
         const cv = fv.resultados[t];
-        const prod = modelMargin(cv, "DCF_productivo");
-        const giic = modelMargin(cv, "FCFF_GIIC");
-        valuation[t] = {
-          productiveMargin: prod.m, productiveConfidence: prod.m != null ? "media" : null,
-          fcffMargin: giic.m, fcffConfidence: (giic.c as any) ?? null, priceComparable: true,
-        };
+
+
+        valuation[t] = valuationInput(cv);
         const f = fundamentals[t] as any;
         scanFund[t] = { roic: f?.roic ?? null, revGrowth: f?.rev_growth_yoy ?? null, netMargin: f?.net_margin ?? null,
           operatingMargin: f?.operating_margin ?? null, fcfTtm: f?.fcf_ttm ?? null };
@@ -117,6 +109,7 @@ export function OpportunityScanner() {
         weight: total > 0 ? (p.marketValue ?? 0) / total : 0,
       }));
       const input: ScanInput = {
+        methodologyValidated: Object.values(valuation).length > 0 && Object.values(valuation).every(v => v.engineMethodologyValidated === true),
         candidates, valuation, fundamentals: scanFund,
         portfolio: { positions, cash: cashGuess }, priceHistory, etfLookthrough,
         contributions: [1000, 3000],

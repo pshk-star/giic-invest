@@ -1,9 +1,9 @@
-"""Corre el motor de valoración v2 sobre las 11 empresas con datos REALES reconciliados (EODHD+EDGAR).
+"""Corre el motor de valoración v2 sobre el universo completo de 38 empresas con datos REALES reconciliados (EODHD+EDGAR).
 
 Imprime, por empresa, todo lo necesario para reproducir el Fair Value: precio+fecha, FV, WACC, Ke,
 crecimiento explícito/terminal, FCF base (FCFF y FCFE), ROIC, reinversión, peso del valor terminal,
 margen de seguridad, sensibilidad, divergencia de reconciliación, controles, estado de validación y la
-fuente de cada variable. Opción --write para persistir el FV gobernante a pit_snapshots.
+fuente de cada variable. Opción --write para publicar el FV gobernante en valuation_snapshots.
 
 Uso (CI): SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY (+ EODHD_API_KEY opcional) en env.
 """
@@ -13,13 +13,17 @@ import argparse
 import json
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import date
 from typing import Dict, List, Optional
+from uuid import uuid4
+from pathlib import Path
 
-from app.research.valuation_engine import evaluate_ttm, METHODOLOGY_VALIDATED
+from app.research.valuation_engine import evaluate_ttm, METHODOLOGY_VALIDATED, EngineOutput
 from app.research.edgar_series import build_series_from_rows, fetch_edgar_rows
 
-ELEVEN = ["NVDA", "META", "NFLX", "TSM", "ASML", "PFE", "AMGN", "ADBE", "LOW", "HD", "UPS"]
+# Shared versioned coverage contract; also imported by the frontend.
+UNIVERSE = json.loads(Path(__file__).with_name("valuation_universe.json").read_text())
+FULL_UNIVERSE = UNIVERSE["tickers"]
 
 
 def _eodhd_obj(ticker: str):
@@ -31,12 +35,33 @@ def _eodhd_obj(ticker: str):
         conn = EodhdFundamentalsConnector(api_key=os.getenv("EODHD_API_KEY", ""))
         _s, _ad, obj = conn._resolve(ticker)
         series = eodhd_annual_series_full(obj) if obj else {"currency": None, "by_field": {}}
+        # A fallback US ADR may carry ADR counts, not ordinary shares: never guess.
+        series["shares_basis"] = "unverified_adr" if _ad != 1 and (_s or "").endswith(".US") else "ordinary"
+        series["provider_symbol"] = _s
         return series, (obj or {})
     except Exception:
         return {"currency": None, "by_field": {}}, {}
 
 
-def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
+def _tombstone(t: str, reason: str, ccy=None, px=None) -> dict:
+    """Fila no_valorable explícita (lápida): invalida cualquier FV anterior del ticker sin dejar hueco."""
+    return {"ticker": t, "payload": {
+        "ticker": t, "ccy": ccy, "precio": px, "origen": "motor_v2", "gobernante": True,
+        "status": "no_valorable", "engine_version": "financial_integrity_p0", "error": reason,
+        "modelos": [{"modelo": "motor_v2", "disponible": False, "status": "no_valorable",
+                     "fair_value_usd": None, "accionable": False, "review_block": True,
+                     "metodologia_validada": False, "review_reasons": [reason]}]}}
+
+
+def run(tickers: List[str], write: bool, snapshot_date: Optional[str], full: bool = False) -> dict:
+    run_kind = "full" if full else "partial"
+    if full and tickers and set(t.upper() for t in tickers) != set(FULL_UNIVERSE):
+        raise ValueError("full requires the exact governed universe; use partial for a subset")
+    if full:
+        tickers = list(FULL_UNIVERSE)   # una corrida completa cubre SIEMPRE todo el universo gobernado
+    tickers = list(dict.fromkeys(t.strip().upper() for t in tickers))
+    if not tickers or any(not t or not all(c.isalnum() or c in ".-" for c in t) for t in tickers):
+        raise ValueError("nonempty valid ticker list required")
     url = os.getenv("SUPABASE_URL", ""); srk = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
     from app.jobs.supabase_writer import SupabaseWriter
     w = SupabaseWriter(url, srk)
@@ -59,22 +84,24 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
 
     today = date.today().isoformat()
     snap = snapshot_date or today
+    run_id = str(uuid4())
     results: Dict[str, dict] = {}
     rows_to_write: List[dict] = []
-    for t in tickers:
+
+    def value_one(t):
         meta = instruments.get(t, {})
         try:
-            adr = int(meta.get("adr_ratio") or 1) or 1
+            adr = float(meta["adr_ratio"]) if meta.get("adr_ratio") is not None else 1.0
         except (TypeError, ValueError):
-            adr = 1
+            adr = float("nan")
         pr = prices.get(t) or {}
         px = pr.get("close")
+        eod, eod_obj = _eodhd_obj(t)
         try:
             erows = fetch_edgar_rows(w, t)
-            edgar = build_series_from_rows(erows) if erows else {"currency": None, "by_field": {}}
+            edgar = build_series_from_rows(erows, reporting_currency=eod.get("currency")) if erows else {"currency": None, "by_field": {}}
         except Exception as e:
             erows = []; edgar = {"currency": None, "by_field": {}}
-        eod, eod_obj = _eodhd_obj(t)
         official = None; official_err = None
         if prov is not None:
             try:
@@ -86,12 +113,26 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
                 official = None; official_err = f"{type(e).__name__}: {str(e)[:140]}"
         else:
             official_err = "prov=None"
-        out, ttm_info = evaluate_ttm(t, edgar, eod, erows, eod_obj, price_local=px, adr=adr, official_ttm=official)
+        try:
+            out, ttm_info = evaluate_ttm(t, edgar, eod, erows, eod_obj, price_local=px, adr=adr,
+                                         official_ttm=official, price_currency=pr.get("currency"),
+                                         shares_basis=eod.get("shares_basis", "ordinary"))
+        except (ValueError, TypeError, KeyError, ZeroDivisionError) as exc:
+            out = EngineOutput(t, "no_valorable", None, error=f"input inválido: {type(exc).__name__}")
+            ttm_info = {}
+
         if out.result is None:
             results[t] = {"status": out.status, "error": out.error,
                           "edgar_campos": sorted((edgar.get("by_field") or {}).keys()),
                           "eodhd_campos": sorted((eod.get("by_field") or {}).keys())}
-            continue
+            rows_to_write.append({"ticker": t, "payload": {
+                "ticker": t, "ccy": eod.get("currency") or edgar.get("currency"), "precio": px,
+                "origen": "motor_v2", "gobernante": True, "status": "no_valorable",
+                "engine_version": "financial_integrity_p0", "error": out.error,
+                "modelos": [{"modelo": "motor_v2", "disponible": False, "status": "no_valorable",
+                             "fair_value_usd": None, "accionable": False, "review_block": True,
+                             "metodologia_validada": False, "review_reasons": [out.error]}]}})
+            return
         r = out.result
         results[t] = {
             "status": r.status, "consistente_aritmeticamente": r.validated,
@@ -113,10 +154,11 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
                     "controles_ttm": ttm_info.get("controles_ttm"), "official_err": official_err},
             "_diag": {"revenue0": r.inputs.get("revenue0"), "shares": r.inputs.get("shares"),
                       "nopat0": r.inputs.get("nopat0"), "invested_capital": r.inputs.get("invested_capital"),
-                      "op_margin": r.inputs.get("op_margin"), "mktcap_implied": (r.price_local or 0) * (r.inputs.get("shares") or 0)},
+                      "op_margin": r.inputs.get("op_margin"), "mktcap_implied": r.inputs.get("market_cap_local"), "mktcap_currency": r.ccy},
         }
+        results[t]["audit_inputs"] = r.inputs
         # FV gobernante: payload con forma CompanyValuation (el frontend lee el snapshot más reciente por
-        # ticker). UN solo modelo gobernante "motor_v2" con estado de validación. No mezcla modelos viejos.
+        # corrida completa). UN solo modelo gobernante "motor_v2" con estado de validación. No mezcla modelos viejos.
         conf = "media" if r.validated else "baja"
         model_block = {
             "modelo": "motor_v2", "disponible": True,
@@ -143,6 +185,9 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
                             "params": r.inputs.get("params_date")},
             "nota": "Motor v2: FCFF DCF data-driven reconciliado. FV único gobernante con estado de validación.",
         }
+        if r.status == "no_valorable":
+            model_block.update(disponible=False, fair_value_usd=None, margen_seguridad_pct=None,
+                               escenarios=None, accionable=False, review_block=True)
         payload = {
             "ticker": t, "ccy": r.ccy, "precio": r.price_local, "gT_pct": results[t]["gT_pct"],
             "origen": "motor_v2", "gobernante": True, "status": r.status, "consistente_aritmeticamente": r.validated,
@@ -152,40 +197,84 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str]) -> dict:
                             "divergencia_fcff_vs_fcfe_pct")},
             "ttm": results[t]["ttm"], "base_periodo": "TTM" if ttm_info.get("campos_ttm_usados") else "FY",
             "sensibilidad": r.sensitivity,
-            "no_calibrado_a_mercado": False,
+            "no_calibrado_a_mercado": True,
+            "engine_version": "financial_integrity_p0", "code_revision": os.getenv("GITHUB_SHA", "unknown"),
+            "audit_inputs": {**r.inputs, "provider_symbol": eod.get("provider_symbol"), "price_date": pr.get("as_of")},
         }
-        rev_periods = sorted((edgar.get("by_field", {}).get("revenue") or eod.get("by_field", {}).get("revenue") or {}).keys())
-        obs_date = rev_periods[-1] if rev_periods else today
-        rows_to_write.append({"kind": "fundamental_valuation", "ticker": t, "observation_date": obs_date,
-                              "published_at": today, "snapshot_date": snap,
-                              "captured_at": datetime.now(timezone.utc).isoformat(),
-                              "source": "motor_v2", "data_version": today, "payload": payload})
+        rows_to_write.append({"ticker": t, "payload": payload})
+
+    # GUARDA DE COBERTURA (Codex P0-A): todo ticker solicitado produce EXACTAMENTE una fila. Cualquier
+    # excepción no prevista emite una lápida no_valorable (no se cae en silencio → cierra la hipótesis D).
+    for t in tickers:
+        n_before = len(rows_to_write)
+        try:
+            value_one(t)
+        except Exception as e:
+            del rows_to_write[n_before:]; results.pop(t, None)
+            reason = f"excepción no controlada: {type(e).__name__}: {str(e)[:120]}"
+            results[t] = {"status": "no_valorable", "error": reason}
+            rows_to_write.append(_tombstone(t, reason))
+        if len(rows_to_write) == n_before:   # value_one no emitió fila: lápida defensiva
+            results[t] = {"status": "no_valorable", "error": "sin fila emitida"}
+            rows_to_write.append(_tombstone(t, "sin fila emitida"))
+
+    # Sella run_kind + run_id en cada payload (el feed distingue corrida completa de parcial).
+    for row in rows_to_write:
+        row["payload"]["run_kind"] = run_kind
+        row["payload"]["run_id"] = run_id
+        row["payload"]["gobernante"] = full
+        if not full:
+            for model in row["payload"].get("modelos", []):
+                model["accionable"] = False
+                model["review_block"] = True
+                model["review_reasons"] = model.get("review_reasons", []) + ["corrida_parcial_diagnostica"]
+
+    produced = {row["ticker"] for row in rows_to_write}
+    # INTEGRIDAD: no publicar un universo INCOMPLETO como corrida completa (fallo/interrupción ⇒ aborta).
+    coverage_err = None
+    if full and (produced != set(FULL_UNIVERSE) or len(rows_to_write) != len(tickers)):
+        faltan = sorted(set(FULL_UNIVERSE) - produced)
+        coverage_err = f"corrida COMPLETA incompleta: faltan {len(faltan)} ({faltan[:8]}…); no se publica"
+    elif produced != set(tickers) or len(rows_to_write) != len(tickers) or set(results) != set(tickers):
+        coverage_err = f"cobertura inconsistente: solicitados {len(tickers)} vs producidos {len(produced)}"
 
     written = 0; write_err = None
-    if write and rows_to_write:
+    if write and coverage_err:
+        write_err = coverage_err   # corrida completa incompleta ⇒ NO se publica nada (atómico)
+    elif write and rows_to_write:
         try:
-            written = w.insert_append("pit_snapshots", rows_to_write,
-                                      on_conflict="kind,ticker,observation_date,snapshot_date")
+            written = w.publish_valuations(run_id, rows_to_write, {"run_kind": run_kind,
+                        "universe_version": UNIVERSE["version"], "requested_tickers": sorted(tickers)})
         except Exception as e:
             write_err = f"{type(e).__name__}: {str(e)[:160]}"
 
     tally = {"consistente": 0, "en_revision": 0, "no_valorable": 0}
     for v in results.values():
         tally[v.get("status", "no_valorable")] = tally.get(v.get("status", "no_valorable"), 0) + 1
-    return {"as_of": today, "snapshot_date": snap, "params": "2026-11",
-            "tally": tally, "escritura": {"intentada": write, "insertadas": written, "error": write_err},
+    return {"run_id": run_id, "run_kind": run_kind, "as_of": today, "snapshot_date": snap, "params": "2026-11",
+            "tally": tally, "cobertura": {"solicitados": len(tickers), "producidos": len(produced),
+                                          "completa": full, "error": coverage_err},
+            "escritura": {"intentada": write, "insertadas": written, "error": write_err},
             "resultados": results}
 
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--write", action="store_true")
+    p.add_argument("--full", action="store_true", help="corrida COMPLETA del universo gobernado (38)")
     p.add_argument("--snapshot-date", default=None)
     p.add_argument("--tickers", nargs="*", default=None)
     args = p.parse_args(argv)
-    out = run(args.tickers or ELEVEN, write=args.write, snapshot_date=args.snapshot_date)
+    try:
+        # No explicit ticker list = full universe; an explicit list is diagnostic/partial.
+        out = run(args.tickers if args.tickers is not None else [], write=args.write,
+                  snapshot_date=args.snapshot_date, full=args.full or args.tickers is None)
+    except Exception as exc:
+        print(json.dumps({"status": "failed", "error": f"{type(exc).__name__}: {str(exc)[:160]}",
+                          "escritura": {"insertadas": 0}}, ensure_ascii=False))
+        return 1
     print(json.dumps(out, ensure_ascii=False, indent=1, default=str))
-    return 0
+    return 1 if (out["escritura"]["error"] or out["cobertura"]["error"]) else 0
 
 
 if __name__ == "__main__":

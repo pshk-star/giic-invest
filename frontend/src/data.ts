@@ -1,6 +1,7 @@
 // Acceso a datos vía Supabase (con RLS). La cartera es privada por usuario;
 // mercado y scanner son de solo lectura para autenticados.
 import { supabase } from "./lib/supabase";
+import { readGoverningFeed } from "./core/valuation-feed";
 import type { ETFHolding, Position, PriceInfo } from "./core/analytics";
 import type { InstrumentMeta, Split, Txn } from "./core/portfolio-tx";
 import type { FundamentalsPayload } from "./core/valuation";
@@ -433,9 +434,8 @@ export async function getLatestRun(): Promise<any | null> {
   return data?.[0] ?? null;
 }
 
-// P1.9 — Valoración fundamental (experimental). El payload lo calcula el backend y se guarda en
-// pit_snapshots (kind='fundamental_valuation'); aquí se lee el snapshot MÁS RECIENTE por ticker y
-// se renderiza tal cual (sin recálculo en el frontend).
+// Valuation feed: latest admitted complete publication, immutable rows pinned by run_id.
+// No legacy PIT fallback and no frontend recalculation.
 // P2.6 — registros de decisión (inmutables). Lectura autenticada; el frontend NO escribe (service role).
 export async function getDecisionRecords(): Promise<import("./core/decision-record").DecisionRecord[]> {
   const { data, error } = await supabase
@@ -448,21 +448,16 @@ export async function getDecisionRecords(): Promise<import("./core/decision-reco
 }
 
 export async function getFundamentalValuations(): Promise<import("./core/fundval").FundValPayload> {
-  const { data, error } = await supabase
-    .from("pit_snapshots").select("ticker,snapshot_date,observation_date,captured_at,payload")
-    .eq("kind", "fundamental_valuation")
-    // Gobierna la captura REALMENTE más reciente por hora de escritura (captured_at), no por snapshot_date
-    // (que podría datarse a futuro). Evita que una fecha de snapshot adelantada tape una corrección posterior.
-    .order("captured_at", { ascending: false })
-    .order("snapshot_date", { ascending: false });
-  if (error) throw error;
-  const resultados: Record<string, import("./core/fundval").CompanyValuation> = {};
-  let generado: string | undefined;
-  for (const r of (data ?? []) as any[]) {
-    if (!resultados[r.ticker]) {            // primer visto = captura más reciente
-      resultados[r.ticker] = r.payload;
-      generado = generado ?? r.observation_date ?? r.snapshot_date;
+  return readGoverningFeed(async (table, params) => {
+    let query = supabase.from(table).select(params.select);
+    for (const [key, value] of Object.entries(params)) {
+      if (key === "select") continue;
+      if (key === "order") { const [column, direction] = value.split("."); query = query.order(column, {ascending:direction !== "desc"}); }
+      else if (key === "limit") query = query.limit(Number(value));
+      else if (value.startsWith("eq.")) query = query.eq(key, value.slice(3));
     }
-  }
-  return { resultados, generado, no_calibrado_a_mercado: true };
+    const {data,error} = await query;
+    if (error) throw error;
+    return data ?? [];
+  });
 }

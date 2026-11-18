@@ -42,3 +42,8 @@ jobs:
           VITE_SUPABASE_URL: https://example.supabase.co
           VITE_SUPABASE_ANON_KEY: ci-placeholder
         run: npm run build
+
+      - name: Chromium for financial integration tests
+        run: npx playwright install --with-deps chromium
+      - name: Governing valuation browser routes (mock services)
+        run: npm run test:browser

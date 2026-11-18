@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from statistics import median
+import math
 from typing import Dict, List, Optional, Tuple
 
 # ----------------------------------------------------------------------------------------------------
@@ -120,6 +121,8 @@ def reconcile(edgar: dict, eodhd: dict) -> Reconciled:
     # moneda: coincidencia de fuentes; si difieren, se nota
     ce = (edgar or {}).get("currency"); co = (eodhd or {}).get("currency")
     ccy = ce or co
+    if ce and co and ce.upper() != co.upper():
+        return Reconciled({}, {}, {}, None, ["monedas de fuentes incompatibles"])
     if ce and co and ce != co:
         notes.append(f"discrepancia de moneda EDGAR={ce} EODHD={co}; se usa {ccy}")
     for f, d in disc.items():
@@ -156,11 +159,14 @@ class NormInputs:
     fcf_real_recent: Optional[float] = None
     roiic_observed: Optional[Dict[str, float]] = None   # {roiic_3y, roiic_all, stable} de balances oficiales
     split_flag: bool = False
+    balance_incompleto: bool = False   # caja o deuda ausentes (no se asumieron 0 en silencio)
     ok: bool = True
     fail: Optional[str] = None
 
 
-def normalize(ticker: str, rec: Reconciled, price_local: Optional[float], adr: int = 1) -> NormInputs:
+def normalize(ticker: str, rec: Reconciled, price_local: Optional[float], adr: float = 1,
+              *, price_currency: str = "USD", shares_basis: str = "ordinary",
+              base_financials: Optional[dict] = None) -> NormInputs:
     by = rec.by_field
     ccy = (rec.currency or "USD").upper()
     nz = lambda *a, **k: None  # placeholder to satisfy linters
@@ -169,22 +175,41 @@ def normalize(ticker: str, rec: Reconciled, price_local: Optional[float], adr: i
         return NormInputs(ticker, ccy, 0, 0, 0, 0, 0, 0, 0, 0, 0, None, BETA.get(ticker, BETA_DEFAULT),
                           0, 1, 0, 0, prov=rec.provenance, reasons=[msg], ok=False, fail=msg)
 
+    if not rec.currency or any("incompatibles" in x for x in rec.notes):
+        return fail("moneda de reporte ausente/incompatible")
+    if price_currency != "USD" or shares_basis != "ordinary":
+        return fail("contrato precio/acciones: exige precio USD y acciones ordinarias")
+    if not isinstance(adr, (float, int)) or not math.isfinite(adr) or adr <= 0:
+        return fail("ratio ADR inválido")
+    if price_local is None:
+        return fail("sin precio para ponderar el WACC; no se asume estructura 90/10")
+    if not math.isfinite(price_local) or price_local <= 0:
+        return fail("precio no finito/positivo")
+    if any(not math.isfinite(v) for values in by.values() for v in values.values()):
+        return fail("dato financiero no finito")
     if ccy not in RF:
         return fail(f"moneda {ccy} sin parámetros de mercado (RF/ERP/FX)")
     rev = by.get("revenue", {})
     lastrev = _last(rev)
     if not lastrev:
         return fail("sin ingresos")
-    revenue0 = lastrev[1]
+    revenue0 = base_financials["revenue"] if base_financials else lastrev[1]
     if revenue0 <= 0:
         return fail("ingresos no positivos")
 
     # margen operativo normalizado (mediana de margen EBIT reciente)
     ebit = by.get("operating_income", {})
     margins = [ebit[p] / rev[p] for p in sorted(rev) if p in ebit and rev[p] > 0]
-    if not margins:
+    if not margins and not base_financials:
         return fail("sin margen operativo (EBIT) en ninguna fuente")
-    op_margin = _clamp(median(margins[-5:]), MARGIN_MIN, MARGIN_MAX)
+    med_margin = base_financials["op_margin"] if base_financials else median(margins[-5:])
+    # Pérdida operativa (margen mediano ≤ 0): NO se trunca a +1% (eso convertiría una pérdida en rentabilidad
+    # positiva y FV positivo). FCFF DCF requiere NOPAT positivo normalizado ⇒ no valorable por este método.
+    if med_margin <= 0:
+        return fail(f"margen operativo mediano no positivo ({med_margin*100:.1f}%): pérdida ⇒ no valorable por FCFF")
+    if not MARGIN_MIN <= med_margin <= MARGIN_MAX:
+        return fail("margen fuera de límites; exige normalización explícita")
+    op_margin = med_margin
 
     # tasa efectiva normalizada (impuesto/pretax si hay; si no, 21% US por defecto documentado)
     tax = by.get("tax", {}); ni = by.get("net_income", {})
@@ -194,7 +219,7 @@ def normalize(ticker: str, rec: Reconciled, price_local: Optional[float], adr: i
             tr = abs(tax[p]) / ebit[p]
             if 0 < tr < 0.6:
                 tax_rates.append(tr)
-    tax_eff = _clamp(median(tax_rates[-5:]) if tax_rates else 0.21, TAX_MIN, TAX_MAX)
+    tax_eff = base_financials["tax_eff"] if base_financials else _clamp(median(tax_rates[-5:]) if tax_rates else 0.21, TAX_MIN, TAX_MAX)
 
     # crecimiento: CAGR de ingresos ventana reciente (≤6 años), acotado; terminal = economía
     rr = _recent(rev, 6)
@@ -206,15 +231,20 @@ def normalize(ticker: str, rec: Reconciled, price_local: Optional[float], adr: i
     gT = min(RF[ccy], GDP_NOMINAL_LT[ccy])
 
     # capital invertido = equity + deuda − caja. Preferir el campo precomputado SOLO si es positivo; si es
-    # nulo o no positivo (p. ej. invested_capital roto de un 20-F parcial, como el −1,9B TWD de TSM), usar
-    # el cálculo equity+deuda−caja desde las fuentes coherentes (evita capital invertido negativo espurio).
+    # nulo o no positivo, recalcular equity+deuda−caja. (El origen del IC negativo de TSM era una MEZCLA de
+    # monedas en el selector EDGAR —equity USD con caja TWD—, corregida aguas arriba con el filtro de unidad
+    # en _pick_pit; esta guarda queda como defensa secundaria, no como explicación del fenómeno.)
     eq = (_last(by.get("equity", {})) or (None, None))[1]
     debt = (_last(by.get("total_debt", {})) or (None, None))[1]
     cash = (_last(by.get("cash", {})) or (None, None))[1]
     ic_field = (_last(by.get("invested_capital", {})) or (None, None))[1]
-    ic_calc = (eq + debt - (cash or 0)) if (eq is not None and debt is not None) else None
+    if debt is None or cash is None:
+        return fail("balance incompleto: caja/deuda ausentes; no se sustituyen por cero")
+    ic_calc = (eq + debt - cash) if eq is not None else None
     ic = ic_field if (ic_field is not None and ic_field > 0) else ic_calc
-    net_debt = (debt or 0) - (cash or 0)
+    # Admission above rejects missing cash/debt; observed zero remains a valid value.
+    balance_incompleto = (debt is None) or (cash is None)
+    net_debt = debt - cash
 
     # NOPAT y ROIC
     nopat0 = revenue0 * op_margin * (1 - tax_eff)
@@ -246,7 +276,11 @@ def normalize(ticker: str, rec: Reconciled, price_local: Optional[float], adr: i
     beta = _clamp(BETA.get(ticker, BETA_DEFAULT), 0.5, 2.2)
     kd_pre = RF[ccy] + 0.01
     kd_after_tax = _clamp(kd_pre, RF[ccy], RF[ccy] + KD_SPREAD_MAX) * (1 - tax_eff)
-    mktcap = (price_local or 0) * sh if price_local else None
+    # Capitalización en MONEDA LOCAL, homogénea con la deuda (Codex P0 #2). Para ADRs, price_local es el
+    # precio del ADR en USD y `sh` son acciones ORDINARIAS locales: mktcap_local = precio_ADR × (ordinarias/
+    # ratio_ADR) ÷ FX(local→USD). Para US (adr=1, ccy USD, fx=1) queda precio×acciones, sin cambio.
+    fx_local = FX_TO_USD.get(ccy, 1.0)
+    mktcap = (price_local * (sh / adr) / fx_local) if (price_local and sh and fx_local) else None
     if mktcap and mktcap > 0 and debt is not None:
         tot = mktcap + max(debt, 0)
         w_equity = mktcap / tot; w_debt = max(debt, 0) / tot
@@ -260,6 +294,7 @@ def normalize(ticker: str, rec: Reconciled, price_local: Optional[float], adr: i
                    discrepancies=dict(rec.discrepancies), reasons=reasons)
     n.fcf_real_recent = fcf_real_recent
     n.split_flag = split_flag
+    n.balance_incompleto = balance_incompleto
     return n
 
 
@@ -502,12 +537,15 @@ def value_from_norm(n: NormInputs, price_local: Optional[float], adr: int = 1) -
     # DATOS DUDOSOS (item 5): split de acciones no ajustado en la serie ⇒ precio/acciones en verificación.
     controls.append(("datos_precio_acciones", not n.split_flag,
                      "ok" if not n.split_flag else "posible split no ajustado (precio/acciones en verificación)"))
+    # Defense for callers that construct NormInputs directly (entry points reject missing balances).
+    controls.append(("balance_completo", not getattr(n, "balance_incompleto", False),
+                     "ok" if not getattr(n, "balance_incompleto", False) else "caja o deuda ausente (net_debt asumió 0)"))
 
     hard_fail = [c for c in controls if not c[1] and c[0] in
                  ("metodo_apropiado", "WACC>gT", "reinversion_vs_ROIC", "margen_operativo_plausible", "acciones_escala")]
     review = [c for c in controls if not c[1] and c[0] in
               ("peso_terminal", "FCFF_vs_FCFE", "margen_no_extremo", "fuentes_consistentes",
-               "FCFF_proy_vs_FCF_real_diag", "datos_precio_acciones")]
+               "FCFF_proy_vs_FCF_real_diag", "datos_precio_acciones", "balance_completo")]
     # "consistente" = pasa los controles ARITMÉTICOS (no es validación económica ni predictiva: eso exige
     # backtest/track record, pendiente). Solo lo consistente es accionable; el resto queda bloqueado.
     validated = not hard_fail and not review
@@ -537,6 +575,11 @@ def value_from_norm(n: NormInputs, price_local: Optional[float], adr: int = 1) -
                 "roic_medio": round(n.roic, 4), "roiic_asumido": round(roiic_asm, 4),
                 "roiic_base": roiic_basis, "roiic_observado": n.roiic_observed,
                 "fcf_real_recent": n.fcf_real_recent,
+                "market_cap_local": price_local * n.shares / (adr * fx) if price_local else None,
+                "price_currency": "USD", "shares_basis": "ordinary",
+                "w_equity_exact": n.w_equity, "w_debt_exact": n.w_debt,
+                "kd_after_tax": n.kd_after_tax, "wacc_exact": wacc,
+                "g1_exact": n.g1, "gT_exact": n.gT,
                 "fx_to_usd": FX_TO_USD.get(n.ccy, 1.0), "provenance": n.prov, "params_date": PARAMS_DATE})
 
 
@@ -549,10 +592,10 @@ class EngineOutput:
 
 
 def evaluate(ticker: str, edgar_series: dict, eodhd_series: dict, price_local: Optional[float],
-             adr: int = 1) -> EngineOutput:
+             adr: float = 1, *, price_currency: str = "USD", shares_basis: str = "ordinary") -> EngineOutput:
     """Orquesta: reconciliar → normalizar → valorar+controles. Devuelve resultado reproducible."""
     rec = reconcile(edgar_series, eodhd_series)
-    n = normalize(ticker, rec, price_local, adr=adr)
+    n = normalize(ticker, rec, price_local, adr=adr, price_currency=price_currency, shares_basis=shares_basis)
     if not n.ok:
         return EngineOutput(ticker, "no_valorable", None, error=n.fail)
     r = value_from_norm(n, price_local, adr=adr)
@@ -560,52 +603,69 @@ def evaluate(ticker: str, edgar_series: dict, eodhd_series: dict, price_local: O
 
 
 def evaluate_ttm(ticker: str, edgar_series: dict, eodhd_series: dict, edgar_rows: list,
-                 eodhd_obj: dict, price_local: Optional[float], adr: int = 1, official_ttm: dict = None):
-    """Igual que evaluate pero usando niveles TTM (últimos doce meses) como AÑO BASE.
+                 eodhd_obj: dict, price_local: Optional[float], adr: float = 1,
+                 official_ttm: dict = None, *, price_currency: str = "USD",
+                 shares_basis: str = "ordinary"):
+    """One admitted TTM window for every fallback; normalize only after choosing the base.
 
-    TTM alimenta ingresos, margen operativo, tasa, NOPAT y el FCF real de referencia; el BALANCE
-    (capital invertido, deuda neta, acciones) viene del último cierre reportado; el CRECIMIENTO, de la
-    historia anual. Si se pasa `official_ttm` (árbitro: estados oficiales SEC), prevalece sobre la
-    reconstrucción EODHD/EDGAR. No ajusta WACC/ROIC/crecimiento para compensar.
+    FY-only histories remain available through evaluate(), explicitly labelled FY by callers.
+    Missing/invalid TTM at this live entry point invalidates the preceding valuation.
     """
-    from app.research.ttm import reconstruct_ttm
+    from app.research.ttm import reconstruct_ttm, valid_quarter_window
     rec = reconcile(edgar_series, eodhd_series)
-    n = normalize(ticker, rec, price_local, adr=adr)
-    if not n.ok:
-        return EngineOutput(ticker, "no_valorable", None, error=n.fail), {"error": n.fail}
-    if official_ttm and official_ttm.get("ttm"):
-        ttm_res = {"ttm": official_ttm["ttm"], "controles": official_ttm.get("controles", []),
-                   "fin_ttm": official_ttm.get("fin_ttm"),
-                   "tiene_ttm_real": bool(official_ttm["ttm"].get("ocf"))}
-    else:
-        ttm_res = reconstruct_ttm(edgar_rows or [], eodhd_obj or {})
-    if official_ttm and official_ttm.get("roiic_observed"):
-        n.roiic_observed = official_ttm["roiic_observed"]   # ROIIC observado de balances oficiales (plurianual)
+    ttm_res = official_ttm if official_ttm and official_ttm.get("ttm") else reconstruct_ttm(edgar_rows or [], eodhd_obj or {}, currency=rec.currency)
+    if official_ttm and not official_ttm.get("ttm"):
+        ttm_res["controles"] = list(ttm_res.get("controles", [])) + list(official_ttm.get("controles", []))
     T = ttm_res.get("ttm", {})
-    rev_ttm = (T.get("revenue") or {}).get("ttm")
-    ebit_ttm = (T.get("operating_income") or {}).get("ttm")
-    tax_ttm = (T.get("tax") or {}).get("ttm")
-    pretax_ttm = (T.get("pretax") or {}).get("ttm")
-    fcf_ttm = (T.get("fcf") or {}).get("ttm")
-    used = []
-    if rev_ttm and rev_ttm > 0:
-        n.revenue0 = rev_ttm; used.append("revenue")
-        if ebit_ttm is not None:
-            n.op_margin = _clamp(ebit_ttm / rev_ttm, MARGIN_MIN, MARGIN_MAX); used.append("operating_income")
-        # tasa efectiva TTM (impuesto/pretax), acotada
-        if tax_ttm is not None and pretax_ttm and pretax_ttm > 0:
-            n.tax_eff = _clamp(abs(tax_ttm) / pretax_ttm, TAX_MIN, TAX_MAX); used.append("tax")
-        n.nopat0 = n.revenue0 * n.op_margin * (1 - n.tax_eff)
-        if n.invested_capital and n.invested_capital > 0:
-            n.roic = _clamp(n.nopat0 / n.invested_capital, ROIC_FLOOR, ROIC_CAP)
-    if fcf_ttm is not None and rev_ttm:
-        n.fcf_real_recent = fcf_ttm; n.hist_fcf_margin = fcf_ttm / rev_ttm; used.append("fcf")
-    # proveniencia TTM por campo + marca de período
+    window = ttm_res.get("ventana", [])
+    required = ("revenue", "operating_income", "tax", "pretax", "ocf", "capex")
+    missing = [f for f in required if (T.get(f) or {}).get("ttm") is None]
+    def reject(msg):
+        return EngineOutput(ticker, "no_valorable", None, error=msg), {"fin_ttm": ttm_res.get("fin_ttm"), "controles_ttm": [msg]}
+    if not valid_quarter_window(window) or missing:
+        return reject("TTM incompleto/no contiguo: " + ",".join(missing))
+    if ttm_res.get("currency") not in (None, rec.currency):
+        return reject("moneda TTM incompatible")
+    vals = {f: T[f]["ttm"] for f in required}
+    if any(not math.isfinite(v) for v in vals.values()):
+        return reject("TTM no finito")
+    if vals["revenue"] <= 0 or vals["operating_income"] <= 0 or vals["pretax"] <= 0:
+        return reject("base TTM no positiva; requiere método de recuperación dedicado")
+    margin = vals["operating_income"] / vals["revenue"]
+    tax = vals["tax"] / vals["pretax"]
+    if not MARGIN_MIN <= margin <= MARGIN_MAX or not 0 <= tax <= TAX_MAX:
+        return reject("margen/tasa TTM fuera de límites; sin ajustes silenciosos")
+    # Annual observations supply only g1/balance. Never rewrite reported history
+    # to inject the TTM margin; pass the admitted base as an explicit override.
+    n = normalize(ticker, rec, price_local, adr=adr, price_currency=price_currency,
+                  shares_basis=shares_basis, base_financials={"revenue": vals["revenue"],
+                                                            "op_margin": margin, "tax_eff": tax})
+    if not n.ok:
+        return reject(n.fail)
+    n.revenue0 = vals["revenue"]; n.op_margin = margin; n.tax_eff = tax
+    n.kd_after_tax = (RF[n.ccy] + .01) * (1 - tax)  # existing estimate; never labelled observed
+    n.nopat0 = n.revenue0 * margin * (1 - tax)
+    n.roic = _clamp(n.nopat0 / n.invested_capital, ROIC_FLOOR, ROIC_CAP)
+    n.fcf_real_recent = vals["ocf"] - abs(vals["capex"])
+    n.hist_fcf_margin = n.fcf_real_recent / n.revenue0
+    n.roiic_observed = ttm_res.get("roiic_observed")
     for f, blk in T.items():
         n.prov[f + "_ttm"] = blk.get("fuente")
-    n.reasons += [f"{c[0]}: {c[2]}" for c in ttm_res.get("controles", []) if not c[1]]
     r = value_from_norm(n, price_local, adr=adr)
-    info = {"campos_ttm_usados": used, "fin_ttm": ttm_res.get("fin_ttm"),
-            "tiene_ttm_real": ttm_res.get("tiene_ttm_real"), "ttm": {k: {"ttm": v.get("ttm"), "fuente": v.get("fuente")} for k, v in T.items()},
-            "controles_ttm": [c[0] for c in ttm_res.get("controles", []) if not c[1]]}
+    failed = [c for c in ttm_res.get("controles", []) if not c[1]]
+    r.controls.extend(failed)
+    if failed:
+        r.validated = False
+        if r.status != "no_valorable": r.status = "en_revision"
+        r.reasons.extend(f"{c[0]}: {c[2]}" for c in failed)
+    r.inputs["ttm_window"] = window
+    r.inputs["observed_ttm"] = T
+    r.inputs["annual_observed"] = rec.by_field
+    r.inputs["balance_dates"] = {f: (_last(rec.by_field.get(f, {})) or (None,))[0]
+                                  for f in ("cash", "total_debt", "equity", "invested_capital", "shares")}
+    r.inputs["shares_measure"] = "ordinary_outstanding" if n.prov.get("shares") == "EODHD" else "diluted_or_outstanding_SEC"
+    r.inputs["assumptions"] = {"market_parameters": "estimated/manual", "roiic": r.inputs["roiic_base"],
+                               "tax": "observed_TTM", "kd": "estimated_rf_plus_1pp"}
+    info = {"campos_ttm_usados": list(required) + ["fcf"], "fin_ttm": window[-1],
+            "tiene_ttm_real": True, "ttm": T, "controles_ttm": [c[0] for c in failed]}
     return EngineOutput(ticker, r.status, r), info

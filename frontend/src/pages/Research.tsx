@@ -70,6 +70,10 @@ export function Research() {
 
       {!selected && scan.length > 0 && (
         <Panel title={`Ranking del scanner · ${scan.length} instrumentos (clic para analizar)`}>
+          <p data-testid="opportunity-disclosure" className="mb-2 text-xs text-term-warn">
+            Señales factoriales — informativas, <strong>no accionables</strong>; no sustituyen la valoración
+            gobernante del Asesor (metodología bloqueada, no validada).
+          </p>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[520px] text-sm">
               <thead>

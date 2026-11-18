@@ -5,7 +5,6 @@ import { supabase } from "./lib/supabase";
 import { Login } from "./pages/Login";
 import { CommandCenter } from "./pages/CommandCenter";
 import { Portfolio } from "./pages/Portfolio";
-import { Advisor } from "./pages/Advisor";
 import { Opportunities } from "./pages/Opportunities";
 import { Research } from "./pages/Research";
 import { CompanyFicha } from "./pages/Ficha";
@@ -127,7 +126,7 @@ export default function App() {
           <Route path="/" element={<Navigate to="/command" replace />} />
           <Route path="/command" element={<CommandCenter />} />
           <Route path="/portfolio" element={<Portfolio />} />
-          <Route path="/advisor" element={<Advisor />} />
+          <Route path="/advisor" element={<UnifiedAdvisor />} />
           <Route path="/research" element={<Research />} />
           <Route path="/research/:ticker" element={<CompanyFicha />} />
           <Route path="/opportunities" element={<Opportunities />} />

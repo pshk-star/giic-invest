@@ -1,3 +1,4 @@
+import { valuationInput } from "../core/valuation-feed";
 // P3.0 — Carga ÚNICA de datos reales + construcción de la recomendación reutilizando el MOTOR existente
 // (buildUnifiedAdvisor). No duplica ni crea lógica financiera: arma el ScanInput desde las fuentes de
 // GIIC igual que la pantalla /asesor y expone el bundle para Inicio, Oportunidades y la ficha. Los
@@ -21,11 +22,6 @@ function kindOf(ac: string | null | undefined, sector: string | null | undefined
   if (/financ|bank|banco|insurance|seguro/i.test(sector ?? "")) return "banco";
   if (a && !["equity", "stock", "adr", "common"].includes(a)) return "otro";
   return "empresa";
-}
-function modelMargin(cv: CompanyValuation | undefined, m: string): { m: number | null; c: string | null } {
-  const b = cv?.modelos.find((x) => x.modelo === m);
-  if (!b || b.disponible === false || b.margen_seguridad_pct == null) return { m: null, c: null };
-  return { m: b.margen_seguridad_pct / 100, c: b.confianza ?? null };
 }
 
 export interface AdvisorData {
@@ -99,19 +95,12 @@ export function useAdvisorData(): AdvisorData {
         const candidates: ScanCandidate[] = [];
         const sectorOf = (t: string) => instruments[t]?.sector ?? (scan.find((s) => s.ticker.toUpperCase() === t)?.sector ?? null);
         for (const t of universe) {
-          const cv = fv[t]; const prod = modelMargin(cv, "DCF_productivo"); const giic = modelMargin(cv, "FCFF_GIIC");
-          const giicB = cv?.modelos.find((x) => x.modelo === "FCFF_GIIC");
+          const cv = fv[t];
+
           // MOTOR v2 — FV único gobernante. Si existe para el ticker, manda (con estado de validación).
-          const eng = modelMargin(cv, "motor_v2");
-          const engB: any = cv?.modelos.find((x) => x.modelo === "motor_v2");
-          valuation[t] = {
-            engineMargin: eng.m, engineStatus: engB?.status ?? null,
-            engineConfidence: eng.m != null ? ((engB?.confianza as any) ?? "media") : null,
-            engineReason: (engB?.review_reasons ?? []).join("; ") || null,
-            engineMethodologyValidated: !!engB?.metodologia_validada,   // barrera item 7 (hoy false)
-            productiveMargin: prod.m, productiveConfidence: prod.m != null ? "media" : null,
-            fcffMargin: giic.m, fcffConfidence: (giic.c as any) ?? null, priceComparable: true,
-            reviewBlock: !!giicB?.review_block, reviewReason: (giicB?.review_reasons ?? []).join("; ") || null };
+
+
+          valuation[t] = valuationInput(cv);
           const sector = sectorOf(t); const ac = instruments[t]?.asset_class ?? null;
           candidates.push({ ticker: t, name: instruments[t]?.name ?? null, sector, country: null, currency: instruments[t]?.currency ?? null, assetClass: ac, kind: kindOf(ac, sector), inPortfolio: ptk.includes(t), composite: scan.find((s) => s.ticker.toUpperCase() === t)?.composite ?? null });
         }

@@ -7,7 +7,7 @@ import { Panel } from "./Panel";
 import { money, num } from "../format";
 import {
   type FundValPayload, type CompanyValuation, type ModelBlock,
-  MODEL_LABEL, confidenceTone, marginView,
+  MODEL_LABEL, confidenceTone, marginView, scenarioFv,
 } from "../core/fundval";
 
 function SummaryCell({ m }: { m: ModelBlock }) {
@@ -54,7 +54,7 @@ function Detail({ m }: { m: ModelBlock }) {
       <div className="mt-2 space-y-2">
         {m.escenarios ? (
           <div className="text-xs text-term-muted">
-            Escenarios · cons {money(m.escenarios.conservador, "USD")} · base {money(m.escenarios.base, "USD")} · opt {money(m.escenarios.optimista, "USD")}
+            Escenarios · cons {money(scenarioFv(m.escenarios.conservador), "USD")} · base {money(scenarioFv(m.escenarios.base), "USD")} · opt {money(scenarioFv(m.escenarios.optimista), "USD")}
           </div>
         ) : null}
         <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px] text-term-muted">
@@ -122,7 +122,7 @@ export function FundamentalValuationView({ data }: { data: FundValPayload }) {
     <div className="space-y-3">
       <div className="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-200">
         Valoración fundamental <strong>experimental</strong> (P1.9). No es recomendación de compra ni
-        venta; no sustituye el Fair Value productivo ni las recomendaciones de Advisor. No calibrada a
+        venta; esta publicación es la fuente gobernante compartida con Advisor. No calibrada a
         mercado ni a terceros.{data.generado ? ` Generado: ${data.generado}.` : ""}
       </div>
       <div className="flex flex-wrap gap-1">

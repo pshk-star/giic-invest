@@ -6,7 +6,7 @@ from app.research.edgar_series import build_series_from_rows, _is_annual, _pick_
 
 def _row(concept, value, period_end, filing_date, period_start=None, unit="USD", taxonomy="us-gaap"):
     return {"concept": concept, "value": value, "period_end": period_end, "filing_date": filing_date,
-            "period_start": period_start, "unit": unit, "taxonomy": taxonomy, "fiscal_period": None,
+            "period_start": period_start, "unit": "shares" if "Shares" in concept else unit, "taxonomy": taxonomy, "fiscal_period": None,
             "accession": f"a-{concept}-{period_end}"}
 
 

@@ -82,6 +82,10 @@ export function CommandCenter() {
       )}
 
       <Panel title="Oportunidades del scanner (top)">
+        <p data-testid="opportunity-disclosure" className="mb-2 text-xs text-term-warn">
+          Señales factoriales — informativas, <strong>no accionables</strong>. La valoración gobernante
+          (motor v2) vive en el Asesor y su metodología está bloqueada (no validada).
+        </p>
         {scan.length === 0 ? (
           <p className="text-sm text-term-muted">Sin snapshot del scanner todavía.</p>
         ) : (

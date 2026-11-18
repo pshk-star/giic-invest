@@ -13,8 +13,8 @@ import { FairValue } from "../components/FairValue";
 import { PriceProjection } from "../components/PriceProjection";
 import { derivePositions, portfolioTotals } from "../core/portfolio-tx";
 import {
-  type FundamentalsPayload, type ScanFactors, factorExplanation, fairValueByFcfYield,
-  fairValueByPE, impliedFcfGrowth, missingFundamentals, peerMedian, riskFlags,
+  type FundamentalsPayload, type ScanFactors, factorExplanation,
+  impliedFcfGrowth, missingFundamentals, peerMedian, riskFlags,
 } from "../core/valuation";
 import { money, moneyScale, num, pct } from "../format";
 
@@ -131,8 +131,6 @@ export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: st
       }
     : null;
 
-  const fvPE = fairValueByPE(fund.pe_ttm, peerPE);
-  const fvFcf = fairValueByFcfYield(fund.fcf_yield, peerFcf);
   const impliedG = impliedFcfGrowth(fund.fcf_yield, reqReturn);
   const risks = riskFlags(fund, peerPE, scanFactors);
   const missing = missingFundamentals(fund);
@@ -316,7 +314,7 @@ export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: st
             {fund.currency && fund.currency !== "USD" && " Márgenes/ROE/crecimientos son adimensionales; P/E y market cap en USD."}
           </div>
 
-          <FairValue fund={fund} price={price} priceCcy={quoteCcy} priceAsOf={priceAsOf} />
+          <FairValue ticker={ticker} />
 
           <PriceProjection ticker={ticker} price={price} bars={hist} hasModelSignal={preds.length > 0} />
 
@@ -345,21 +343,7 @@ export function StockFiche({ ticker: rawTicker, embedded = false }: { ticker: st
                 <p className="mt-1 text-[10px] text-term-faint">Pares: {peerCount} empresas del sector {sector} en el universo del scanner.</p>
 
                 <div className="mt-3 grid gap-2">
-                  {fvPE && (
-                    <div className="rounded-lg border border-term-border bg-term-panel2 p-3 text-sm">
-                      <div className="flex justify-between"><span>{fvPE.method}</span>
-                        <b className={fvPE.upsidePct >= 0 ? "text-term-good" : "text-term-crit"}>{pct(fvPE.upsidePct)}</b></div>
-                      <div className="text-xs text-term-faint">{fvPE.assumption} {fvPE.note}</div>
-                    </div>
-                  )}
-                  {fvFcf && (
-                    <div className="rounded-lg border border-term-border bg-term-panel2 p-3 text-sm">
-                      <div className="flex justify-between"><span>{fvFcf.method}</span>
-                        <b className={fvFcf.upsidePct >= 0 ? "text-term-good" : "text-term-crit"}>{pct(fvFcf.upsidePct)}</b></div>
-                      <div className="text-xs text-term-faint">{fvFcf.assumption} {fvFcf.note}</div>
-                    </div>
-                  )}
-                  {!fvPE && !fvFcf && <p className="text-sm text-term-muted">No calculable: faltan P/E o FCF yield de la empresa o de los pares.</p>}
+                  <p className="text-sm text-term-muted">El Fair Value procede exclusivamente del motor gobernante mostrado arriba.</p>
                 </div>
 
                 <div className="mt-3 rounded-lg border border-term-border bg-term-panel2 p-3">
