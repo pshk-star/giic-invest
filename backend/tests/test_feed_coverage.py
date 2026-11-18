@@ -51,6 +51,9 @@ def test_partial_run_is_marked_partial_and_scoped(_patch):
     run_id, rows = _patch.pubs[-1]
     assert {r["ticker"] for r in rows} == {"AAA"}                     # NO toca BBB/CCC
     assert rows[0]["payload"]["run_kind"] == "partial"
+    assert rows[0]["payload"]["gobernante"] is False
+    assert rows[0]["payload"]["modelos"][0]["accionable"] is False
+    assert "corrida_parcial_diagnostica" in rows[0]["payload"]["modelos"][0]["review_reasons"]
 
 
 def test_unexpected_exception_yields_tombstone_not_omission(_patch, monkeypatch):

@@ -222,6 +222,12 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str], full: boo
     for row in rows_to_write:
         row["payload"]["run_kind"] = run_kind
         row["payload"]["run_id"] = run_id
+        row["payload"]["gobernante"] = full
+        if not full:
+            for model in row["payload"].get("modelos", []):
+                model["accionable"] = False
+                model["review_block"] = True
+                model["review_reasons"] = model.get("review_reasons", []) + ["corrida_parcial_diagnostica"]
 
     produced = {row["ticker"] for row in rows_to_write}
     # INTEGRIDAD: no publicar un universo INCOMPLETO como corrida completa (fallo/interrupción ⇒ aborta).
