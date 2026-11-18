@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Panel } from "../components/Panel";
-import { getLatestRun, getLatestScan, type ScanRow } from "../data";
+import { getLatestRun, getLatestScan, getFundamentalValuations, type ScanRow } from "../data";
 import { num } from "../format";
+import { opportunityDisclosure, type OpportunityDisclosure } from "../core/opportunity-disclosure";
 
 const TAG_TONE: Record<string, string> = {
   value: "text-term-good", growth: "text-term-accent", quality: "text-term-good",
@@ -22,17 +23,32 @@ export function Opportunities() {
   const [scan, setScan] = useState<ScanRow[]>([]);
   const [run, setRun] = useState<any | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Estado de la metodología gobernante: el scan factorial es no accionable por sí mismo y, mientras la
+  // metodología no esté validada, se refuerza el aviso de bloqueo (P0-B).
+  const [disc, setDisc] = useState<OpportunityDisclosure>(() => opportunityDisclosure(false));
 
   useEffect(() => {
     Promise.all([getLatestScan(), getLatestRun()])
       .then(([s, r]) => { setScan(s); setRun(r); })
       .catch((e) => setErr(String(e)));
+    getFundamentalValuations()
+      .then((d) => {
+        const validated = Object.values(d.resultados).some(
+          (cv) => cv?.modelos?.some((m) => m.modelo === "motor_v2" && (m as any).metodologia_validada === true));
+        setDisc(opportunityDisclosure(validated));
+      })
+      .catch(() => setDisc(opportunityDisclosure(false)));
   }, []);
 
   if (err) return <p className="text-sm text-term-crit">{err}</p>;
 
   return (
     <div className="grid gap-4">
+      <div role="note" data-testid="opportunity-disclosure"
+           className={`rounded border px-3 py-2 text-sm ${disc.tone === "warn"
+             ? "border-term-warn/50 bg-term-warn/10 text-term-warn" : "border-term-border text-term-muted"}`}>
+        <strong>{disc.actionable ? "" : "No accionable · "}</strong>{disc.banner}
+      </div>
       <Panel title="Global Opportunity Scanner">
         <p className="text-sm text-term-muted">
           El scanner lo ejecuta un proceso programado (GitHub Actions) sobre un universo US
