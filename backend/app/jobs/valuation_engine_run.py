@@ -1,4 +1,4 @@
-"""Corre el motor de valoración v2 sobre las 11 empresas con datos REALES reconciliados (EODHD+EDGAR).
+"""Corre el motor de valoración v2 sobre el universo completo de 38 empresas con datos REALES reconciliados (EODHD+EDGAR).
 
 Imprime, por empresa, todo lo necesario para reproducir el Fair Value: precio+fecha, FV, WACC, Ke,
 crecimiento explícito/terminal, FCF base (FCFF y FCFE), ROIC, reinversión, peso del valor terminal,
@@ -16,21 +16,14 @@ import sys
 from datetime import date
 from typing import Dict, List, Optional
 from uuid import uuid4
+from pathlib import Path
 
 from app.research.valuation_engine import evaluate_ttm, METHODOLOGY_VALIDATED, EngineOutput
 from app.research.edgar_series import build_series_from_rows, fetch_edgar_rows
 
-ELEVEN = ["NVDA", "META", "NFLX", "TSM", "ASML", "PFE", "AMGN", "ADBE", "LOW", "HD", "UPS"]
-
-# Universo GOBERNADO completo (38). Una corrida "full" DEBE producir una fila por cada uno (valoración o
-# lápida no_valorable); si falta alguno, la corrida NO se publica como completa. El feed del frontend toma
-# este conjunto, el de la última corrida completa, como universo vigente: un ticker omitido de la última
-# corrida completa NO conserva su FV anterior (queda invalidado). Las corridas parciales (p. ej. pruebas de
-# 5 tickers) se marcan como tales y NO invalidan a los demás.
-FULL_UNIVERSE = ["NVDA", "META", "NFLX", "TSM", "ASML", "PFE", "AMGN", "ADBE", "LOW", "HD", "UPS",
-                 "AAPL", "MSFT", "AMZN", "GOOGL", "PG", "KO", "PEP", "MRK", "ABBV", "JNJ", "XOM",
-                 "CVX", "LLY", "CAT", "GE", "RTX", "LMT", "SHW", "CL", "MCD", "COP", "EOG", "FCX",
-                 "NEE", "DUK", "AMT", "PLD"]
+# Shared versioned coverage contract; also imported by the frontend.
+UNIVERSE = json.loads(Path(__file__).with_name("valuation_universe.json").read_text())
+FULL_UNIVERSE = UNIVERSE["tickers"]
 
 
 def _eodhd_obj(ticker: str):
@@ -62,9 +55,13 @@ def _tombstone(t: str, reason: str, ccy=None, px=None) -> dict:
 
 def run(tickers: List[str], write: bool, snapshot_date: Optional[str], full: bool = False) -> dict:
     run_kind = "full" if full else "partial"
+    if full and tickers and set(t.upper() for t in tickers) != set(FULL_UNIVERSE):
+        raise ValueError("full requires the exact governed universe; use partial for a subset")
     if full:
         tickers = list(FULL_UNIVERSE)   # una corrida completa cubre SIEMPRE todo el universo gobernado
-    tickers = list(dict.fromkeys(t.upper() for t in tickers))
+    tickers = list(dict.fromkeys(t.strip().upper() for t in tickers))
+    if not tickers or any(not t or not all(c.isalnum() or c in ".-" for c in t) for t in tickers):
+        raise ValueError("nonempty valid ticker list required")
     url = os.getenv("SUPABASE_URL", ""); srk = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
     from app.jobs.supabase_writer import SupabaseWriter
     w = SupabaseWriter(url, srk)
@@ -161,7 +158,7 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str], full: boo
         }
         results[t]["audit_inputs"] = r.inputs
         # FV gobernante: payload con forma CompanyValuation (el frontend lee el snapshot más reciente por
-        # ticker). UN solo modelo gobernante "motor_v2" con estado de validación. No mezcla modelos viejos.
+        # corrida completa). UN solo modelo gobernante "motor_v2" con estado de validación. No mezcla modelos viejos.
         conf = "media" if r.validated else "baja"
         model_block = {
             "modelo": "motor_v2", "disponible": True,
@@ -218,7 +215,7 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str], full: boo
             results[t] = {"status": "no_valorable", "error": reason}
             rows_to_write.append(_tombstone(t, reason))
         if len(rows_to_write) == n_before:   # value_one no emitió fila: lápida defensiva
-            results.setdefault(t, {"status": "no_valorable", "error": "sin fila emitida"})
+            results[t] = {"status": "no_valorable", "error": "sin fila emitida"}
             rows_to_write.append(_tombstone(t, "sin fila emitida"))
 
     # Sella run_kind + run_id en cada payload (el feed distingue corrida completa de parcial).
@@ -229,10 +226,10 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str], full: boo
     produced = {row["ticker"] for row in rows_to_write}
     # INTEGRIDAD: no publicar un universo INCOMPLETO como corrida completa (fallo/interrupción ⇒ aborta).
     coverage_err = None
-    if full and produced != set(FULL_UNIVERSE):
+    if full and (produced != set(FULL_UNIVERSE) or len(rows_to_write) != len(tickers)):
         faltan = sorted(set(FULL_UNIVERSE) - produced)
         coverage_err = f"corrida COMPLETA incompleta: faltan {len(faltan)} ({faltan[:8]}…); no se publica"
-    elif produced != set(tickers):
+    elif produced != set(tickers) or len(rows_to_write) != len(tickers) or set(results) != set(tickers):
         coverage_err = f"cobertura inconsistente: solicitados {len(tickers)} vs producidos {len(produced)}"
 
     written = 0; write_err = None
@@ -240,7 +237,8 @@ def run(tickers: List[str], write: bool, snapshot_date: Optional[str], full: boo
         write_err = coverage_err   # corrida completa incompleta ⇒ NO se publica nada (atómico)
     elif write and rows_to_write:
         try:
-            written = w.publish_valuations(run_id, rows_to_write)
+            written = w.publish_valuations(run_id, rows_to_write, {"run_kind": run_kind,
+                        "universe_version": UNIVERSE["version"], "requested_tickers": sorted(tickers)})
         except Exception as e:
             write_err = f"{type(e).__name__}: {str(e)[:160]}"
 
@@ -261,7 +259,14 @@ def main(argv=None) -> int:
     p.add_argument("--snapshot-date", default=None)
     p.add_argument("--tickers", nargs="*", default=None)
     args = p.parse_args(argv)
-    out = run(args.tickers or ELEVEN, write=args.write, snapshot_date=args.snapshot_date, full=args.full)
+    try:
+        # No explicit ticker list = full universe; an explicit list is diagnostic/partial.
+        out = run(args.tickers if args.tickers is not None else [], write=args.write,
+                  snapshot_date=args.snapshot_date, full=args.full or args.tickers is None)
+    except Exception as exc:
+        print(json.dumps({"status": "failed", "error": f"{type(exc).__name__}: {str(exc)[:160]}",
+                          "escritura": {"insertadas": 0}}, ensure_ascii=False))
+        return 1
     print(json.dumps(out, ensure_ascii=False, indent=1, default=str))
     return 1 if (out["escritura"]["error"] or out["cobertura"]["error"]) else 0
 

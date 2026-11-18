@@ -1,7 +1,7 @@
 // Acceso a datos vía Supabase (con RLS). La cartera es privada por usuario;
 // mercado y scanner son de solo lectura para autenticados.
 import { supabase } from "./lib/supabase";
-import { latestValuations } from "./core/valuation-feed";
+import { readGoverningFeed } from "./core/valuation-feed";
 import type { ETFHolding, Position, PriceInfo } from "./core/analytics";
 import type { InstrumentMeta, Split, Txn } from "./core/portfolio-tx";
 import type { FundamentalsPayload } from "./core/valuation";
@@ -434,9 +434,8 @@ export async function getLatestRun(): Promise<any | null> {
   return data?.[0] ?? null;
 }
 
-// P1.9 — Valoración fundamental (experimental). El payload lo calcula el backend y se guarda en
-// pit_snapshots (kind='fundamental_valuation'); aquí se lee el snapshot MÁS RECIENTE por ticker y
-// se renderiza tal cual (sin recálculo en el frontend).
+// Valuation feed: latest admitted complete publication, immutable rows pinned by run_id.
+// No legacy PIT fallback and no frontend recalculation.
 // P2.6 — registros de decisión (inmutables). Lectura autenticada; el frontend NO escribe (service role).
 export async function getDecisionRecords(): Promise<import("./core/decision-record").DecisionRecord[]> {
   const { data, error } = await supabase
@@ -449,18 +448,16 @@ export async function getDecisionRecords(): Promise<import("./core/decision-reco
 }
 
 export async function getFundamentalValuations(): Promise<import("./core/fundval").FundValPayload> {
-  const rows: {ticker:string;payload:unknown}[] = [];
-  // Freeze an identity upper bound across pages; no mixed partial publication batch.
-  const head = await supabase.from("valuation_snapshots").select("id").order("id", {ascending:false}).limit(1);
-  if (head.error) throw head.error;
-  if (!head.data?.length) return latestValuations([]);
-  const maxId = head.data[0].id;
-  for (let offset=0; ; offset+=1000) {
-    const {data,error} = await supabase.from("valuation_snapshots").select("ticker,payload,id")
-      .lte("id", maxId).order("id", {ascending:false}).range(offset,offset+999);
+  return readGoverningFeed(async (table, params) => {
+    let query = supabase.from(table).select(params.select);
+    for (const [key, value] of Object.entries(params)) {
+      if (key === "select") continue;
+      if (key === "order") { const [column, direction] = value.split("."); query = query.order(column, {ascending:direction !== "desc"}); }
+      else if (key === "limit") query = query.limit(Number(value));
+      else if (value.startsWith("eq.")) query = query.eq(key, value.slice(3));
+    }
+    const {data,error} = await query;
     if (error) throw error;
-    rows.push(...(data ?? []));
-    if ((data?.length ?? 0) < 1000) break;
-  }
-  return latestValuations(rows);
+    return data ?? [];
+  });
 }

@@ -1,4 +1,4 @@
-import { latestValuations, valuationInput } from "../src/core/valuation-feed";
+import { readGoverningFeed, valuationInput } from "../src/core/valuation-feed";
 // Etapa A — Vista previa del Investment Advisor unificado con DATOS REALES (solo lectura). Reutiliza el
 // orquestador advisor-engine (sin duplicar lógica de decisión) y arma el ScanInput desde Supabase REST.
 // Imprime la recomendación para verificar el resultado funcional end-to-end. No escribe nada.
@@ -58,8 +58,7 @@ async function main() {
   const txns = (await get("transactions", { select: "*" })) as Txn[];
   const ptk = [...new Set(txns.map((t) => t.ticker.toUpperCase()))];
   const scan = await get("v_latest_scan", { select: "ticker,sector,composite,rank", order: "rank" });
-  const fvRows = await get("valuation_snapshots", { select: "ticker,payload", order: "id.desc" });
-  const fv = latestValuations(fvRows).resultados;
+  const fv = (await readGoverningFeed(get)).resultados;
   const universe = [...new Set([...ptk, ...scan.map((s: any) => String(s.ticker).toUpperCase()), ...Object.keys(fv)])];
   const inF = "in.(" + universe.join(",") + ")";
   const instr: Record<string, InstrumentMeta> = {};

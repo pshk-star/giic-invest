@@ -57,6 +57,7 @@ export interface ModelBlock {
 }
 
 export interface CompanyValuation {
+  feed_valid_until?: string; // Read-time coverage/freshness admission; never recalculates the FV.
   status?: "consistente" | "en_revision" | "no_valorable";
   engine_version?: string;
   ticker: string;

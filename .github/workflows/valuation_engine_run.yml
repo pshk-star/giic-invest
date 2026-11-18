@@ -12,7 +12,7 @@ on:
         type: string
         default: ""
       tickers:
-        description: "Tickers (vacío = las 11)"
+        description: "Tickers (vacío = universo completo de 38; lista explícita = diagnóstico parcial)"
         type: string
         default: ""
 

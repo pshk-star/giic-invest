@@ -122,7 +122,7 @@ def test_job_publishes_same_day_revisions_and_invalidations(monkeypatch):
             return ([{"ticker": "TEST", "currency": "USD", "adr_ratio": 1}]
                     if table == "instruments" else
                     [{"ticker": "TEST", "close": 50, "currency": "USD", "as_of": "2026-11-13"}])
-        def publish_valuations(self, run_id, rows):
+        def publish_valuations(self, run_id, rows, manifest):
             publications.append((run_id, rows)); return len(rows)
         def insert_append(self, *a, **k):
             pytest.fail("governing valuation must not use legacy daily conflict key")

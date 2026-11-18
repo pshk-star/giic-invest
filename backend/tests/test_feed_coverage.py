@@ -19,7 +19,7 @@ class _Writer:
             return [{"ticker": t, "currency": "USD", "adr_ratio": 1} for t in job.FULL_UNIVERSE + ["AAA", "BBB", "CCC"]]
         return [{"ticker": t, "close": 50, "currency": "USD", "as_of": "2026-11-13"}
                 for t in job.FULL_UNIVERSE + ["AAA", "BBB", "CCC"]]
-    def publish_valuations(self, run_id, rows): self.pubs.append((run_id, rows)); return len(rows)
+    def publish_valuations(self, run_id, rows, manifest): self.pubs.append((run_id, rows)); return len(rows)
     def insert_append(self, *a, **k): pytest.fail("no debe usar el path legacy")
 
 
@@ -72,9 +72,79 @@ def test_unexpected_exception_yields_tombstone_not_omission(_patch, monkeypatch)
 def test_full_run_never_publishes_a_partial_universe(_patch, monkeypatch):
     # Si el universo efectivo producido difiere del completo, NO se publica como completa.
     # Forzamos un universo declarado mayor que lo que la corrida puede cubrir vía instruments/prices.
-    monkeypatch.setattr(job, "FULL_UNIVERSE", ["AAA", "BBB", "CCC", "ZZZ_SIN_DATOS"])
-    # ZZZ no está en instruments/prices, pero la guarda igual emite una fila (lápida) ⇒ cobertura completa.
+    monkeypatch.setattr(job, "FULL_UNIVERSE", ["AAA", "BBB", "CCC", "ZZZ"])
+    original_select = _patch.select_rows
+    monkeypatch.setattr(_patch, "select_rows", lambda *a, **k: [r for r in original_select(*a, **k) if r["ticker"] != "ZZZ"])
+    # Missing instrument and quote must produce an explicit no_valorable result.
     out = job.run([], write=True, snapshot_date="2026-11-13", full=True)
     run_id, rows = _patch.pubs[-1]
-    assert {r["ticker"] for r in rows} == {"AAA", "BBB", "CCC", "ZZZ_SIN_DATOS"}
+    assert {r["ticker"] for r in rows} == {"AAA", "BBB", "CCC", "ZZZ"}
+    assert out["cobertura"]["error"] is None
+
+    assert out["resultados"]["ZZZ"]["status"] == "no_valorable"
+
+
+def test_provider_failure_is_explicit_for_every_requested_ticker(_patch, monkeypatch):
+    monkeypatch.setattr(job, "_eodhd_obj", lambda t: (_ for _ in ()).throw(ConnectionError("offline")))
+    out = job.run([], True, None, full=True)
+    assert set(out["resultados"]) == {"AAA", "BBB", "CCC"}
+    assert all(r["status"] == "no_valorable" for r in out["resultados"].values())
+    assert len(_patch.pubs[0][1]) == 3
+
+
+def test_interruption_cannot_publish_a_prefix_as_complete(_patch, monkeypatch):
+    real = job.evaluate_ttm
+    def interrupt(ticker, *a, **k):
+        if ticker == "BBB": raise KeyboardInterrupt()
+        return real(ticker, *a, **k)
+    monkeypatch.setattr(job, "evaluate_ttm", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        job.run([], True, None, full=True)
+    assert _patch.pubs == []
+
+
+def test_failed_publication_has_no_success_acknowledgement(_patch, monkeypatch):
+    monkeypatch.setattr(_patch, "publish_valuations", lambda *a: (_ for _ in ()).throw(ConnectionError("offline")))
+    out = job.run([], True, None, full=True)
+    assert out["escritura"]["insertadas"] == 0
+    assert "ConnectionError" in out["escritura"]["error"]
+    assert len(out["resultados"]) == 3
+
+
+def test_full_subset_rejected_before_accessing_providers(_patch):
+    with pytest.raises(ValueError, match="exact governed universe"):
+        job.run(["AAA"], True, None, full=True)
+    assert _patch.pubs == []
+
+
+def test_default_cli_is_full_and_explicit_list_is_partial(monkeypatch, capsys):
+    calls = []
+    def fake_run(tickers, **kwargs):
+        calls.append((tickers, kwargs)); return {"escritura": {"error": None}, "cobertura": {"error": None}}
+    monkeypatch.setattr(job, "run", fake_run)
+    assert job.main([]) == 0
+    assert calls[-1][1]["full"] is True
+    assert job.main(["--tickers", "AAA"]) == 0
+    assert calls[-1] == (["AAA"], {"write": False, "snapshot_date": None, "full": False})
+
+
+def test_global_provider_failure_exits_controlled_without_publishing(_patch, monkeypatch, capsys):
+    monkeypatch.setattr(_patch, "select_rows", lambda *a, **k: (_ for _ in ()).throw(ConnectionError("database offline")))
+    assert job.main(["--write"]) == 1
+    assert '"status": "failed"' in capsys.readouterr().out
+    assert _patch.pubs == []
+
+
+def test_empty_ticker_request_is_controlled_failure(_patch):
+    with pytest.raises(ValueError, match="nonempty"):
+        job.run([], True, None)
+    assert _patch.pubs == []
+
+
+def test_real_versioned_universe_emits_all_38_results(_patch, monkeypatch):
+    monkeypatch.setattr(job, "FULL_UNIVERSE", job.UNIVERSE["tickers"])
+    out = job.run([], True, None, full=True)
+    assert len(job.FULL_UNIVERSE) == 38
+    assert set(out["resultados"]) == set(job.FULL_UNIVERSE)
+    assert len(_patch.pubs[0][1]) == 38
     assert out["cobertura"]["error"] is None

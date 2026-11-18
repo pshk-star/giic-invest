@@ -1,63 +1,79 @@
 import { describe, it, expect } from "vitest";
-import { latestValuations, valuationInput } from "./valuation-feed";
+import { latestValuations, readGoverningFeed, valuationInput, type ValuationRun } from "./valuation-feed";
 import { governingValuation, passesValueGate } from "./valuation-policy";
-
-// Fila del feed: payload con run_kind/run_id + id de identidad (orden de publicación). data.ts entrega id-desc.
-const cv = (ticker: string, status: string, extra: any = {}) => ({
-  ticker, status, modelos: [{modelo: "motor_v2", status, fair_value_usd: 308.8, margen_seguridad_pct: -23.8,
-    confianza: "baja", metodologia_validada: false, ...extra}]});
-const row = (ticker: string, id: number, run_id: string, run_kind: string, payload: any) =>
-  ({ticker, id, payload: {...payload, run_id, run_kind}});
-
-describe("governing publication consumer (P0-A: vigencia por corrida completa)", () => {
-  const good: any = cv("TSM", "en_revision");
-
-  it("latest invalidation supersedes a positive old FV without legacy fallback", () => {
-    // baseline completa (id 1, good) + revaloración parcial posterior (id 2, no_valorable)
-    const data = latestValuations([
-      row("TSM", 2, "B", "partial", {ticker: "TSM", status: "no_valorable", modelos: []}),
-      row("TSM", 1, "A", "full", good)]);
-    const v = valuationInput(data.resultados.TSM);
-    expect(governingValuation(v).blocked).toBe(true);
-    expect(governingValuation(v).margin).toBeNull();
-    expect(passesValueGate(v, .1)).toBe(false);
-  });
-
-  it("valid snapshot keeps scenarios and has one governing source", () => {
-    const data = latestValuations([row("TSM", 1, "A", "full", good)]);
-    expect(governingValuation(valuationInput(data.resultados.TSM)).source).toBe("motor_v2");
-    expect(governingValuation(valuationInput(data.resultados.TSM)).margin).toBeCloseTo(-.238, 12);
-  });
-
-  it("malformed latest data and absent data fail closed", () => {
-    const data = latestValuations([
-      row("TSM", 2, "B", "partial", {ticker: "TSM", modelos: "bad"}),
-      row("TSM", 1, "A", "full", good)]);
-    expect(data.resultados.TSM.precio).toBeNull();
-    expect(valuationInput(data.resultados.TSM).engineStatus).toBe("no_valorable");
-    expect(passesValueGate(valuationInput(undefined), .1)).toBe(false);
-  });
-
-  it("sin corrida completa: nada gobierna (fail closed) aunque existan parciales", () => {
-    const data = latestValuations([row("TSM", 3, "P", "partial", good)]);
-    expect(data.resultados.TSM).toBeUndefined();
-  });
-
-  it("ticker omitido de la última corrida completa NO se resucita de una corrida anterior", () => {
-    // Parcial vieja publicó AAA (id 1). La corrida COMPLETA (id 2) solo trae BBB. AAA no debe sobrevivir.
-    const data = latestValuations([
-      row("BBB", 2, "FULL", "full", cv("BBB", "en_revision")),
-      row("AAA", 1, "OLD", "partial", cv("AAA", "consistente"))]);
-    expect(data.resultados.BBB).toBeDefined();
-    expect(data.resultados.AAA).toBeUndefined();   // invalidado: no está en la última corrida completa
-  });
-
-  it("corrida parcial posterior actualiza solo su ticker; los demás conservan la baseline completa", () => {
-    const data = latestValuations([
-      row("AAA", 3, "PART", "partial", cv("AAA", "no_valorable", {status: "no_valorable", fair_value_usd: null})),
-      row("BBB", 2, "FULL", "full", cv("BBB", "en_revision")),
-      row("AAA", 2, "FULL", "full", cv("AAA", "en_revision"))]);
-    expect(data.resultados.AAA.status).toBe("no_valorable");   // actualizado por la parcial posterior
-    expect(data.resultados.BBB.status).toBe("en_revision");    // intacto desde la baseline completa
-  });
+import universe from '../../../backend/app/jobs/valuation_universe.json';
+const now = Date.parse('2026-11-18T12:00:00Z');
+const run: ValuationRun = {run_id:'A',run_kind:'full',universe_version:universe.version,
+ requested_tickers:universe.tickers,published_at:'2026-11-18T10:00:00Z'};
+const cv = (ticker: string): any => ({ticker,status:'en_revision',audit_inputs:{price_date:'2026-11-18'},
+ ttm:{fin_ttm:'2026-09-30'},modelos:[{modelo:'motor_v2',status:'en_revision',fair_value_usd:308.8,
+ margen_seguridad_pct:-23.8,confianza:'baja',metodologia_validada:false}]});
+const rows = () => universe.tickers.map(ticker=>({ticker,run_id:'A',payload:cv(ticker)}));
+describe('P0-A governing publication coverage and freshness',()=>{
+ it('admits precisely 38 dated valuations with one governing source',()=>{
+  const d=latestValuations(rows(),run,now);
+  expect(Object.keys(d.resultados)).toHaveLength(38);
+  expect(governingValuation(valuationInput(d.resultados.TSM)).margin).toBeCloseTo(-.238,12);
+  expect(passesValueGate(valuationInput(d.resultados.TSM),.1)).toBe(false);
+ });
+ it('a new complete tombstone supersedes an older positive FV',()=>{
+  const r=rows(); r.find(r=>r.ticker==='TSM')!.payload={ticker:'TSM',status:'no_valorable',modelos:[]};
+  const d=latestValuations([...r,{ticker:'TSM',run_id:'OLD',payload:cv('TSM')}],run,now);
+  expect(valuationInput(d.resultados.TSM).engineMargin).toBeNull();
+ });
+ it('an omitted ticker invalidates the incomplete publication, never resurrecting old data',()=>{
+  const r=rows().filter(r=>r.ticker!=='TSM');
+  const d=latestValuations([...r,{ticker:'TSM',run_id:'OLD',payload:cv('TSM')}],run,now);
+  expect(Object.values(d.resultados).every(v=>v.status==='no_valorable')).toBe(true);
+ });
+ it('duplicate rows and incomplete manifests fail closed',()=>{
+  for(const [r,m] of [[rows().concat(rows()[0]),run],[rows(),{...run,requested_tickers:['TSM']}]] as const)
+   expect(latestValuations([...r],m,now).resultados.TSM.status).toBe('no_valorable');
+ });
+ it('five-ticker partial diagnostics cannot replace or invalidate any of the 38 full valuations',()=>{
+  const partial=rows().slice(0,5).map(r=>({...r,run_id:'PART',payload:{...r.payload,status:'no_valorable',modelos:[]}}));
+  const d=latestValuations([...partial,...rows()],run,now);
+  expect(Object.values(d.resultados).filter(v=>v.status==='en_revision')).toHaveLength(38);
+  expect(latestValuations(partial,{...run,run_kind:'partial'},now).resultados.TSM.status).toBe('no_valorable');
+ });
+ it('legacy rows without a manifest never govern',()=>{
+  expect(latestValuations(rows(),undefined,now).resultados.TSM.status).toBe('no_valorable');
+ });
+ it.each(['2026-11-14T11:59:59Z','2026-11-19T00:00:00Z','bad'])('rejects stale/future/invalid publication date %s',published_at=>{
+  expect(latestValuations(rows(),{...run,published_at},now).resultados.TSM.status).toBe('no_valorable');
+ });
+ it('admits the exact publication expiry boundary, then expires',()=>{
+  expect(latestValuations(rows(),{...run,published_at:'2026-11-14T12:00:00Z'},now).resultados.TSM.status).toBe('en_revision');
+  expect(latestValuations(rows(),{...run,published_at:'2026-11-14T12:00:00Z'},now+1).resultados.TSM.status).toBe('no_valorable');
+ });
+ it.each([['price','2026-11-10'],['price',undefined],['price','2026-11-19'],['ttm','2026-01-01'],['ttm',undefined],['ttm','2027-01-01']])('invalidates %s date %s without affecting other issuers',(field,date)=>{
+  const r=rows(); const t=r.find(r=>r.ticker==='TSM')!;
+  if(field==='price') t.payload.audit_inputs.price_date=date; else t.payload.ttm.fin_ttm=date;
+  const d=latestValuations(r,run,now);
+  expect(d.resultados.TSM.status).toBe('no_valorable');
+  expect(d.resultados.ASML.status).toBe('en_revision');
+ });
+ it('provider failure tombstones remain explicit without requiring input dates',()=>{
+  const r=rows();r[0].payload={ticker:r[0].ticker,status:'no_valorable',modelos:[]};
+  expect(latestValuations(r,run,now).resultados[r[0].ticker].status).toBe('no_valorable');
+ });
+ it('malformed payload fails closed for that issuer',()=>{
+  const r=rows();r.find(r=>r.ticker==='TSM')!.payload.modelos='bad';
+  expect(latestValuations(r,run,now).resultados.TSM.precio).toBeNull();
+ });
+ it('cached admissible valuations expire before a subsequent Advisor decision',()=>{
+  const d=latestValuations(rows(),run,now);
+  expect(valuationInput(d.resultados.TSM,now).engineMargin).not.toBeNull();
+  expect(valuationInput(d.resultados.TSM,now+97*3600000).engineMargin).toBeNull();
+ });
+ it('pins an immutable manifest before reading only its rows',async()=>{
+  const requests: any[]=[];
+  const d=await readGoverningFeed(async(table,params)=>{requests.push([table,params]);return table==='valuation_runs'?[run]:rows();},now);
+  expect(requests[0][1]).toMatchObject({run_kind:'eq.full',limit:'1',order:'id.desc'});
+  expect(requests[1][1].run_id).toBe('eq.A');
+  expect(d.resultados.TSM.status).toBe('en_revision');
+ });
+ it('a row transport failure propagates; there is no cache/legacy fallback',async()=>{
+  await expect(readGoverningFeed(async table=>{if(table==='valuation_runs')return [run];throw Error('offline');},now)).rejects.toThrow('offline');
+ });
 });

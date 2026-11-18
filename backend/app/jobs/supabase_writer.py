@@ -112,10 +112,10 @@ class SupabaseWriter:
         except (ValueError, TypeError) as exc:
             raise ValueError("invalid insert acknowledgement") from exc
 
-    def publish_valuations(self, run_id: str, rows: List[dict]) -> int:
+    def publish_valuations(self, run_id: str, rows: List[dict], manifest: dict) -> int:
         """Atomic immutable publication, including no_valorable tombstones."""
         r = self._client.post(f"{self.base}/rpc/publish_valuations",
-                              json={"p_run_id": run_id, "p_rows": rows})
+                              json={"p_run_id": run_id, "p_rows": rows, "p_manifest": manifest})
         r.raise_for_status()
         n = r.json()
         if not isinstance(n, int) or isinstance(n, bool) or n not in (0, len(rows)):

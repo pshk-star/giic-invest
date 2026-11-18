@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Panel } from "../components/Panel";
 import { getLatestRun, getLatestScan, getFundamentalValuations, type ScanRow } from "../data";
+import { governingValuation } from "../core/valuation-policy";
+import { valuationInput } from "../core/valuation-feed";
 import { num } from "../format";
 import { opportunityDisclosure, type OpportunityDisclosure } from "../core/opportunity-disclosure";
 
@@ -33,8 +35,9 @@ export function Opportunities() {
       .catch((e) => setErr(String(e)));
     getFundamentalValuations()
       .then((d) => {
-        const validated = Object.values(d.resultados).some(
-          (cv) => cv?.modelos?.some((m) => m.modelo === "motor_v2" && (m as any).metodologia_validada === true));
+        const values = Object.values(d.resultados);
+        const validated = values.length > 0 && values.every(cv =>
+          governingValuation(valuationInput(cv)).blocked === false);
         setDisc(opportunityDisclosure(validated));
       })
       .catch(() => setDisc(opportunityDisclosure(false)));
